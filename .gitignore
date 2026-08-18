@@ -1,0 +1,13 @@
+node_modules/
+.next/
+dist/
+*.log
+dev.log
+server.log
+.env.local
+*.db
+*.db-journal
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
