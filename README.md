@@ -9,6 +9,10 @@ Next.js server, so no Node.js build toolchain is required to run it. It talks to
 OpenFOAM through the `wsl` command instead of `docker exec`, so it runs entirely
 on the Windows host with no Docker dependency.
 
+![OpenFOAM Studio](screenshots/dashboard.png)
+![OpenFOAM Studio](screenshots/file-editor.png)
+![OpenFOAM Studio](screenshots/monitor.png)
+
 ---
 
 ## Requirements
