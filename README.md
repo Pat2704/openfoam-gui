@@ -1,3 +1,7 @@
+### Preview
+
+<video src="screenshots/demo.mp4" controls width="100%"></video>
+
 ### Installation
 
 OpenFOAM Studio is distributed as a standalone Windows application.
