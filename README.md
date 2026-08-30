@@ -1,6 +1,9 @@
 ### Preview
 
-<video src="screenshots/demo.mp4" controls width="100%"></video>
+![Dashboard](screenshots/dashboard.png)
+![Dashboard](screenshots/file-editor.png)
+![Dashboard](screenshots/commands.png)
+![Dashboard](screenshots/monitor.png)
 
 ### Installation
 
