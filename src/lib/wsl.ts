@@ -1361,8 +1361,12 @@ done
 }
 
 export function readFile(caseName: string, filePath: string): string {
+  // Validation stays OUTSIDE the try: wrapping it meant a rejected path was
+  // rethrown as a plain Error, which apiError() cannot recognise as a
+  // WslInputError — so bad input came back as HTTP 500 "Internal error"
+  // instead of 400, and a caller could not tell the two apart.
+  const safePath = validateRelativePath(filePath, 'File path');
   try {
-    const safePath = validateRelativePath(filePath, 'File path');
     return runInWsl(`cat -- ${shellQuote(`${getCasePath(caseName)}/${safePath}`)}`, 10000);
   } catch (e: any) {
     throw new Error(`Unable to read ${filePath}: ${e.message}`);

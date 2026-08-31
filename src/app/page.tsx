@@ -43,7 +43,19 @@ const SHORTCUTS = [
 
 export default function Home() {
   const { setCaseName, setActiveFile } = useCaseContext();
-  const { theme, setTheme } = useTheme();
+  // resolvedTheme, not theme: the provider runs with enableSystem, so `theme`
+  // can be the literal 'system' — comparing it to 'dark' mislabels the button
+  // and makes the toggle a no-op when the OS is already dark.
+  const { resolvedTheme, setTheme } = useTheme();
+  // next-themes cannot know the theme until it has read localStorage on the
+  // client, so `resolvedTheme` is undefined during SSR and on the first client
+  // render. Rendering the icon/label straight from it made the server emit the
+  // light-mode button and the client the dark-mode one — a hydration mismatch.
+  // Gate the theme-dependent output on `mounted` so the first client render
+  // matches the server exactly, then swap on the next tick.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const isDark = mounted && resolvedTheme === 'dark';
   const [activeTab, setActiveTab] = useState('dashboard');
   // Tabs are mounted lazily on first visit and then kept mounted, hidden
   // with CSS. Previously each tab was conditionally rendered, so every
@@ -124,7 +136,7 @@ export default function Home() {
       // Ctrl+B → toggle dark/light mode
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault();
-        setTheme(theme === 'dark' ? 'light' : 'dark');
+        setTheme(isDark ? 'light' : 'dark');
         return;
       }
       // Ctrl+/  →  toggle shortcuts dialog
@@ -191,12 +203,12 @@ export default function Home() {
               />
             </Badge>
             <button
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              onClick={() => setTheme(isDark ? 'light' : 'dark')}
               className="p-1.5 rounded-lg border border-border hover:bg-accent transition-colors sm:px-2 sm:gap-1.5"
               title="Switch theme (Ctrl+B)"
             >
-              {theme === 'dark' ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
-              <span className="hidden sm:inline text-xs">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+              {isDark ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+              <span className="hidden sm:inline text-xs">{isDark ? 'Light' : 'Dark'}</span>
             </button>
           </div>
           {/* Open cases tabs */}
