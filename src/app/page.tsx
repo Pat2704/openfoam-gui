@@ -9,13 +9,14 @@ import { useTheme } from 'next-themes';
 import {
   LayoutDashboard, Wand2, FileCode, Terminal, Activity,
   TerminalSquare, Waves, Cpu, X, Boxes, FolderTree,
-  Keyboard, Sun, Moon, Zap
+  Keyboard, Sun, Moon, Zap, Box
 } from 'lucide-react';
 import Dashboard from '@/components/openfoam/dashboard';
 import CaseWizard from '@/components/openfoam/case-wizard';
 import FileEditor from '@/components/openfoam/file-editor';
 import CommandPanel from '@/components/openfoam/command-panel';
 import Monitor from '@/components/openfoam/monitor';
+import MeshViewer from '@/components/openfoam/mesh-viewer';
 import OpenFoamBrowser from '@/components/openfoam/foam-browser';
 import { useCaseContext } from '@/lib/case-context';
 
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'editor', label: 'File Editor', icon: <FileCode className="w-4 h-4" /> },
   { id: 'commands', label: 'Commands', icon: <Terminal className="w-4 h-4" /> },
   { id: 'monitor', label: 'Monitor', icon: <Activity className="w-4 h-4" /> },
+  { id: 'mesh', label: 'Mesh', icon: <Box className="w-4 h-4" /> },
   { id: 'applications', label: 'Applications', icon: <Boxes className="w-4 h-4" /> },
   { id: 'src', label: 'Src', icon: <FolderTree className="w-4 h-4" /> },
 ];
@@ -285,6 +287,11 @@ export default function Home() {
         {visitedTabs.includes('monitor') && (
           <div className={paneClass('monitor')}>
             <Monitor key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'monitor'} />
+          </div>
+        )}
+        {visitedTabs.includes('mesh') && (
+          <div className={paneClass('mesh')}>
+            <MeshViewer key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'mesh'} />
           </div>
         )}
         {visitedTabs.includes('applications') && (

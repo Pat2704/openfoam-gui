@@ -20,50 +20,42 @@ const net = require('net');
 // ─────────────────────────────────────────────────────────────────────────────
 // Input-freeze mitigations (must run BEFORE app.whenReady).
 //
-// Symptom the user reported: "ogni tanto si blocca qualsiasi casella di testo
-// e non mi fa inserire niente" — text inputs intermittently freeze and stop
-// accepting keystrokes. After online research (GitHub issues #40578, #31968,
-// the Reddit/StackOverflow threads on "Electron inputs stop working until
-// DevTools is opened", and the documented Chromium compositor/hit-testing
-// stall on Windows), the real root cause is a combination of:
+// History, because it matters for what is and is not safe to remove here.
 //
-//   (a) Chromium GPU compositor stalls on Windows with certain GPU/driver
-//       combos — the compositor stops draining the renderer's input event
-//       queue, so keystrokes pile up / never reach the input. The well-known
-//       workaround is "open/close DevTools once" because that forces a
-//       compositor re-initialisation that un-sticks input dispatch.
-//   (b) CSS `backdrop-filter: blur()` on STICKY elements (header, footer,
-//       chat-popup sticky top). When GPU acceleration is disabled (which we
-//       do below for stability), the page falls back to SOFTWARE compositing.
-//       In software compositing, every repaint of a sticky backdrop-filter
-//       is O(page-area) — so every keystroke (which triggers a reflow of the
-//       input's containing block) re-runs the blur over the whole page.
-//       This manifests as input lag so severe it looks like the input froze.
+// Text inputs used to intermittently stop accepting keystrokes until the user
+// clicked another app and back. The first response was a shotgun: disable GPU
+// acceleration entirely, on the theory that a Chromium compositor stall was
+// eating input events. It helped enough to look like a fix.
 //
-// Fixes applied below + in the React source (page.tsx, chat-popup.tsx —
-// `backdrop-blur-sm` removed from all sticky elements). Together they
-// eliminate both root causes. None of the switches here are expensive; the
-// app still renders fine in software, and 99% of users won't notice the
-// difference except that text boxes no longer freeze.
+// The actual causes were found later, and both are gone from the codebase:
+//
+//   1. window.confirm() / alert(). A native modal frequently fails to hand
+//      keyboard focus back to the page when it closes. Every confirmation now
+//      goes through the in-page dialog in src/components/ui/confirm-host.tsx.
+//   2. child_process calls without `windowsHide: true`. This process owns no
+//      console, so Windows allocated a fresh console window for every wsl.exe
+//      child; it flashed for a few milliseconds and stole foreground focus.
+//      Every call in src/lib/wsl.ts now passes the flag.
+//
+// With those two fixed, disabling the GPU no longer buys anything — and it
+// costs a lot: WebGL fell back to SwiftShader (measured: renderer reported as
+// "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device ...))", webgl feature status
+// "unavailable_software"), which makes the 3D mesh viewer unusable. With
+// acceleration on, the same probe reports the real adapter through D3D11.
+//
+// So hardware acceleration is ENABLED. If the input freeze ever comes back,
+// this is the first thing to suspect: re-adding
+//     app.disableHardwareAcceleration();
+//     app.commandLine.appendSwitch('disable-gpu');
+//     app.commandLine.appendSwitch('disable-gpu-compositing');
+// restores the old behaviour, at the cost of the mesh viewer. Do that only
+// after ruling out a third native-focus cause of the same family (anything
+// that briefly takes foreground focus: native dialogs, console children,
+// external processes).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// (a) Disable GPU hardware acceleration. Falls back to software compositing
-//     which is 100% reliable on Windows, just slightly higher CPU. This is
-//     the single most-recommended fix for "Electron text input freezes".
-app.disableHardwareAcceleration();
-
-// (b) Belt-and-braces CLI switches that go further than the JS API.
-//     `--disable-gpu` and `--disable-gpu-compositing` are the most-cited
-//     fixes on SuperUser / Reddit / GitHub for Electron input/compositor
-//     stalls on Windows (the `disableHardwareAcceleration()` call is
-//     equivalent to `--disable-gpu`, but listing it explicitly documents
-//     the intent and is harmless if Electron ever changes the JS API's
-//     exact behaviour).
-app.commandLine.appendSwitch('disable-gpu');
-app.commandLine.appendSwitch('disable-gpu-compositing');
-
-// A couple of known-problematic Chromium features that have caused input
-// unresponsiveness on Windows in the past.
+// Chromium features that have caused input unresponsiveness on Windows and are
+// unrelated to the GPU — these stay disabled.
 app.commandLine.appendSwitch('disable-features', [
   'HardwareMediaKeyHandling',     // grabs media-key focus, can stall input
   'MediaSessionService',          // ditto
@@ -73,7 +65,6 @@ app.commandLine.appendSwitch('disable-features', [
                                   // (it can mark the window as occluded
                                   // briefly during alt-tab and stop
                                   // dispatching input events)
-  'Vulkan',                       // avoid Vulkan GPU backend variability
 ].join(','));
 
 // Reduce the chance of the renderer being throttled while the window is

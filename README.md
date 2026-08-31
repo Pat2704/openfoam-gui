@@ -70,6 +70,9 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   the case script in the background and takes you to the Monitor.
 - **Monitor** — live log tail, residual plot, running processes with per-PID
   kill.
+- **Mesh** — 3D view of the case's boundary patches: orbit/zoom/pan, wireframe,
+  per-patch colour and visibility, XYZ axes, and the `blockMeshDict` vertex
+  numbers overlaid on the model. Drag the bar under the view to make it taller.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 - **FOAMy** — a chat copilot that reads your case files and proposes edits you
   can apply with one click.
@@ -136,6 +139,8 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `electron/preload.js` | the only renderer↔main bridge (FOAMy config) |
 | `src/lib/wsl.ts` | every OpenFOAM interaction goes through here |
 | `src/lib/foamy-store.ts` | where the API key is persisted |
+| `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
+| `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |
 | `src/app/api/**` | REST endpoints the UI talks to |
 | `src/components/openfoam/**` | the tabs |
 | `scripts/build-electron.js` | next build → resources → electron-builder |
@@ -155,6 +160,11 @@ These bite **only in the packaged app** — none of them reproduce with
 3. **The server port is chosen at launch**, so the page origin changes every
    run and `localStorage` is empty each time. Anything that must persist goes
    through `src/lib/foamy-store.ts`.
+
+Hardware acceleration is deliberately ENABLED (the Mesh tab needs real WebGL —
+with the GPU switches on, the renderer falls back to SwiftShader). The comment
+at the top of `electron/main.js` explains what to re-add if the input freeze
+ever returns.
 
 Also: don't put secrets in `.env` — that file is copied into the `.exe`.
 

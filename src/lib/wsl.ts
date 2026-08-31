@@ -2372,3 +2372,81 @@ export function getCacheStatus(): { runDirVerified: boolean; tutDirVerified: boo
     tutDir: cachedTutDir,
   };
 }
+
+
+// ── Boundary surface extraction (for the 3D mesh viewer) ────────────────────
+//
+// surfaceMeshTriangulate writes the case's boundary patches as an ASCII STL.
+// Two things about it drive the design here:
+//
+//  - It resolves the output path RELATIVE TO THE CASE DIRECTORY, even when
+//    given an absolute one (it prepends the case path and then fails). So the
+//    file is necessarily written inside the case; we use a dotted, unmistakable
+//    name and delete it as soon as it has been read.
+//  - ASCII STL keeps one `solid <patchName>` block per patch, so patch names
+//    and grouping survive. The binary format is ~4x smaller but flat — it loses
+//    the patch names, which the viewer needs — so ASCII it is, and we compact
+//    the data ourselves before sending it to the browser.
+
+/** Temp file surfaceMeshTriangulate writes into the case directory. */
+const SURFACE_STL_NAME = '.openfoam-studio-viewer.stl';
+
+export interface SurfaceExtraction {
+  /** Windows-visible path to the STL, e.g. \\wsl.localhost\Ubuntu\home\... */
+  windowsPath: string;
+  /** Patch names in the order surfaceMeshTriangulate reported them. */
+  patchNames: string[];
+}
+
+/**
+ * Translate a POSIX path inside the active WSL distro into a path Windows can
+ * open directly. Reading through this is far faster than piping the file
+ * through `wsl.exe` and base64 (measured ~70-120 MB/s vs. a full buffer copy),
+ * and it avoids the 50 MB maxBuffer ceiling entirely.
+ */
+export function wslPathToWindows(posixPath: string): string {
+  const distro = getDistro();
+  return `\\\\wsl.localhost\\${distro}${posixPath.replace(/\//g, '\\')}`;
+}
+
+/**
+ * Run surfaceMeshTriangulate on a case and return where to read the result.
+ * Throws if the case has no mesh yet (no constant/polyMesh).
+ */
+export function extractCaseSurface(caseName: string, timeout = 120000): SurfaceExtraction {
+  const casePath = getCasePath(caseName);
+  const src = foamSource();
+
+  const script = `
+${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 1; }
+[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 1; }
+rm -f ${shellQuote(SURFACE_STL_NAME)}
+surfaceMeshTriangulate ${shellQuote(SURFACE_STL_NAME)} 2>&1
+`;
+  const out = runInWslScript(Buffer.from(script).toString('base64'), timeout);
+
+  if (out.includes('__NO_CASE__')) throw new Error(`Case not found: ${caseName}`);
+  if (out.includes('__NO_MESH__')) {
+    throw new Error('This case has no mesh yet — run blockMesh first.');
+  }
+  if (/FOAM FATAL/.test(out)) {
+    const detail = out.split('\n').find(l => l.trim() && !l.startsWith('-->')) || 'unknown error';
+    throw new Error(`surfaceMeshTriangulate failed: ${detail.trim()}`);
+  }
+
+  // "surfZone 0 : movingWall" — the patch list, in write order.
+  const patchNames = [...out.matchAll(/^surfZone\s+\d+\s*:\s*(\S+)/gm)].map(m => m[1]);
+
+  return {
+    windowsPath: wslPathToWindows(`${casePath}/${SURFACE_STL_NAME}`),
+    patchNames,
+  };
+}
+
+/** Delete the temp STL. Safe to call even if extraction failed. */
+export function cleanupCaseSurface(caseName: string): void {
+  try {
+    const casePath = getCasePath(caseName);
+    runInWsl(`rm -f ${shellQuote(`${casePath}/${SURFACE_STL_NAME}`)}`, 10000);
+  } catch { /* best effort */ }
+}
