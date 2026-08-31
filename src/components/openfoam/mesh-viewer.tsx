@@ -26,6 +26,8 @@ import {
   Move3d, Hash,
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
+import CheckMeshPanel from '@/components/openfoam/check-mesh-panel';
+import BCValidationPanel from '@/components/openfoam/bc-validation-panel';
 
 // Distinct, colour-blind-friendly-ish hues; patches beyond this wrap around.
 const PATCH_COLORS = [
@@ -35,6 +37,21 @@ const PATCH_COLORS = [
 
 /** Above this, ask before loading — parsing and upload get slow. */
 const LARGE_MESH_TRIANGLES = 500_000;
+
+/**
+ * Standard viewpoints, as directions the camera sits along looking back at the
+ * model. Named the way CFD tools name them: "+X" is the view you get standing
+ * on the +X axis, so you are looking down -X.
+ */
+const STANDARD_VIEWS: { label: string; dir: [number, number, number]; up: [number, number, number] }[] = [
+  { label: '+X', dir: [1, 0, 0], up: [0, 0, 1] },
+  { label: '-X', dir: [-1, 0, 0], up: [0, 0, 1] },
+  { label: '+Y', dir: [0, 1, 0], up: [0, 0, 1] },
+  { label: '-Y', dir: [0, -1, 0], up: [0, 0, 1] },
+  { label: '+Z', dir: [0, 0, 1], up: [0, 1, 0] },
+  { label: '-Z', dir: [0, 0, -1], up: [0, 1, 0] },
+  { label: 'Iso', dir: [1, 0.8, 1], up: [0, 1, 0] },
+];
 
 const MIN_VIEWER_HEIGHT = 260;
 const DEFAULT_VIEWER_HEIGHT = 520;
@@ -125,23 +142,53 @@ function makeLabelSprite(text: string, colorCss: string, bgCss: string): THREE.S
 }
 
 /**
- * Resolve one of the app's theme tokens to a concrete rgb() string.
+ * Rasterise any CSS colour the browser understands down to plain 0-255 RGB.
  *
- * The tokens are authored in oklch, which THREE.Color cannot parse, so we let
- * the browser do it: a throwaway element painted with the Tailwind class
- * reports a plain rgb() through getComputedStyle.
+ * getComputedStyle does NOT normalise to rgb(): the theme tokens are authored
+ * in oklch, and Chromium reports them back as `lab(2.75381 0 0)`. THREE.Color
+ * cannot parse that — and, worse, it does not throw: setStyle() warns and
+ * leaves the colour untouched, so the scene simply kept whatever background it
+ * already had and dark mode appeared to do nothing. Painting the colour onto a
+ * 1x1 canvas makes the browser do the conversion for us, and works for any
+ * colour space it supports.
  */
-function readThemeColors(): { background: string; foreground: string } {
-  const fallback = { background: 'rgb(15, 17, 21)', foreground: 'rgb(250, 250, 250)' };
-  if (typeof document === 'undefined') return fallback;
+function cssColorToRgb(css: string, fallback: [number, number, number]): [number, number, number] {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return fallback;
+    // Paint a known colour first: an unparseable fillStyle is ignored silently,
+    // so without this we could read a stale pixel and never notice.
+    ctx.fillStyle = 'rgb(1, 2, 3)';
+    ctx.fillRect(0, 0, 1, 1);
+    ctx.fillStyle = css;
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    if (d[0] === 1 && d[1] === 2 && d[2] === 3) return fallback; // fillStyle rejected
+    return [d[0], d[1], d[2]];
+  } catch {
+    return fallback;
+  }
+}
+
+/** Read the app's own background/foreground tokens, resolved to RGB. */
+function readThemeColors(): { background: [number, number, number]; foregroundCss: string; backgroundCss: string } {
+  const fallback: [number, number, number] = [15, 17, 21];
+  if (typeof document === 'undefined') {
+    return { background: fallback, foregroundCss: 'white', backgroundCss: 'black' };
+  }
   const probe = document.createElement('div');
   probe.className = 'bg-background text-foreground';
   probe.style.cssText = 'position:absolute;opacity:0;pointer-events:none;left:-9999px';
   document.body.appendChild(probe);
   const cs = getComputedStyle(probe);
-  const out = { background: cs.backgroundColor || fallback.background, foreground: cs.color || fallback.foreground };
+  const bgCss = cs.backgroundColor;
+  const fgCss = cs.color;
   document.body.removeChild(probe);
-  return out;
+  // Label sprites go through canvas fillStyle, which handles lab()/oklch()
+  // natively, so those keep the CSS string.
+  return { background: cssColorToRgb(bgCss, fallback), foregroundCss: fgCss, backgroundCss: bgCss };
 }
 
 export default function MeshViewer({ caseName, active = true }: {
@@ -169,7 +216,9 @@ export default function MeshViewer({ caseName, active = true }: {
   const [patches, setPatches] = useState<PatchInfo[]>([]);
   const [triangles, setTriangles] = useState(0);
   const [wireframe, setWireframe] = useState(false);
-  const [showAxes, setShowAxes] = useState(true);
+  // Nothing is switched on when a mesh loads — not even the axes. The view
+  // starts as bare geometry and the user turns on what they want.
+  const [showAxes, setShowAxes] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
   const [labelCount, setLabelCount] = useState(0);
   const [hasMesh, setHasMesh] = useState(false);
@@ -210,12 +259,8 @@ export default function MeshViewer({ caseName, active = true }: {
   const applyThemeColors = useCallback(() => {
     const scene = sceneRef.current;
     if (!scene) return;
-    const { background } = readThemeColors();
-    try {
-      scene.background = new THREE.Color(background);
-    } catch {
-      scene.background = new THREE.Color(0x0f1115);
-    }
+    const [r, g, b] = readThemeColors().background;
+    scene.background = new THREE.Color(r / 255, g / 255, b / 255);
     renderNow();
   }, [renderNow]);
   useEffect(() => { themeRef.current = applyThemeColors; }, [applyThemeColors]);
@@ -361,6 +406,35 @@ export default function MeshViewer({ caseName, active = true }: {
   // as a dependency (which would rebuild loadMesh on every camera change).
   useEffect(() => { fitRef.current = fitToView; }, [fitToView]);
 
+  /**
+   * Jump to one of the standard viewpoints, keeping the model framed.
+   *
+   * Distance is recomputed from the bounding sphere rather than preserved, so
+   * the model fills the view the same way from every direction — otherwise
+   * switching from an axis view to Iso leaves it tiny or clipped.
+   */
+  const setView = useCallback((dir: [number, number, number], up: [number, number, number]) => {
+    const group = groupRef.current, cam = cameraRef.current, ctr = controlsRef.current;
+    if (!group || !cam || !ctr || group.children.length === 0) return;
+
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+    const dist = radius / Math.sin((cam.fov * Math.PI) / 360) * 1.6;
+
+    const v = new THREE.Vector3(...dir).normalize().multiplyScalar(dist);
+    cam.up.set(...up);
+    cam.near = Math.max(dist / 1000, 1e-6);
+    cam.far = dist * 100;
+    cam.position.copy(center).add(v);
+    cam.updateProjectionMatrix();
+    ctr.target.copy(center);
+    ctr.update();
+    renderNow();
+  }, [renderNow]);
+
   // ── Load the mesh ─────────────────────────────────────────────────────────
   const loadMesh = useCallback(async () => {
     if (!caseName) return;
@@ -472,9 +546,9 @@ export default function MeshViewer({ caseName, active = true }: {
       }
 
       // Read the label colours from the theme too, so numbers stay legible.
-      const { foreground, background } = readThemeColors();
+      const { foregroundCss, backgroundCss } = readThemeColors();
       points.forEach((p, i) => {
-        const sprite = makeLabelSprite(String(i), foreground, background);
+        const sprite = makeLabelSprite(String(i), foregroundCss, backgroundCss);
         sprite.position.copy(p);
         labels.add(sprite);
       });
@@ -638,6 +712,20 @@ export default function MeshViewer({ caseName, active = true }: {
                   <Button size="sm" variant="outline" className="h-7 text-xs" onClick={fitToView}>
                     <Maximize2 className="w-3 h-3 mr-1" /> Fit
                   </Button>
+                  {/* Standard viewpoints — looking down an axis is how you
+                      check a 2D case is actually flat. */}
+                  <div className="flex items-center rounded-md border overflow-hidden">
+                    {STANDARD_VIEWS.map(v => (
+                      <button
+                        key={v.label}
+                        onClick={() => setView(v.dir, v.up)}
+                        className="px-1.5 h-7 text-[10px] font-mono hover:bg-accent transition-colors border-r last:border-r-0"
+                        title={`View along ${v.label}`}
+                      >
+                        {v.label}
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
             </div>
@@ -708,6 +796,11 @@ export default function MeshViewer({ caseName, active = true }: {
           )}
         </CardContent>
       </Card>
+
+      {/* Mesh quality and boundary conditions live here rather than in the
+          Monitor tab: both describe the mesh, not the running solve. */}
+      <CheckMeshPanel caseName={caseName} />
+      <BCValidationPanel caseName={caseName} />
     </div>
   );
 }

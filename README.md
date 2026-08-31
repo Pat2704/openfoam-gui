@@ -26,7 +26,7 @@ A short demo is in [`screenshots/gif_openfoam_studio.mp4`](screenshots/gif_openf
 
 ## Install
 
-1. Download **`OpenFOAMStudio-v1.2-portable.exe`** from the [Releases](../../releases) page.
+1. Download **`OpenFOAMStudio-v1.3-portable.exe`** from the [Releases](../../releases) page.
 2. Put it anywhere (Desktop, a USB stick — it writes nothing to the registry).
 3. Double-click it.
 
@@ -71,8 +71,10 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
 - **Monitor** — live log tail, residual plot, running processes with per-PID
   kill.
 - **Mesh** — 3D view of the case's boundary patches: orbit/zoom/pan, wireframe,
-  per-patch colour and visibility, XYZ axes, and the `blockMeshDict` vertex
-  numbers overlaid on the model. Drag the bar under the view to make it taller.
+  per-patch colour and visibility, XYZ axes, standard views (±X/±Y/±Z and
+  isometric), and the `blockMeshDict` vertex numbers overlaid on the model.
+  Drag the bar under the view to make it taller. `checkMesh` and boundary-
+  condition validation live here too.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 - **FOAMy** — a chat copilot that reads your case files and proposes edits you
   can apply with one click.
@@ -122,7 +124,7 @@ then **Test connection**.
 
 ```bash
 npm install
-npm run electron:build     # → dist-electron/OpenFOAMStudio-v1.2-portable.exe
+npm run electron:build     # → dist-electron/OpenFOAMStudio-v1.3-portable.exe
 ```
 
 Other commands: `npm run dev` (browser, hot reload, port 3000) ·
