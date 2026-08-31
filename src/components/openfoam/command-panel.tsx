@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm-host';
 import {
   Terminal as TerminalIcon, Play, Send, Search, ChevronDown, ChevronRight,
   Grid3x3, Layers, Zap, Trash2, Loader2, Tag
@@ -37,7 +38,12 @@ interface TermState {
   running: boolean;
 }
 
-export default function CommandPanel({ caseName }: { caseName: string }) {
+export default function CommandPanel({ caseName, onScriptStarted }: {
+  caseName: string;
+  /** Called when a case script was launched in the background, so the shell
+   *  can hand the user over to the Monitor tab. */
+  onScriptStarted?: () => void;
+}) {
   const [term, setTerm] = useState<TermState>({
     lines: [], input: '', history: [], historyIdx: -1, running: false,
   });
@@ -201,6 +207,7 @@ export default function CommandPanel({ caseName }: { caseName: string }) {
       });
       if (data.success) toast.success(data.message);
       else toast.error(`Error (exit ${data.exitCode})`);
+      return data.success;
     } catch (e: any) {
       setTerm(prev => {
         const updated = [...prev.lines];
@@ -209,8 +216,51 @@ export default function CommandPanel({ caseName }: { caseName: string }) {
         return { ...prev, lines: updated, running: false };
       });
       toast.error('Error communicating with WSL');
+      return false;
     }
   }, [caseName]);
+
+  // ── Case scripts ──────────────────────────────────────────────────────
+  // Allrun is launched in the BACKGROUND with its output redirected to
+  // log.Allrun, then we hand the user straight to the Monitor tab.
+  //
+  // Why not stream it into this terminal: an OpenFOAM Allrun drives
+  // runApplication/runParallel, which already redirect each application's
+  // real output into its own log.<app>. Allrun's own stdout is just a
+  // handful of `Running blockMesh on <case>` progress lines, so the useful
+  // live view is the Monitor's log tail (1 Hz) over log.Allrun plus the
+  // per-application logs that appear there as the run proceeds.
+  //
+  // The redirect still names the log explicitly even though nothing
+  // preselects it: the user picks it from the Monitor's dropdown, and it
+  // must not end up called log.bash (see below).
+  //
+  // The redirect is written out explicitly rather than relying on the
+  // server's `background: true` auto-redirect: normalizeCommand() rewrites
+  // `./Allrun` to `bash ./Allrun` before the log name is derived, so the
+  // automatic name would come out as log.bash.
+  //
+  // We deliberately do NOT await the request. Confirming that a background
+  // process is alive takes ~8s server-side, and the user should land on the
+  // Monitor immediately. Success/failure still surfaces as a toast.
+  const runAllrun = useCallback(() => {
+    if (!caseName) { toast.error('Select a case first'); return; }
+    void executeCommand('./Allrun > log.Allrun 2>&1 &');
+    onScriptStarted?.();
+  }, [caseName, executeCommand, onScriptStarted]);
+
+  // Allclean deletes every generated result in the case, so it keeps a
+  // confirmation step — previously the user had to press Enter, which acted
+  // as one by accident.
+  const runAllclean = useCallback(async () => {
+    if (!caseName) { toast.error('Select a case first'); return; }
+    const ok = await confirmDialog(
+      `Run Allclean on "${caseName}"? This deletes the generated results of the case.`,
+      { title: 'Run Allclean', confirmLabel: 'Run Allclean', destructive: true }
+    );
+    if (!ok) return;
+    void executeCommand('./Allclean');
+  }, [caseName, executeCommand]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -411,13 +461,15 @@ export default function CommandPanel({ caseName }: { caseName: string }) {
               <div className="flex flex-wrap gap-1">
                 {hasAllrun && (
                   <Button size="sm" variant="default" className="h-5 text-[10px] px-1.5 bg-green-600 hover:bg-green-700"
-                    onClick={() => insertCommand('./Allrun')}>
+                    onClick={runAllrun} disabled={term.running}
+                    title="Run Allrun in the background and follow it in the Monitor tab">
                     <Play className="w-3 h-3 mr-0.5" /> Allrun
                   </Button>
                 )}
                 {hasAllclean && (
                   <Button size="sm" variant="default" className="h-5 text-[10px] px-1.5 bg-red-600 hover:bg-red-700"
-                    onClick={() => insertCommand('./Allclean')}>
+                    onClick={runAllclean} disabled={term.running}
+                    title="Delete the generated results of this case">
                     <Trash2 className="w-3 h-3 mr-0.5" /> Allclean
                   </Button>
                 )}

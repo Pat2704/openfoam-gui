@@ -10,8 +10,9 @@
  * No Chrome, no visible localhost: the user just double-clicks the .exe.
  */
 
-const { app, BrowserWindow, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, dialog, shell, Menu, ipcMain, safeStorage } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -235,6 +236,87 @@ function killServer() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FOAMy LLM configuration store.
+//
+// This CANNOT live in the renderer's localStorage: the server binds to a free
+// port chosen at launch, so the page origin (http://127.0.0.1:<port>) differs
+// on every run, and localStorage is partitioned per origin — the user lost
+// their API key on every restart.
+//
+// So it is kept here, in a file under userData, which is independent of the
+// port. The API key is additionally encrypted with safeStorage (DPAPI on
+// Windows): the ciphertext is bound to the current OS user, so copying the
+// file to another machine yields nothing.
+//
+// The file lives in the user's own profile, never inside the .exe — anyone you
+// send the executable to starts with an empty configuration.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Keys whose value is secret and must be encrypted at rest.
+const SECRET_CONFIG_KEYS = ['foamy-llm-key'];
+
+function configFilePath() {
+  return path.join(app.getPath('userData'), 'foamy-config.json');
+}
+
+function readConfig() {
+  try {
+    const raw = fs.readFileSync(configFilePath(), 'utf-8');
+    const stored = JSON.parse(raw);
+    const out = {};
+    for (const [k, v] of Object.entries(stored)) {
+      if (typeof v !== 'string') continue;
+      if (SECRET_CONFIG_KEYS.includes(k) && v.startsWith('enc:')) {
+        // Written by a build where encryption was available. If it is no longer
+        // available (or this is a different OS user) the value is unreadable —
+        // drop it rather than handing back ciphertext.
+        try {
+          out[k] = safeStorage.decryptString(Buffer.from(v.slice(4), 'base64'));
+        } catch (_) { /* unreadable: treat as not set */ }
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeConfig(config) {
+  const toStore = {};
+  for (const [k, v] of Object.entries(config || {})) {
+    if (typeof v !== 'string') continue;
+    if (SECRET_CONFIG_KEYS.includes(k) && v && safeStorage.isEncryptionAvailable()) {
+      toStore[k] = 'enc:' + safeStorage.encryptString(v).toString('base64');
+    } else {
+      toStore[k] = v;
+    }
+  }
+  const file = configFilePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // 0o600: readable only by the owning user on platforms that honour it.
+  fs.writeFileSync(file, JSON.stringify(toStore, null, 2), { mode: 0o600 });
+}
+
+function registerConfigIpc() {
+  ipcMain.handle('foamy-config:get', () => readConfig());
+  ipcMain.handle('foamy-config:set', (_event, config) => {
+    try {
+      writeConfig(config);
+      return true;
+    } catch (err) {
+      console.error('[main] Failed to write FOAMy config:', err);
+      return false;
+    }
+  });
+  ipcMain.handle('foamy-config:clear', () => {
+    try { fs.unlinkSync(configFilePath()); } catch (_) { /* already gone */ }
+    return true;
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -332,6 +414,8 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+
+  registerConfigIpc();
 
   try {
     await startServer();

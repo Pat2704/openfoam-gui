@@ -43,6 +43,17 @@ export default function Home() {
   const { setCaseName, setActiveFile } = useCaseContext();
   const { theme, setTheme } = useTheme();
   const [activeTab, setActiveTab] = useState('dashboard');
+  // Tabs are mounted lazily on first visit and then kept mounted, hidden
+  // with CSS. Previously each tab was conditionally rendered, so every
+  // switch unmounted the component and re-ran all of its WSL fetches —
+  // which is what made changing section feel slow. Mounting lazily (rather
+  // than all seven up front) keeps startup cheap.
+  const [visitedTabs, setVisitedTabs] = useState<string[]>(['dashboard']);
+  useEffect(() => {
+    setVisitedTabs(prev => (prev.includes(activeTab) ? prev : [...prev, activeTab]));
+  }, [activeTab]);
+  // Tailwind's `hidden` (display:none) rather than unmounting.
+  const paneClass = (id: string) => (activeTab === id ? undefined : 'hidden');
   // Open cases: array of names. First element is the active one.
   const [openCases, setOpenCases] = useState<string[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -75,6 +86,15 @@ export default function Home() {
 
   const handleCaseCreated = () => {
     setActiveTab('dashboard');
+  };
+
+  // A case script (Allrun) was launched in the background: move to the
+  // Monitor so the user can follow it. Deliberately WITHOUT preselecting a
+  // log — log.Allrun does not exist yet at this instant (it is created when
+  // the script writes its first line), and the per-application logs appear
+  // only as the run reaches them. Picking the log is left to the user.
+  const handleScriptStarted = () => {
+    setActiveTab('monitor');
   };
 
   // WSL connection health check — lightweight ping every 10s
@@ -228,40 +248,54 @@ export default function Home() {
 
       {/* Main Content */}
       <main className="flex-1 max-w-[1800px] mx-auto w-full px-3 sm:px-4 py-4">
-        {activeTab === 'dashboard' && (
-          <Dashboard
-            selectedCase={selectedCase}
-            onSelectCase={handleSelectCase}
-            onRefresh={() => {}}
-          />
+        {visitedTabs.includes('dashboard') && (
+          <div className={paneClass('dashboard')}>
+            <Dashboard
+              selectedCase={selectedCase}
+              onSelectCase={handleSelectCase}
+              onRefresh={() => {}}
+            />
+          </div>
         )}
-        {activeTab === 'wizard' && (
-          <CaseWizard onCreated={handleCaseCreated} />
+        {visitedTabs.includes('wizard') && (
+          <div className={paneClass('wizard')}>
+            <CaseWizard onCreated={handleCaseCreated} />
+          </div>
         )}
-        {activeTab === 'editor' && (
-          selectedCase ? (
-            <FileEditor key={selectedCase} caseName={selectedCase} />
-          ) : (
-            <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-              <div className="text-center">
-                <FileCode className="w-12 h-12 mx-auto mb-2 opacity-30" />
-                <p>Select a case from the Dashboard to edit its files</p>
-                <p className="text-xs mt-1">Or create a new case with the Wizard</p>
+        {visitedTabs.includes('editor') && (
+          <div className={paneClass('editor')}>
+            {selectedCase ? (
+              <FileEditor key={selectedCase} caseName={selectedCase} />
+            ) : (
+              <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+                <div className="text-center">
+                  <FileCode className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                  <p>Select a case from the Dashboard to edit its files</p>
+                  <p className="text-xs mt-1">Or create a new case with the Wizard</p>
+                </div>
               </div>
-            </div>
-          )
+            )}
+          </div>
         )}
-        {activeTab === 'commands' && (
-          <CommandPanel key={selectedCase || 'none'} caseName={selectedCase || ''} />
+        {visitedTabs.includes('commands') && (
+          <div className={paneClass('commands')}>
+            <CommandPanel key={selectedCase || 'none'} caseName={selectedCase || ''} onScriptStarted={handleScriptStarted} />
+          </div>
         )}
-        {activeTab === 'monitor' && (
-          <Monitor key={selectedCase || 'none'} caseName={selectedCase || ''} />
+        {visitedTabs.includes('monitor') && (
+          <div className={paneClass('monitor')}>
+            <Monitor key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'monitor'} />
+          </div>
         )}
-        {activeTab === 'applications' && (
-          <OpenFoamBrowser section="applications" />
+        {visitedTabs.includes('applications') && (
+          <div className={paneClass('applications')}>
+            <OpenFoamBrowser section="applications" />
+          </div>
         )}
-        {activeTab === 'src' && (
-          <OpenFoamBrowser section="src" />
+        {visitedTabs.includes('src') && (
+          <div className={paneClass('src')}>
+            <OpenFoamBrowser section="src" />
+          </div>
         )}
       </main>
 

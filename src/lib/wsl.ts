@@ -1501,7 +1501,12 @@ export function executeCommandAsync(
           pidFile = `/tmp/wslgui_bg_${scriptId}.pid`;
 
           const hasRedirect = />|>>|&>|&>>/.test(inner);
-          const commandToken = inner.trim().split(/\s+/)[0] || 'unknown';
+          // Derive the log name from what the USER typed, not from the
+          // normalized form: normalizeCommand() prefixes `./x` and Allrun /
+          // Allclean with `bash `, which would name every such log log.bash.
+          const originalInner = command.trim().replace(/&$/, '').trim();
+          const commandToken = originalInner.split(/\s+/)[0]
+            || inner.trim().split(/\s+/)[0] || 'unknown';
           const cmdName = path.posix.basename(commandToken).replace(/[^A-Za-z0-9._-]/g, '_') || 'command';
           const outputRedirect = hasRedirect ? '' : ` > log.${cmdName} 2>&1`;
 

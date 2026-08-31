@@ -11,6 +11,7 @@ import {
 import { useCaseContext } from '@/lib/case-context';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm-host';
+import { loadFoamyConfig, saveFoamyConfig } from '@/lib/foamy-store';
 
 // ── Provider presets ──
 interface ProviderPreset {
@@ -86,7 +87,7 @@ export default function ChatPopup() {
   const [appliedFiles, setAppliedFiles] = useState<Record<string, AppliedFile>>({});
   const [sessionTokens, setSessionTokens] = useState(0);
 
-  // ── LLM configuration — entirely in localStorage ──
+  // ── LLM configuration — persisted via src/lib/foamy-store.ts ──
   const [llmProvider, setLlmProvider] = useState<string>('');
   const [llmKey, setLlmKey] = useState<string>('');
   const [modelId, setModelId] = useState<string>('');
@@ -110,32 +111,21 @@ export default function ChatPopup() {
   const btnPosRef = useRef({ left: 0, top: 0 });
   const btnInitialized = useRef(false);
 
-  // Load LLM config from localStorage on mount.
-  // Migrate old keys (foamy-model-override → foamy-model-id) for backward compat.
+  // Load the LLM config on mount. In the packaged app this comes from a file
+  // in userData (see src/lib/foamy-store.ts for why localStorage cannot be
+  // used there); in the browser it comes from localStorage. Async either way.
   useEffect(() => {
-    try {
-      const provider = localStorage.getItem('foamy-llm-provider') || '';
-      const key = localStorage.getItem('foamy-llm-key') || '';
-      // Migrate old 'foamy-model-override' key to new 'foamy-model-id'
-      let model = localStorage.getItem('foamy-model-id') || '';
-      if (!model) {
-        model = localStorage.getItem('foamy-model-override') || '';
-        if (model) {
-          try {
-            localStorage.setItem('foamy-model-id', model);
-            localStorage.removeItem('foamy-model-override');
-          } catch { /* ignore */ }
-        }
-      }
-      const bUrl = localStorage.getItem('foamy-base-url') || '';
-      const fmt = localStorage.getItem('foamy-api-format') || '';
-
-      setLlmProvider(provider);
-      setLlmKey(key);
-      setModelId(model);
-      setBaseUrl(bUrl);
-      setApiFormat(fmt);
-    } catch { /* localStorage may be unavailable */ }
+    let cancelled = false;
+    (async () => {
+      const cfg = await loadFoamyConfig();
+      if (cancelled) return;
+      setLlmProvider(cfg['foamy-llm-provider'] || '');
+      setLlmKey(cfg['foamy-llm-key'] || '');
+      setModelId(cfg['foamy-model-id'] || '');
+      setBaseUrl(cfg['foamy-base-url'] || '');
+      setApiFormat(cfg['foamy-api-format'] || '');
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // ── Window positioning ──
@@ -373,15 +363,16 @@ export default function ChatPopup() {
     }
   }, [llmProvider, llmKey, modelId, baseUrl, apiFormat]);
 
-  // ── Save config to localStorage ──
+  // ── Persist config (userData file in the packaged app, localStorage in a
+  //    browser — see src/lib/foamy-store.ts) ──
   const saveConfig = useCallback(() => {
-    try {
-      localStorage.setItem('foamy-llm-provider', llmProvider);
-      localStorage.setItem('foamy-llm-key', llmKey);
-      localStorage.setItem('foamy-model-id', modelId.trim());
-      localStorage.setItem('foamy-base-url', baseUrl.trim());
-      localStorage.setItem('foamy-api-format', apiFormat.trim());
-    } catch {}
+    void saveFoamyConfig({
+      'foamy-llm-provider': llmProvider,
+      'foamy-llm-key': llmKey,
+      'foamy-model-id': modelId.trim(),
+      'foamy-base-url': baseUrl.trim(),
+      'foamy-api-format': apiFormat.trim(),
+    });
     setSavedConfig(true);
     setConnectionStatus('idle');
     setShowSettings(false);
@@ -474,7 +465,7 @@ export default function ChatPopup() {
           fileContext,
           caseFilesContext: shouldSendCaseContext ? caseFilesContext : undefined,
           forceCaseReload: false,
-          // LLM config from the settings panel (localStorage).
+          // LLM config from the settings panel (see src/lib/foamy-store.ts).
           llmProvider: llmProvider || undefined,
           llmKey: llmKey || undefined,
           model: modelId.trim() || undefined,
@@ -907,7 +898,16 @@ export default function ChatPopup() {
                         className="px-2 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-red-500 hover:border-red-300 hover:bg-red-50 dark:hover:bg-red-950/20 text-[11px] transition-all"
                         onClick={() => {
                           setLlmKey('');
-                          try { localStorage.removeItem('foamy-llm-key'); } catch {}
+                          // Persist the removal through the same store the rest
+                          // of the config uses, so it also clears the encrypted
+                          // key in userData when running the packaged app.
+                          void saveFoamyConfig({
+                            'foamy-llm-provider': llmProvider,
+                            'foamy-llm-key': '',
+                            'foamy-model-id': modelId.trim(),
+                            'foamy-base-url': baseUrl.trim(),
+                            'foamy-api-format': apiFormat.trim(),
+                          });
                           toast.info('API key removed');
                           setSavedConfig(false);
                         }}

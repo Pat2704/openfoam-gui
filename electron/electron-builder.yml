@@ -63,8 +63,8 @@ win:
   target:
     - portable
   icon: build/icon.ico
-  artifactName: OpenFOAMStudio-v1.1-portable.${ext}
+  artifactName: OpenFOAMStudio-v1.2-portable.${ext}
 
 portable:
-  artifactName: OpenFOAMStudio-v1.1-portable.${ext}
+  artifactName: OpenFOAMStudio-v1.2-portable.${ext}
   unicode: true

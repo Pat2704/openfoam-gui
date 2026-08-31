@@ -16,7 +16,7 @@ import {
   Shield
 } from 'lucide-react';
 import {
-  LineChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, ReferenceLine
 } from 'recharts';
 import { confirmDialog } from '@/components/ui/confirm-host';
@@ -184,7 +184,13 @@ function formatElapsed(totalSeconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export default function Monitor({ caseName }: { caseName: string }) {
+export default function Monitor({ caseName, active = true }: {
+  caseName: string;
+  /** False while another tab is on screen. The component stays mounted so
+   *  switching back is instant, but all polling stops — otherwise four
+   *  timers would keep spawning wsl.exe in the background forever. */
+  active?: boolean;
+}) {
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [availableLogs, setAvailableLogs] = useState<string[]>([]);
   const [logContent, setLogContent] = useState('');
@@ -202,6 +208,7 @@ export default function Monitor({ caseName }: { caseName: string }) {
   const outputRef = useRef<HTMLPreElement>(null);
   const fastIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const slowIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const logListIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Request deduplication: prevent overlapping fetches ──
@@ -210,7 +217,9 @@ export default function Monitor({ caseName }: { caseName: string }) {
   const fetchingTsRef = useRef(false);
   const fetchingLogListRef = useRef(false);
   // ── Visibility tracking: pause polling when tab is hidden ──
-  const [isVisible, setIsVisible] = useState(true);
+  const [documentVisible, setDocumentVisible] = useState(true);
+  // Poll only when the window is visible AND this tab is the active one.
+  const isVisible = documentVisible && active;
 
   // ── Residual Chart state ──
   const [showResidualChart, setShowResidualChart] = useState(false);
@@ -307,6 +316,23 @@ export default function Monitor({ caseName }: { caseName: string }) {
     setResidualChartLoading(false);
   }, [caseName, selectedLog, availableLogs]);
 
+  // Keep the residual chart on the log the user is actually looking at.
+  // Opening a different log used to leave the chart showing the previous
+  // one's data (or nothing at all), because the chart was only fetched by
+  // its own dropdown / the Show Chart button.
+  //
+  // Depends only on the selection, NOT on fetchResidualChart: that callback
+  // depends on availableLogs, which the 2s log-list poll can replace — and
+  // this effect would then refetch and reparse a 50k-line log every tick.
+  const residualFetchRef = useRef(fetchResidualChart);
+  // Declared before the effect below so it runs first: effects fire in
+  // declaration order, so the ref is always up to date when the refetch fires.
+  useEffect(() => { residualFetchRef.current = fetchResidualChart; }, [fetchResidualChart]);
+  useEffect(() => {
+    if (!showResidualChart || !selectedLog) return;
+    residualFetchRef.current(selectedLog);
+  }, [selectedLog, showResidualChart, caseName]);
+
   // ── Run checkMesh ──
   const runCheckMeshAction = useCallback(async () => {
     if (!caseName) return;
@@ -379,7 +405,11 @@ export default function Monitor({ caseName }: { caseName: string }) {
     fetchingLogsRef.current = false;
   }, [caseName, selectedLog, tailLines]);
 
-  // Fetch available log file list (without content)
+  // Fetch available log file list (without content).
+  // Keeps the previous array when the contents are unchanged: this runs on a
+  // timer, and handing back a new array every tick would change the identity
+  // of every callback that depends on availableLogs, re-firing their effects
+  // for nothing.
   const fetchLogList = useCallback(async () => {
     if (!caseName || fetchingLogListRef.current) return;
     fetchingLogListRef.current = true;
@@ -387,7 +417,9 @@ export default function Monitor({ caseName }: { caseName: string }) {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=listLogs`);
       const data = await res.json();
       const logs: string[] = data.availableLogs || [];
-      setAvailableLogs(logs);
+      setAvailableLogs(prev =>
+        prev.length === logs.length && prev.every((l, i) => l === logs[i]) ? prev : logs
+      );
     } catch { /* silent */ }
     fetchingLogListRef.current = false;
   }, [caseName]);
@@ -533,7 +565,7 @@ export default function Monitor({ caseName }: { caseName: string }) {
 
   // ── Visibility handler: pause all intervals when tab is hidden ──
   useEffect(() => {
-    const onVisChange = () => setIsVisible(!document.hidden);
+    const onVisChange = () => setDocumentVisible(!document.hidden);
     document.addEventListener('visibilitychange', onVisChange);
     return () => document.removeEventListener('visibilitychange', onVisChange);
   }, []);
@@ -560,6 +592,20 @@ export default function Monitor({ caseName }: { caseName: string }) {
     }, 1000);
     return () => { if (fastIntervalRef.current) { clearInterval(fastIntervalRef.current); fastIntervalRef.current = null; } };
   }, [fetchLogs, isRunning, caseName, selectedLog, isVisible]);
+
+  // Auto-refresh: the list of log files every 2s.
+  // A run creates log files as it reaches each application (log.Allrun, then
+  // log.blockMesh, log.foamRun, ...). Without this the dropdown only picked
+  // them up on mount, so new logs appeared only after leaving the tab and
+  // coming back. Cheaper than the log content poll — it is a single find.
+  useEffect(() => {
+    if (!caseName) return;
+    logListIntervalRef.current = setInterval(() => {
+      if (!isVisible) return;
+      fetchLogList();
+    }, 2000);
+    return () => { if (logListIntervalRef.current) { clearInterval(logListIntervalRef.current); logListIntervalRef.current = null; } };
+  }, [caseName, fetchLogList, isVisible]);
 
   // Timestep folders are the most direct indication of solver progress.
   // Poll below one second so newly written times appear almost immediately.
@@ -1037,6 +1083,9 @@ export default function Monitor({ caseName }: { caseName: string }) {
               <LineChartIcon className="w-4 h-4" /> Residual Plot
             </CardTitle>
             <div className="flex items-center gap-2">
+              {/* residualLog is the log the plotted data came from, so it leads:
+                  showing selectedLog while another log's curves are on screen is
+                  what made the chart look broken. */}
               {showResidualChart && availableLogs.length > 0 && (
                 <Select value={residualLog || selectedLog || availableLogs[0]} onValueChange={(v) => fetchResidualChart(v)}>
                   <SelectTrigger className="w-36 h-7 text-xs font-mono">
@@ -1085,7 +1134,12 @@ export default function Monitor({ caseName }: { caseName: string }) {
                 </div>
                 <div className="rounded-lg border border-border/40 p-2 bg-muted/5 min-h-[250px]">
                   <ResponsiveContainer width="100%" height={380}>
-                    <LineChart data={residualData.data} margin={{ top: 10, right: 10, left: 10, bottom: 45 }}>
+                    {/* ComposedChart, not LineChart: this plots an Area (the
+                        gradient fill) together with a Line per field, and
+                        LineChart only accepts Line as a graphical child — the
+                        Area/Line pairs were silently dropped, which is why the
+                        chart drew axes and grid but no curves. */}
+                    <ComposedChart data={residualData.data} margin={{ top: 10, right: 10, left: 10, bottom: 45 }}>
                       <defs>
                         {residualData.fields.map((field, i) => (
                           <linearGradient key={field} id={`fill-${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -1126,27 +1180,38 @@ export default function Monitor({ caseName }: { caseName: string }) {
                         wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
                       />
                       <ReferenceLine y={1e-6} stroke="#22c55e" strokeDasharray="6 3" label={{ value: '1e-6', fontSize: 9, fill: '#22c55e', position: 'left' }} />
-                      {residualData.fields.map((field, i) => (
-                        <React.Fragment key={field}>
-                          <Area
-                            type="monotone"
-                            dataKey={field}
-                            stroke="none"
-                            fill={`url(#fill-${i})`}
-                            connectNulls
-                            isAnimationActive={false}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey={field}
-                            stroke={RESIDUAL_COLORS[i % RESIDUAL_COLORS.length]}
-                            strokeWidth={1.5}
-                            dot={false}
-                            connectNulls
-                          />
-                        </React.Fragment>
-                      ))}
-                    </LineChart>
+                      {/* Flat array, NOT <React.Fragment> per field: Recharts
+                          discovers its graphical children by scanning the chart's
+                          direct children, and a Fragment hides them — the chart
+                          then drew axes, grid and an empty legend but no curves
+                          at all. React flattens arrays, so this is equivalent JSX
+                          without the wrapper element. */}
+                      {residualData.fields.flatMap((field, i) => [
+                        <Area
+                          key={`area-${field}`}
+                          type="monotone"
+                          dataKey={field}
+                          stroke="none"
+                          fill={`url(#fill-${i})`}
+                          connectNulls
+                          isAnimationActive={false}
+                          /* the Area is only the gradient under the curve; without
+                             this it registers a second legend entry per field */
+                          legendType="none"
+                          tooltipType="none"
+                        />,
+                        <Line
+                          key={`line-${field}`}
+                          type="monotone"
+                          dataKey={field}
+                          stroke={RESIDUAL_COLORS[i % RESIDUAL_COLORS.length]}
+                          strokeWidth={1.5}
+                          dot={false}
+                          connectNulls
+                          isAnimationActive={false}
+                        />,
+                      ])}
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               </div>
