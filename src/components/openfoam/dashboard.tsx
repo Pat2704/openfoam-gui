@@ -17,6 +17,7 @@ import {
   AlertTriangle, Copy, BookOpen, FolderTree, HardDrive, Clock,
   FileText, Zap, GitBranch, Pencil, Loader2
 } from 'lucide-react';
+import { confirmDialog } from '@/components/ui/confirm-host';
 
 interface WslStatus {
   running: boolean; name: string; error?: string;
@@ -545,7 +546,7 @@ export default function Dashboard({
                       </Button>
                       <Button
                         size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
-                        onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${c.name}"?`)) handleDeleteCase(c.name); }}
+                        onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete "${c.name}"?`, { title: 'Delete case', confirmLabel: 'Delete', destructive: true })) handleDeleteCase(c.name); }}
                         disabled={deleting === c.name}
                       >
                         <Trash2 className="w-3 h-3" />

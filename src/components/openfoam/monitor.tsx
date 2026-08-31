@@ -19,6 +19,7 @@ import {
   LineChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, ReferenceLine
 } from 'recharts';
+import { confirmDialog } from '@/components/ui/confirm-host';
 
 interface ProcessRow {
   pid: string; user: string; cpu: string; mem: string;
@@ -242,7 +243,7 @@ export default function Monitor({ caseName }: { caseName: string }) {
   const [deletingTimesteps, setDeletingTimesteps] = useState(false);
   const handleDeleteTimesteps = async () => {
     if (timeSteps.length <= 1) { toast.info('No timesteps to delete'); return; }
-    if (!confirm(`Delete ${timeSteps.length - 1} timestep folders (all except 0/)?`)) return;
+    if (!(await confirmDialog(`Delete ${timeSteps.length - 1} timestep folders (all except 0/)?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
     setDeletingTimesteps(true);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
@@ -436,7 +437,7 @@ export default function Monitor({ caseName }: { caseName: string }) {
   };
 
   const killAll = async () => {
-    if (!confirm(`Kill all ${processes.length} OpenFOAM processes?`)) return;
+    if (!(await confirmDialog(`Kill all ${processes.length} OpenFOAM processes?`, { title: 'Kill all processes', confirmLabel: 'Kill all', destructive: true }))) return;
     setKillingAll(true);
     try {
       const res = await fetch('/api/wsl?action=killAll');
@@ -460,7 +461,7 @@ export default function Monitor({ caseName }: { caseName: string }) {
   // other cases keep running untouched.
   const killCase = async (targetCase: string) => {
     if (!targetCase) return;
-    if (!confirm(`Kill all processes of case "${targetCase}"?\nOther cases will not be interrupted.`)) return;
+    if (!(await confirmDialog(`Kill all processes of case "${targetCase}"? Other cases will not be interrupted.`, { title: 'Kill case processes', confirmLabel: 'Kill', destructive: true }))) return;
     setKillingCase(targetCase);
     try {
       const res = await fetch(`/api/wsl?action=killCase&name=${encodeURIComponent(targetCase)}`);

@@ -47,7 +47,22 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "no-useless-escape": "off",
   },
 }, {
-  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills", "upload/**", "download/**", "tool-results/**", "mini-services/**", "tests/**", "scripts/**", "server.js", "reference-versions/**", "source-backup-pre-fix/**"]
+  // Electron main process + Node build scripts: CommonJS by necessity
+  // (Electron's main process and electron-builder hooks are not ESM).
+  files: ["electron/**/*.js"],
+  rules: {
+    "@typescript-eslint/no-require-imports": "off",
+  },
+}, {
+  ignores: [
+    "node_modules/**",
+    ".next/**",
+    "out/**",
+    "dist-electron/**",
+    "electron/resources/**",
+    "next-env.d.ts",
+    "scripts/**",
+  ]
 }];
 
 export default eslintConfig;

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useCaseContext } from '@/lib/case-context';
 import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm-host';
 
 // ── Provider presets ──
 interface ProviderPreset {
@@ -400,10 +401,11 @@ export default function ChatPopup() {
           const currentLines = (readData.content || '').split('\n').length;
           const newLines = content.trim().split('\n').length;
           if (currentLines > 10 && newLines < currentLines * 0.4) {
-            const ok = confirm(
+            const ok = await confirmDialog(
               `\u26a0\ufe0f Warning: the file "${filePath}" has ${currentLines} lines, but the change proposes only ${newLines}.\n\n` +
               `The file may be incomplete and would be ENTIRELY OVERWRITTEN.\n\n` +
-              `Do you want to proceed anyway?`
+              `Do you want to proceed anyway?`,
+              { title: 'Overwrite file?', confirmLabel: 'Overwrite anyway', destructive: true }
             );
             if (!ok) {
               setAppliedFiles(prev => ({ ...prev, [blockKey]: { path: filePath, status: 'idle' } }));
@@ -992,7 +994,9 @@ export default function ChatPopup() {
                         className="absolute z-50 top-full left-0 right-0 mt-1 max-h-44 overflow-y-auto border border-border rounded-lg bg-popover shadow-xl"
                         onClick={e => e.stopPropagation()}
                       >
-                        <div className="sticky top-0 bg-popover/95 backdrop-blur-sm px-2 py-1 border-b border-border/50">
+                        {/* Opaque background (no backdrop-blur on a sticky
+                            element) — see electron/main.js for why. */}
+                        <div className="sticky top-0 bg-popover px-2 py-1 border-b border-border/50">
                           <span className="text-[9px] text-muted-foreground font-medium">{fetchedModels.filter(m => !modelId || m.toLowerCase().includes(modelId.toLowerCase())).length} models</span>
                         </div>
                         {fetchedModels

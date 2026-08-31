@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# electron-builder configuration for the OpenFOAM Studio portable .exe.
+#
+# Run it from the repo root with:
+#
+#     npm run electron:build
+#
+# which is a shortcut for:
+#
+#     node scripts/build-electron.js
+#       -> npm run build                        (next build + static/public copy)
+#       -> node electron/scripts/prepare-resources.js
+#       -> electron-builder --win --projectDir electron \
+#                           --config electron/electron-builder.yml
+#
+# `--projectDir electron` makes electron-builder read electron/package.json
+# (name: openfoam-studio, version 1.1.0, main: main.js) as the app manifest,
+# which is exactly what ends up inside resources/app.asar.
+#
+# Note: the original 6.1.4 build was produced on Linux, where electron-builder
+# cannot run rcedit and therefore leaves the *inner* OpenFOAMStudio.exe with
+# Electron's own version resource ("Electron" / "GitHub, Inc."). Only the outer
+# portable .exe carries the OpenFOAM Studio metadata. Building on Windows will
+# stamp both — harmless either way.
+# ─────────────────────────────────────────────────────────────────────────────
+
+appId: com.openfoamstudio.app
+productName: OpenFOAMStudio
+copyright: Copyright © OpenFOAM Studio
+
+# Pinned to the Electron that shipped in the original 6.1.4 portable build
+# (Electron 31.7.7 / Chromium 126.0.6478.234).
+electronVersion: 31.7.7
+
+asar: true
+
+directories:
+  output: ../dist-electron
+  buildResources: build
+
+# Only these three files go into app.asar — everything else the app needs is
+# shipped unpacked under resources/ (see extraResources below), because the
+# Next.js standalone server has to be executed by a real node.exe and cannot
+# be read from inside an asar archive.
+files:
+  - main.js
+  - preload.js
+  - package.json
+
+extraResources:
+  # Window + taskbar icon. main.js reads it from <resourcesPath>/icon.ico in
+  # production and from electron/build/icon.ico when running unpackaged.
+  - from: build/icon.ico
+    to: icon.ico
+  # Bundled Node runtime that runs the Next.js standalone server.
+  - from: resources/bin
+    to: bin
+  # The assembled Next.js standalone build.
+  - from: resources/standalone
+    to: standalone
+
+win:
+  target:
+    - portable
+  icon: build/icon.ico
+  artifactName: OpenFOAMStudio-v1.1-portable.${ext}
+
+portable:
+  artifactName: OpenFOAMStudio-v1.1-portable.${ext}
+  unicode: true

@@ -124,8 +124,13 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
-      {/* Header */}
-      <header className="border-b bg-card/80 backdrop-blur-sm sticky top-0 z-50">
+      {/* Header — NOTE: keep this background fully opaque (bg-card, not
+          bg-card/80 + backdrop-blur-sm). Under Electron we run with GPU
+          acceleration disabled, and a blurred backdrop on a sticky element
+          forces a full-page repaint in software compositing on every
+          keystroke — which is what made text inputs appear to freeze.
+          See the long comment at the top of electron/main.js. */}
+      <header className="border-b bg-card sticky top-0 z-50">
         <div className="max-w-[1800px] mx-auto px-3 sm:px-4 py-2.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
@@ -260,8 +265,8 @@ export default function Home() {
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="border-t bg-card/40 backdrop-blur-sm py-2 mt-auto">
+      {/* Footer — opaque background for the same reason as the header. */}
+      <footer className="border-t bg-card py-2 mt-auto">
         <div className="max-w-[1800px] mx-auto px-3 sm:px-4 flex items-center justify-between text-[10px] text-muted-foreground gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <Zap className="w-3 h-3 text-primary/70 flex-shrink-0" />

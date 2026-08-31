@@ -1,0 +1,8 @@
+{
+  "name": "openfoam-studio",
+  "version": "1.1.0",
+  "description": "OpenFOAM Studio — desktop GUI for OpenFOAM CFD (Electron wrapper around the Next.js standalone build)",
+  "author": "OpenFOAM Studio",
+  "license": "private",
+  "main": "main.js"
+}

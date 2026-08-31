@@ -13,6 +13,33 @@ import {
   validateRelativePath,
 } from './wsl-input';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EVERY child_process call in this file MUST pass `windowsHide: true`.
+//
+// `wsl.exe` is a console-subsystem program. Under Electron the Next.js server
+// runs as a detached node.exe that main.js spawned with `windowsHide: true`,
+// so that process owns no console. Windows therefore allocates a BRAND NEW
+// console window for each console child it starts — unless the child is
+// created with CREATE_NO_WINDOW, which is exactly what `windowsHide: true`
+// sets.
+//
+// That console window appears for a few milliseconds and takes the foreground.
+// It is barely visible, but it steals native focus from the app window, and
+// Chromium is left with stale input routing: the window still looks focused,
+// yet keystrokes no longer reach the focused <input>. The only way out is a
+// real window focus event — which is why clicking on another app and back
+// "unfreezes" typing (that path hits the refocus handlers in electron/main.js).
+//
+// It shows up right after pressing a command button because the UI refreshes
+// case/status/process data immediately afterwards, firing several synchronous
+// WSL calls in a row.
+//
+// This is invisible when the server runs from a terminal (`npm run dev`,
+// `npm start`): there the children inherit the existing console and no new
+// window is ever created. It only bites in the packaged app — so never drop
+// these flags just because the dev build looks fine.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Distro selection (cached) ──
 // Auto-detects an Ubuntu-like distro from `wsl --list -q`, skipping docker-desktop.
 let distroName: string | null = null;
@@ -24,7 +51,7 @@ function stripDefaultMarker(s: string): string {
 function getDistro(): string {
   if (distroName) return distroName;
   try {
-    const raw = execSync('wsl --list -q');
+    const raw = execSync('wsl --list -q', { windowsHide: true });
     let str: string;
     // WSL on Windows returns UTF-16LE with BOM (FF FE)
     if (raw.length >= 2 && raw[0] === 255 && raw[1] === 254) {
@@ -70,6 +97,7 @@ function runInWsl(cmd: string, timeout = 30000): string {
       encoding: 'utf-8',
       timeout,
       maxBuffer: 0x3200000,
+      windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
     });
   } catch (e: any) {
@@ -84,6 +112,7 @@ function runInWslWithInput(cmd: string, input: string, timeout = 30000): string 
   try {
     return execFileSync('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
       input, encoding: 'utf-8', timeout, maxBuffer: 0x3200000,
+      windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
     });
   } catch (e: any) {
@@ -98,6 +127,7 @@ function runInWslScript(b64: string, timeout = 30000): string {
   try {
     return execFileSync('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
       encoding: 'utf-8', timeout, maxBuffer: 0x3200000,
+      windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
     });
   } catch (e: any) {
@@ -399,7 +429,7 @@ export function wslCheck(): { running: boolean; name: string; error?: string } {
 // ── Public: list WSL distros (excluding docker-desktop) ──
 export function wslListDistros(): string[] {
   try {
-    const raw = execSync('wsl --list -q');
+    const raw = execSync('wsl --list -q', { windowsHide: true });
     let str: string;
     if (raw.length >= 2 && raw[0] === 255 && raw[1] === 254) {
       str = raw.slice(2).toString('utf16le');

@@ -15,6 +15,7 @@ import {
   Loader2, RefreshCw, Search, WrapText, X
 } from 'lucide-react';
 import { useCaseContext } from '@/lib/case-context';
+import { confirmDialog } from '@/components/ui/confirm-host';
 
 // Canonical timestep regex: matches integer (0, 100), decimal (0.001, 1.5),
 // and scientific notation (1e-5, 1.5E-3, 1e+5). Mirrors the WSL-side regex in
@@ -269,7 +270,7 @@ export default function FileEditor({ caseName }: { caseName: string }) {
   const handleDeleteTimesteps = async () => {
     const tsDirs = allDirNames.filter(d => !NON_TIMESTEP_DIRS.has(d) && !d.startsWith('processor') && TIMESTEP_RE.test(d));
     if (tsDirs.length === 0) { toast.info('No timesteps to delete'); return; }
-    if (!confirm(`Delete ${tsDirs.length} timestep folders (all except 0/)?`)) return;
+    if (!(await confirmDialog(`Delete ${tsDirs.length} timestep folders (all except 0/)?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
     setDeletingTimesteps(true);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
@@ -321,7 +322,7 @@ export default function FileEditor({ caseName }: { caseName: string }) {
     if (selectedItems.size === 0) return;
     const items = Array.from(selectedItems);
     const label = items.length <= 3 ? items.join(', ') : `${items.length} items`;
-    if (!confirm(`Delete ${label}?`)) return;
+    if (!(await confirmDialog(`Delete ${label}?`, { title: 'Delete selected', confirmLabel: 'Delete', destructive: true }))) return;
 
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
@@ -450,7 +451,7 @@ export default function FileEditor({ caseName }: { caseName: string }) {
                 <button
                   type="button"
                   className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
-                  onClick={(e) => { e.stopPropagation(); if (confirm(`Delete folder "${item.name}/" and all its contents?`)) deleteSingle(itemPath); }}
+                  onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${item.name}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(itemPath); }}
                   title="Delete folder"
                   aria-label={`Delete folder ${item.name}`}
                 >
@@ -641,7 +642,7 @@ export default function FileEditor({ caseName }: { caseName: string }) {
                         <button
                           type="button"
                           className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); if (confirm(`Delete folder "${dir}/" and all its contents?`)) deleteSingle(dir); }}
+                          onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${dir}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(dir); }}
                           title="Delete folder"
                           aria-label={`Delete folder ${dir}`}
                         >
