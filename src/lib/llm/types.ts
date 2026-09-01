@@ -25,6 +25,26 @@ export interface GenerateResponse {
     completion_tokens: number;
     total_tokens: number;
   };
+  /**
+   * Why the model stopped. 'length' means the answer was CUT at the token
+   * cap — which matters here because FOAMy answers with whole files: a cut
+   * reply is a half-written file, and applying it would truncate the user's
+   * case file. The route turns this into a visible warning.
+   */
+  finishReason?: 'stop' | 'length' | 'other';
+}
+
+/**
+ * Map a provider's stop reason onto the shared vocabulary.
+ *
+ * OpenAI/Groq say `length`, Anthropic says `max_tokens`; both mean the answer
+ * was cut at the output cap.
+ */
+export function normaliseFinishReason(raw: unknown): 'stop' | 'length' | 'other' {
+  const r = typeof raw === 'string' ? raw : '';
+  if (r === 'length' || r === 'max_tokens') return 'length';
+  if (r === 'stop' || r === 'stop_sequence' || r === 'end_turn') return 'stop';
+  return 'other';
 }
 
 export interface LLMProvider {

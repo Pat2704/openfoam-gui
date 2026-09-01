@@ -67,6 +67,12 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: string; // ISO string or locale time
+  /**
+   * The model hit its output cap. Since FOAMy answers with COMPLETE files, a
+   * cut reply means a cut file — applying it would truncate the real one, so
+   * the apply buttons are withheld.
+   */
+  truncated?: boolean;
 }
 
 interface AppliedFile {
@@ -242,6 +248,8 @@ export default function ChatPopup() {
 
   // ── Fetch full case context ──
   const caseContextSentRef = useRef(false);
+  /** Files written since the context was sent, with their current content. */
+  const changedFilesRef = useRef<Map<string, string>>(new Map());
   const loadCaseContext = useCallback(async () => {
     if (!caseName) return;
     setLoadingContext(true);
@@ -416,6 +424,9 @@ export default function ChatPopup() {
       });
       if (res.ok) {
         setAppliedFiles(prev => ({ ...prev, [blockKey]: { path: filePath, status: 'ok' } }));
+        // The case context is sent once per session, so without this the model
+        // keeps reasoning about the file as it was BEFORE its own change.
+        changedFilesRef.current.set(filePath, content);
         if (activeFile && activeFile.path === filePath) {
           setActiveFile({ path: filePath, content });
         }
@@ -436,7 +447,9 @@ export default function ChatPopup() {
       matches.push({ path: m[1].trim(), content: m[2], key: `msg${msgIndex}-${matches.length}` });
     }
     for (const match of matches) {
-      await applyFileChange(match.path, match.content, match.key, true);
+      // NOT skipping the read check: "Apply all" used to bypass the
+      // shrink guard, so the one-click path was the unprotected one.
+      await applyFileChange(match.path, match.content, match.key);
     }
   }, [applyFileChange]);
 
@@ -465,6 +478,9 @@ export default function ChatPopup() {
           fileContext,
           caseFilesContext: shouldSendCaseContext ? caseFilesContext : undefined,
           forceCaseReload: false,
+          changedFiles: changedFilesRef.current.size
+            ? Array.from(changedFilesRef.current, ([path, content]) => ({ path, content }))
+            : undefined,
           // LLM config from the settings panel (see src/lib/foamy-store.ts).
           llmProvider: llmProvider || undefined,
           llmKey: llmKey || undefined,
@@ -477,6 +493,8 @@ export default function ChatPopup() {
       if (shouldSendCaseContext) {
         caseContextSentRef.current = true;
       }
+      // They are in the conversation history now.
+      changedFilesRef.current.clear();
 
       if (data.error) {
         setLastError(data.error);
@@ -486,6 +504,7 @@ export default function ChatPopup() {
           role: 'assistant',
           content: data.reply || 'No response.',
           timestamp: new Date().toLocaleTimeString(),
+          truncated: data.truncated === true,
         }]);
         if (data.tokens?.sessionTotal !== undefined) {
           setSessionTokens(data.tokens.sessionTotal);
@@ -504,6 +523,7 @@ export default function ChatPopup() {
 
   const clearChat = async () => {
     setMessages([]);
+    changedFilesRef.current.clear();
     setCaseFilesContext(null);
     setAppliedFiles({});
     setSessionTokens(0);
@@ -531,7 +551,7 @@ export default function ChatPopup() {
   const canFetchModels = currentPreset?.supportsFetchModels === true && !!effectiveBaseUrl;
 
   // ── Render assistant content ──
-  const renderContent = (text: string, msgIndex?: number) => {
+  const renderContent = (text: string, msgIndex?: number, replyTruncated = false) => {
     const parts = text.split(/(```[\s\S]*?```)/g);
 
     const applyRegex = /```apply:([^\n]+)\n([\s\S]*?)```/g;
@@ -566,13 +586,19 @@ export default function ChatPopup() {
                 </span>
                 <div className="flex items-center gap-1.5">
                   {status === 'idle' && (
-                    <Button
-                      size="sm"
-                      className="h-6 text-[10px] px-2 bg-green-600 hover:bg-green-700 text-white"
-                      onClick={() => applyFileChange(filePath, code, blockKey)}
-                    >
-                      <Check className="w-3 h-3 mr-0.5" /> Apply change
-                    </Button>
+                    replyTruncated ? (
+                      <span className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">
+                        Reply cut off — not applicable
+                      </span>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="h-6 text-[10px] px-2 bg-green-600 hover:bg-green-700 text-white"
+                        onClick={() => applyFileChange(filePath, code, blockKey)}
+                      >
+                        <Check className="w-3 h-3 mr-0.5" /> Apply change
+                      </Button>
+                    )
                   )}
                   {status === 'applying' && (
                     <span className="text-[10px] text-green-700 dark:text-green-400 flex items-center gap-1">
@@ -731,7 +757,19 @@ export default function ChatPopup() {
       }
     }
 
-    if (hasApplyBlocks && applyCount > 1 && msgIndex !== undefined) {
+    if (replyTruncated) {
+      elements.unshift(
+        <div key="truncated" className="mb-2 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-[11px]">
+          <span className="text-amber-600">⚠️</span>
+          <span>
+            This reply hit the model&apos;s output limit and is <strong>incomplete</strong>. Any file
+            below is cut off, so it cannot be applied. Ask for one file at a time, or for a smaller change.
+          </span>
+        </div>
+      );
+    }
+
+    if (hasApplyBlocks && applyCount > 1 && msgIndex !== undefined && !replyTruncated) {
       const allApplied = Array.from({ length: applyCount }, (_, i) =>
         appliedFiles[`msg${msgIndex}-${i}`]?.status === 'ok'
       ).every(Boolean);
@@ -1143,7 +1181,7 @@ export default function ChatPopup() {
                   <div className={`rounded-lg px-3 py-2 text-sm ${
                     msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
                   }`}>
-                    {renderContent(msg.content, i)}
+                    {renderContent(msg.content, i, msg.truncated === true)}
                   </div>
                   {msg.timestamp && (
                     <span className="text-[9px] text-muted-foreground/60 mt-0.5 px-1">{msg.timestamp}</span>

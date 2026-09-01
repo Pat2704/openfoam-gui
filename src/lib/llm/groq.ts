@@ -9,7 +9,7 @@
 // Groq counts max_tokens against the TPM budget. We cap it to 4096
 // and also trim the system prompt to stay within limits.
 
-import { LLMProvider, ProviderConfig, GenerateRequest, GenerateResponse } from './types';
+import { LLMProvider, ProviderConfig, GenerateRequest, GenerateResponse, normaliseFinishReason } from './types';
 
 const DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1';
 
@@ -76,7 +76,7 @@ export class GroqProvider implements LLMProvider {
         throw new Error(`Groq: empty or malformed response. Response: ${JSON.stringify(data).slice(0, 300)}`);
       }
 
-      return { reply, usage: data?.usage };
+      return { reply, usage: data?.usage, finishReason: normaliseFinishReason(data?.choices?.[0]?.finish_reason) };
     } finally {
       clearTimeout(timeout);
     }

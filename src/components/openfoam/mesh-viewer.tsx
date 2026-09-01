@@ -15,7 +15,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { useTheme } from 'next-themes';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -102,39 +102,68 @@ function parseBlockMeshVertices(text: string): { points: THREE.Vector3[]; scale:
   return { points, scale };
 }
 
+/**
+ * On-screen height of a vertex label, in CSS pixels.
+ *
+ * Labels are drawn with size attenuation OFF, so this is what they measure at
+ * every zoom level and on every model — see updateLabelScale.
+ */
+const LABEL_PIXEL_HEIGHT = 16;
+
+/** Texture supersampling, so a label stays crisp on a HiDPI screen. */
+const LABEL_TEXTURE_SCALE = 4;
+
 /** A number rendered to a texture, drawn as a camera-facing sprite. */
 function makeLabelSprite(text: string, colorCss: string, bgCss: string): THREE.Sprite {
-  const pad = 8;
-  const font = 'bold 48px monospace';
+  const s = LABEL_TEXTURE_SCALE;
+  const h = LABEL_PIXEL_HEIGHT * s;
+  const font = `600 ${Math.round(LABEL_PIXEL_HEIGHT * 0.68) * s}px ui-monospace, monospace`;
+  const padX = 4 * s;
+
   const measureCtx = document.createElement('canvas').getContext('2d');
-  let w = 64;
+  let textW = h * 0.6;
   if (measureCtx) {
     measureCtx.font = font;
-    w = Math.ceil(measureCtx.measureText(text).width) + pad * 2;
+    textW = measureCtx.measureText(text).width;
   }
-  const h = 64;
+  const w = Math.ceil(Math.max(textW + padX * 2, h));
 
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
   if (ctx) {
+    // A filled pill keeps the number readable against the mesh in both themes;
+    // the rounded shape and thin outline stop a row of labels merging into one
+    // block when several vertices land close together on screen.
+    ctx.beginPath();
+    ctx.roundRect(0, 0, w, h, h / 2);
+    ctx.fillStyle = bgCss;
+    ctx.globalAlpha = 0.82;
+    ctx.fill();
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = Math.max(1, s * 0.6);
+    ctx.strokeStyle = colorCss;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.font = font;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    // A filled pill keeps the number readable against the mesh in both themes.
-    ctx.fillStyle = bgCss;
-    ctx.globalAlpha = 0.8;
-    ctx.fillRect(0, 0, w, h);
-    ctx.globalAlpha = 1;
     ctx.fillStyle = colorCss;
-    ctx.fillText(text, w / 2, h / 2 + 2);
+    ctx.fillText(text, w / 2, h / 2 + s * 0.5);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
+  // The texture is drawn several times larger than it is displayed, so it is
+  // always minified: mipmaps are what keep the digits from crawling.
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
     map: tex, depthTest: false, transparent: true,
+    // Sized in screen space rather than world units: a label keeps the same
+    // pixel size however close the camera gets, and however large the case is.
+    sizeAttenuation: false,
   }));
   sprite.renderOrder = 999;
   sprite.userData.aspect = w / h;
@@ -200,7 +229,7 @@ export default function MeshViewer({ caseName, active = true }: {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
+  const controlsRef = useRef<TrackballControls | null>(null);
   const groupRef = useRef<THREE.Group | null>(null);
   const axesRef = useRef<THREE.AxesHelper | null>(null);
   const labelsRef = useRef<THREE.Group | null>(null);
@@ -255,6 +284,32 @@ export default function MeshViewer({ caseName, active = true }: {
     if (r && s && c) r.render(s, c);
   }, []);
 
+  /**
+   * Size the vertex labels in SCREEN space.
+   *
+   * The sprites have size attenuation off, which makes three read their scale
+   * as a fraction of the viewport: a sprite of scale.y = k covers 0.5 * f * k
+   * of the viewport height, where f = projectionMatrix[5] = 1 / tan(fov / 2).
+   * Inverting that pins every label to LABEL_PIXEL_HEIGHT on screen.
+   *
+   * The old sizing was in world units and computed once per fit, so the labels
+   * grew with the mesh as you zoomed in — a couple of scroll clicks and the
+   * numbers covered the model.
+   */
+  const updateLabelScale = useCallback(() => {
+    const cam = cameraRef.current, mount = mountRef.current, labels = labelsRef.current;
+    if (!cam || !mount || !labels) return;
+    const viewportH = mount.clientHeight;
+    const f = cam.projectionMatrix.elements[5];
+    if (viewportH === 0 || !f) return;
+    const scaleY = (2 * LABEL_PIXEL_HEIGHT) / (viewportH * f);
+    for (const child of labels.children) {
+      const sp = child as THREE.Sprite;
+      const aspect = (sp.userData.aspect as number) || 1;
+      sp.scale.set(scaleY * aspect, scaleY, 1);
+    }
+  }, []);
+
   /** Paint the scene with the app's own background token, light or dark. */
   const applyThemeColors = useCallback(() => {
     const scene = sceneRef.current;
@@ -289,12 +344,59 @@ export default function MeshViewer({ caseName, active = true }: {
     fill.position.set(-1, -0.6, -1);
     scene.add(fill);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.12;
+    // TrackballControls, not OrbitControls: Orbit keeps the camera's up vector
+    // pinned and clamps the polar angle to [0, pi], so dragging upwards stops
+    // dead once you reach the top of the model and the view can never be
+    // rolled. Trackball carries the up vector round with the camera, giving the
+    // unconstrained rotation ParaView's default camera has.
+    const controls = new TrackballControls(camera, renderer.domElement);
+    // Trackball measures a drag against the canvas radius while Orbit mapped a
+    // full-width drag to a full turn; 3.0 lands on roughly the old feel. Pan is
+    // 2 * tan(fov / 2), which keeps a right-drag tracking the pointer 1:1.
+    controls.rotateSpeed = 3.0;
+    controls.zoomSpeed = 1.2;
+    controls.panSpeed = 0.8;
+    controls.staticMoving = false;
+    controls.dynamicDampingFactor = 0.15;
+    // Trackball's A/S/D shortcuts are bound on WINDOW, not on the canvas, so
+    // they would fire while the user types in the editor. Disabled.
+    controls.keys = ['', '', ''];
     // Only schedule a frame — never call controls.update() from here, see the
     // comment on requestRender above.
     controls.addEventListener('change', requestRender);
+
+    // Trackball caches the canvas rectangle instead of reading it per gesture,
+    // so it has to be refreshed whenever the canvas moves. Capture phase on the
+    // parent runs before the controls' own pointerdown handler on the canvas,
+    // which is where the first sample of a drag is taken.
+    const syncControlsRect = () => controls.handleResize();
+    mount.addEventListener('pointerdown', syncControlsRect, true);
+
+    // Rendering stays on demand, with one exception: while a gesture is in
+    // flight we drive a real rAF loop.
+    //
+    // TrackballControls only emits 'change' once the camera has moved further
+    // than its own epsilon — distanceToSquared > 1e-6, i.e. 1e-3 world units.
+    // An OpenFOAM case is often centimetres across, so a slow drag moves the
+    // camera less than that per frame and the view would appear to freeze
+    // mid-gesture. The loop stops shortly after the gesture ends, so an idle
+    // viewer still costs nothing.
+    let interacting = false;
+    let tailUntil = 0;
+    let spinId: number | null = null;
+    const spin = () => {
+      if (!interacting && performance.now() > tailUntil) { spinId = null; return; }
+      spinId = requestAnimationFrame(spin);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    const kickSpin = () => { if (spinId === null) spinId = requestAnimationFrame(spin); };
+    const onControlStart = () => { interacting = true; kickSpin(); };
+    // A wheel event fires start and end back to back, so the tail is also what
+    // carries the damping out after a zoom.
+    const onControlEnd = () => { interacting = false; tailUntil = performance.now() + 600; kickSpin(); };
+    controls.addEventListener('start', onControlStart);
+    controls.addEventListener('end', onControlEnd);
 
     const group = new THREE.Group();
     scene.add(group);
@@ -326,6 +428,8 @@ export default function MeshViewer({ caseName, active = true }: {
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      controls.handleResize();
+      updateLabelScale();
       requestRender();
     };
     resize();
@@ -345,6 +449,8 @@ export default function MeshViewer({ caseName, active = true }: {
       themeObserver.disconnect();
       ro.disconnect();
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      if (spinId !== null) cancelAnimationFrame(spinId);
+      mount.removeEventListener('pointerdown', syncControlsRect, true);
       controls.dispose();
       for (const root of [group, labels]) {
         root.traverse(o => {
@@ -360,7 +466,7 @@ export default function MeshViewer({ caseName, active = true }: {
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       rendererRef.current = null;
     };
-  }, [requestRender]);
+  }, [requestRender, updateLabelScale]);
 
   // Belt and braces alongside the MutationObserver above: deferred by a frame
   // so the class is on <html> by the time we sample the token.
@@ -384,24 +490,15 @@ export default function MeshViewer({ caseName, active = true }: {
     // Axes long enough to read against the model.
     axesRef.current?.scale.setScalar(radius * 1.4);
 
-    // Sprites are sized in world units, so they must track the model's scale.
-    // 0.10 of the radius turned out to be unreadable on a small model; this is
-    // sized so the digits stay legible without swamping a coarse block mesh.
-    const labelScale = radius * 0.18;
-    labelsRef.current?.children.forEach(s => {
-      const sp = s as THREE.Sprite;
-      const aspect = (sp.userData.aspect as number) || 1;
-      sp.scale.set(labelScale * aspect, labelScale, 1);
-    });
-
     cam.near = Math.max(dist / 1000, 1e-6);
     cam.far = dist * 100;
     cam.position.set(center.x + dist * 0.6, center.y + dist * 0.5, center.z + dist * 0.7);
     cam.updateProjectionMatrix();
     ctr.target.copy(center);
     ctr.update();
+    updateLabelScale();
     renderNow();
-  }, [renderNow]);
+  }, [renderNow, updateLabelScale]);
   // Kept in a ref so loadMesh can frame the model without listing fitToView
   // as a dependency (which would rebuild loadMesh on every camera change).
   useEffect(() => { fitRef.current = fitToView; }, [fitToView]);
@@ -556,7 +653,11 @@ export default function MeshViewer({ caseName, active = true }: {
       setLabelCount(points.length);
       labels.visible = true;
       setShowLabels(true);
-      fitRef.current?.();   // re-scales the sprites for the current model size
+      // Size the new sprites for the current viewport. Deliberately NOT a
+      // re-fit: the labels are screen-sized now, and refitting would throw away
+      // whatever view the user had set up before asking for the numbering.
+      updateLabelScale();
+      renderNow();
       toast.success(
         `${points.length} blockMeshDict vertices` + (scale !== 1 ? ` (scale ${scale})` : '')
       );
@@ -567,7 +668,7 @@ export default function MeshViewer({ caseName, active = true }: {
     } finally {
       setLabelsLoading(false);
     }
-  }, [caseName]);
+  }, [caseName, updateLabelScale, renderNow]);
 
   const toggleLabels = useCallback(() => {
     const labels = labelsRef.current;
@@ -641,9 +742,11 @@ export default function MeshViewer({ caseName, active = true }: {
       r.setSize(w, h, false);
       c.aspect = w / h;
       c.updateProjectionMatrix();
+      controlsRef.current?.handleResize();
+      updateLabelScale();
       renderNow();
     }
-  }, [active, renderNow]);
+  }, [active, renderNow, updateLabelScale]);
 
   // Switching case invalidates what is on screen.
   useEffect(() => {
@@ -791,7 +894,7 @@ export default function MeshViewer({ caseName, active = true }: {
 
           {hasMesh && (
             <p className="mt-2 text-[10px] text-muted-foreground">
-              Drag to rotate · scroll to zoom · right-drag to pan · drag the bar below to resize
+              Drag to rotate freely · scroll or middle-drag to zoom · right-drag to pan · drag the bar below to resize
             </p>
           )}
         </CardContent>

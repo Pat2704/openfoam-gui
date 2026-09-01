@@ -26,7 +26,7 @@ A short demo is in [`screenshots/gif_openfoam_studio.mp4`](screenshots/gif_openf
 
 ## Install
 
-1. Download **`OpenFOAMStudio-v1.3-portable.exe`** from the [Releases](../../releases) page.
+1. Download **`OpenFOAMStudio-v1.4-portable.exe`** from the [Releases](../../releases) page.
 2. Put it anywhere (Desktop, a USB stick — it writes nothing to the registry).
 3. Double-click it.
 
@@ -124,7 +124,7 @@ then **Test connection**.
 
 ```bash
 npm install
-npm run electron:build     # → dist-electron/OpenFOAMStudio-v1.3-portable.exe
+npm run electron:build     # → dist-electron/OpenFOAMStudio-v1.4-portable.exe
 ```
 
 Other commands: `npm run dev` (browser, hot reload, port 3000) ·

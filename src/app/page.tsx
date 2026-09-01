@@ -57,6 +57,8 @@ export default function Home() {
   useEffect(() => { setMounted(true); }, []);
   const isDark = mounted && resolvedTheme === 'dark';
   const [activeTab, setActiveTab] = useState('dashboard');
+  /** Bumped whenever the case list changes from outside the Dashboard. */
+  const [caseListVersion, setCaseListVersion] = useState(0);
   // Tabs are mounted lazily on first visit and then kept mounted, hidden
   // with CSS. Previously each tab was conditionally rendered, so every
   // switch unmounted the component and re-ran all of its WSL fetches —
@@ -99,6 +101,9 @@ export default function Home() {
   };
 
   const handleCaseCreated = () => {
+    // The Dashboard caches its case list, so tell it to refetch: otherwise the
+    // freshly created case is missing from the list it lands on.
+    setCaseListVersion(v => v + 1);
     setActiveTab('dashboard');
   };
 
@@ -268,6 +273,7 @@ export default function Home() {
               selectedCase={selectedCase}
               onSelectCase={handleSelectCase}
               onRefresh={() => {}}
+              refreshSignal={caseListVersion}
             />
           </div>
         )}

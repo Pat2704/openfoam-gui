@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getOpenFOAMVersion, readCaseFilesDeep } from '@/lib/wsl';
+import { getOpenFOAMVersion, readCaseFilesDeep, type CaseFileSlice } from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
 import { validateCaseName } from '@/lib/wsl-input';
 import { resolveLLMConfig, fetchModels } from '@/lib/llm';
@@ -33,7 +33,76 @@ The user can apply the changes with one click. NEVER send only the modified piec
 You can propose changes to multiple files in the same response (multiple apply blocks).
 You can create new files using the same apply format with a new path.
 
-Reply in English, concisely and technically.`;
+TRUNCATED FILES (HARD RULE):
+A file in the case context may be marked "TRUNCATED — first N of M bytes". You are seeing only its beginning.
+NEVER emit an apply: block for a truncated file: rewriting it whole would silently DELETE the part you were not shown.
+Instead, name the file and ask the user to open it in the File Editor — an open file is sent to you in full — or to make the change there themselves.
+The same rule applies to any file you have not been shown at all: ask for it, do not reconstruct it from memory.
+
+LENGTH:
+If a complete file would be too long to fit in one reply, say so and propose a different approach (for example changing a smaller file, or splitting the work across several replies, one file each). A reply that gets cut off mid-file is worse than no reply, because the user may apply it.
+
+Reply in the same language the user writes in, concisely and technically.`;
+}
+
+/**
+ * Total size of the case context, in characters.
+ *
+ * Roughly 60k tokens — large enough for any normal case (a few dozen
+ * dictionaries rarely reach 100 KB) and small enough that a case carrying an
+ * ASCII STL in constant/triSurface cannot quietly blow up the request. What
+ * does not fit is LISTED rather than dropped in silence.
+ */
+const CASE_CONTEXT_BUDGET = 240_000;
+
+/**
+ * Turn the raw file slices into the block that goes into the prompt.
+ *
+ * Two things matter here, and both exist because FOAMy replies with whole
+ * files: a file that was cut must SAY it was cut, and a file that did not fit
+ * at all must still be mentioned, so the model asks for it instead of
+ * inventing it.
+ */
+function buildCaseContext(files: CaseFileSlice[]): {
+  context: string;
+  stats: { included: number; truncated: number; omitted: number; bytes: number };
+} {
+  // Small dictionaries first: the ones that describe the case are what matter,
+  // and a single huge file should never push twenty small ones out.
+  const ordered = [...files].sort((a, b) => a.content.length - b.content.length);
+
+  const parts: string[] = [];
+  const omitted: CaseFileSlice[] = [];
+  let used = 0;
+  let truncated = 0;
+
+  for (const f of ordered) {
+    const header = f.truncated
+      ? `=== ${f.path} (TRUNCATED — first ${f.content.length} of ${f.bytes} bytes) ===`
+      : `=== ${f.path} (${f.bytes} bytes) ===`;
+    const block = `${header}\n${f.content}`;
+    if (used + block.length > CASE_CONTEXT_BUDGET) { omitted.push(f); continue; }
+    parts.push(block);
+    used += block.length;
+    if (f.truncated) truncated++;
+  }
+
+  // Back to a readable order for the model.
+  parts.sort();
+  const included = parts.length;
+
+  if (omitted.length) {
+    parts.push(
+      `=== ${omitted.length} file(s) NOT included (context budget) ===\n` +
+      omitted.map(f => `${f.path} (${f.bytes} bytes)`).join('\n') +
+      `\nAsk the user to open one of these in the File Editor if you need it.`
+    );
+  }
+
+  return {
+    context: parts.join('\n\n'),
+    stats: { included, truncated, omitted: omitted.length, bytes: used },
+  };
 }
 
 // POST /api/chat
@@ -62,8 +131,7 @@ export async function POST(req: NextRequest) {
     if (body?.action === 'readCaseFiles') {
       const caseName = validateCaseName(body.caseName);
       const files = readCaseFilesDeep(caseName);
-      const context = files.map(f => `=== ${f.path} ===\n${f.content}`).join('\n\n');
-      return NextResponse.json({ success: true, context });
+      return NextResponse.json({ success: true, ...buildCaseContext(files) });
     }
     if (body?.action === 'readFile') {
       const caseName = validateCaseName(body.caseName);
@@ -136,6 +204,21 @@ export async function POST(req: NextRequest) {
       sessionCaseContext.set(sessionId, true);
     }
 
+    // Files the user applied since that context was sent. Without this the
+    // model keeps reasoning about the version it was shown at the start of the
+    // session — including changes it proposed itself and the user accepted.
+    const changedFiles: unknown = body?.changedFiles;
+    if (Array.isArray(changedFiles) && changedFiles.length) {
+      const rendered = changedFiles
+        .filter((f): f is { path: string; content: string } =>
+          !!f && typeof f.path === 'string' && typeof f.content === 'string')
+        .map(f => `=== ${f.path} (current content) ===\n${f.content}`)
+        .join('\n\n');
+      if (rendered) {
+        sections.push(`[Files changed since that context — this is what is on disk NOW]\n${rendered}`);
+      }
+    }
+
     sections.push(message);
     const userContent = sections.join('\n\n');
 
@@ -151,7 +234,7 @@ export async function POST(req: NextRequest) {
     // max_completion_tokens, GPT-4.x uses max_tokens, etc.).
 
 
-    const { reply, usage } = await llmConfig.provider.generate({
+    const { reply, usage, finishReason } = await llmConfig.provider.generate({
       model: llmConfig.model,
       messages,
       maxTokens: 20000,
@@ -173,6 +256,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       reply,
+      // The client refuses to apply file blocks from a cut-off reply: with the
+      // whole-file format, a truncated answer is a truncated FILE.
+      truncated: finishReason === 'length',
       tokens: {
         prompt: usage?.prompt_tokens || 0,
         completion: usage?.completion_tokens || 0,

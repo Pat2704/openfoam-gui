@@ -7,6 +7,7 @@ import {
   createDirectory,
   deleteFile,
   deletePath,
+  renamePath,
   deleteAllTimesteps,
   cloneCase,
   getCaseLog,
@@ -98,6 +99,7 @@ export async function GET(
 //   { action: 'mkdir', dirPath }              → { success }
 //   { action: 'deleteFile', path }            → { success }
 //   { action: 'deletePath', path }            → { success }
+//   { action: 'rename', path, newPath }       → { success, path }
 //   { action: 'deleteBatch', paths }          → { success, deleted }
 //   { action: 'deleteTimesteps' }             → { success, message, deleted, count }
 //   { action: 'clone', newName }              → { success, caseName }
@@ -128,6 +130,10 @@ export async function POST(
         deletePath(caseName, body.path);
         return NextResponse.json({ success: true });
       }
+      case 'rename': {
+        const newPath = renamePath(caseName, body.path, body.newPath);
+        return NextResponse.json({ success: true, path: newPath });
+      }
       case 'deleteBatch': {
         const paths: string[] = Array.isArray(body.paths) ? body.paths : [];
         let deleted = 0;
@@ -156,7 +162,7 @@ export async function POST(
       }
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: write, mkdir, deleteFile, deletePath, deleteBatch, deleteTimesteps, clone' },
+          { error: 'Invalid action. Use: write, mkdir, rename, deleteFile, deletePath, deleteBatch, deleteTimesteps, clone' },
           { status: 400 }
         );
     }

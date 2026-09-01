@@ -14,7 +14,7 @@
 // support extended thinking. If the model returns only thinking blocks (no text),
 // we retry with thinking explicitly enabled.
 
-import { LLMProvider, ProviderConfig, GenerateRequest, GenerateResponse } from './types';
+import { LLMProvider, ProviderConfig, GenerateRequest, GenerateResponse, normaliseFinishReason } from './types';
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 
@@ -151,6 +151,8 @@ export class AnthropicProvider implements LLMProvider {
           completion_tokens: outputTokens,
           total_tokens: inputTokens + outputTokens,
         },
+        // Anthropic calls it stop_reason, and 'max_tokens' is its 'length'.
+        finishReason: normaliseFinishReason(data?.stop_reason),
       };
     } finally {
       clearTimeout(timeout);

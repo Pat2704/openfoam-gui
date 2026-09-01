@@ -10,7 +10,7 @@
 // This provider detects the model family and sends the correct parameters,
 // so both GPT-4.1 and GPT-5 work without code changes.
 
-import { LLMProvider, ProviderConfig, GenerateRequest, GenerateResponse, ChatMessage } from './types';
+import { LLMProvider, ProviderConfig, GenerateRequest, GenerateResponse, ChatMessage, normaliseFinishReason } from './types';
 
 // Models that use the "reasoning" parameter set (max_completion_tokens, no temperature).
 // Detected by name prefix: o1-*, o3-*, o4-*, gpt-5*.
@@ -85,7 +85,7 @@ export class OpenAIProvider implements LLMProvider {
         throw new Error(`OpenAI: empty or malformed response. Response: ${JSON.stringify(data).slice(0, 300)}`);
       }
 
-      return { reply, usage: data?.usage };
+      return { reply, usage: data?.usage, finishReason: normaliseFinishReason(data?.choices?.[0]?.finish_reason) };
     } finally {
       clearTimeout(timeout);
     }

@@ -77,8 +77,16 @@ export function ConfirmHost() {
 
   const current = queue[0] || null
 
+  // Radix animates the dialog out, and during that ~150ms `current` is already
+  // null — the fallback title with an empty body, so the box the user just
+  // answered flashes blank as it fades. Hold on to the answered entry for the
+  // exit; `open` still follows `current`, so nothing stays interactive.
+  const [closing, setClosing] = React.useState<PendingConfirm | null>(null)
+  const shown = current ?? closing
+
   const settle = React.useCallback((value: boolean) => {
     const entry = queue.shift()
+    setClosing(entry ?? null)
     if (entry) entry.resolve(value)
     notify()
   }, [])
@@ -93,24 +101,24 @@ export function ConfirmHost() {
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{current?.options.title ?? "Confirm"}</AlertDialogTitle>
+          <AlertDialogTitle>{shown?.options.title ?? "Confirm"}</AlertDialogTitle>
           <AlertDialogDescription className="whitespace-pre-wrap">
-            {current?.message ?? ""}
+            {shown?.message ?? ""}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => settle(false)}>
-            {current?.options.cancelLabel ?? "Cancel"}
+            {shown?.options.cancelLabel ?? "Cancel"}
           </AlertDialogCancel>
           <AlertDialogAction
             className={
-              current?.options.destructive === false
+              shown?.options.destructive === false
                 ? undefined
                 : "bg-destructive text-white hover:bg-destructive/90"
             }
             onClick={() => settle(true)}
           >
-            {current?.options.confirmLabel ?? "Confirm"}
+            {shown?.options.confirmLabel ?? "Confirm"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

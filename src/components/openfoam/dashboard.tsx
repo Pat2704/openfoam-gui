@@ -39,9 +39,17 @@ interface TutorialCategory { name: string; path: string; }
 interface TutorialCase { name: string; fullPath: string; }
 
 export default function Dashboard({
-  selectedCase, onSelectCase, onRefresh
+  selectedCase, onSelectCase, onRefresh, refreshSignal = 0
 }: {
-  selectedCase: string | null; onSelectCase: (name: string) => void; onRefresh: () => void;
+  selectedCase: string | null;
+  onSelectCase: (name: string) => void;
+  onRefresh: () => void;
+  /**
+   * Bumped by the page when something outside this component changed the case
+   * list — creating a case in the wizard, for one. Without it the user lands
+   * back here on a stale list and thinks the creation failed.
+   */
+  refreshSignal?: number;
 }) {
   const [status, setStatus] = useState<WslStatus | null>(null);
   const [cases, setCases] = useState<CaseSummary[]>([]);
@@ -134,6 +142,15 @@ export default function Dashboard({
   useEffect(() => {
     if (status?.running) fetchTutorials();
   }, [status?.running, fetchTutorials]);
+
+  // Refetch on demand, past the 2s throttle — the case really was just created.
+  const seenSignal = useRef(refreshSignal);
+  useEffect(() => {
+    if (seenSignal.current === refreshSignal) return;
+    seenSignal.current = refreshSignal;
+    lastFetchRef.current.status = 0;
+    void fetchAll(true);
+  }, [refreshSignal, fetchAll]);
 
   const handleSetDistro = async () => {
     if (!distroInput.trim()) return;

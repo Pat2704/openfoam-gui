@@ -12,8 +12,10 @@ import {
   Plus, Trash2, FileCode, FolderPlus, Save, Copy,
   FolderTree, ChevronDown, ChevronRight, File, FileText,
   RotateCcw, Folder, CheckSquare, Square, XCircle, Timer,
-  Loader2, RefreshCw, Search, WrapText, X
+  Loader2, RefreshCw, Search, WrapText, X, Pencil
 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 
@@ -66,6 +68,23 @@ export default function FileEditor({ caseName }: { caseName: string }) {
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [deletingTimesteps, setDeletingTimesteps] = useState(false);
+
+  // Rename / move. The dialog edits the FULL relative path, so renaming a file
+  // and moving it to another folder are the same operation — and there is no
+  // ambiguity about what a '/' in the box means.
+  const [renameTarget, setRenameTarget] = useState<{ path: string; isDir: boolean } | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  // Radix animates the dialog out over ~150ms, and `renameTarget` is null by
+  // then — long enough to see the title and the "Was …" hint blank out as it
+  // fades. Keep the last one for the exit; `open` still follows renameTarget.
+  const [closingRename, setClosingRename] = useState<{ path: string; isDir: boolean } | null>(null);
+  const shownRename = renameTarget ?? closingRename;
+
+  const closeRename = useCallback(() => {
+    setClosingRename(renameTarget);
+    setRenameTarget(null);
+  }, [renameTarget]);
 
   // Scroll to top on mount
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }, []);
@@ -318,6 +337,55 @@ export default function FileEditor({ caseName }: { caseName: string }) {
     } catch { toast.error('Error'); }
   };
 
+  const startRename = (path: string, isDir: boolean) => {
+    setRenameTarget({ path, isDir });
+    setRenameValue(path);
+  };
+
+  const doRename = async () => {
+    if (!renameTarget) return;
+    const from = renameTarget.path;
+    const to = renameValue.trim().replace(/^\/+|\/+$/g, '');
+    if (!to) { toast.error('Enter a name'); return; }
+    if (to === from) { closeRename(); return; }
+
+    setRenaming(true);
+    try {
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'rename', path: from, newPath: to }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error || 'Rename failed'); return; }
+
+      // The content did not change, so carry the cached text over to the new
+      // path instead of making the next open go back to WSL for it.
+      const cached = fileCacheRef.current.get(from);
+      fileCacheRef.current.delete(from);
+      if (cached !== undefined) fileCacheRef.current.set(to, cached);
+
+      if (currentFile === from) {
+        setCurrentFile(to);
+        setActiveFile({ path: to, content: fileContent });
+      } else if (currentFile && currentFile.startsWith(from + '/')) {
+        // The open file lived inside a renamed folder.
+        const moved = to + currentFile.slice(from.length);
+        setCurrentFile(moved);
+        setActiveFile({ path: moved, content: fileContent });
+      }
+
+      closeRename();
+      toast.success(`Renamed: ${from} → ${to}`);
+      // Forced refresh: both the old and the new parent listing changed, and a
+      // renamed folder invalidates every cached path under it.
+      await fetchCaseInfo(true);
+    } catch {
+      toast.error('Rename failed');
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   const deleteSelected = async () => {
     if (selectedItems.size === 0) return;
     const items = Array.from(selectedItems);
@@ -446,6 +514,17 @@ export default function FileEditor({ caseName }: { caseName: string }) {
                   <Badge variant="secondary" className="text-[10px] px-1 ml-auto flex-shrink-0">{subItems.length}</Badge>
                 )}
               </button>
+              {/* Rename works on any folder, standard ones included: a case can
+                  legitimately need 0.orig, and moving a folder is a rename. */}
+              <button
+                type="button"
+                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
+                onClick={(e) => { e.stopPropagation(); startRename(itemPath, true); }}
+                title="Rename or move folder"
+                aria-label={`Rename folder ${item.name}`}
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
               {/* Delete button for directories (first-level non-standard get icon, nested dirs too) */}
               {(depth === 0 && !isStandardDir) || depth > 0 ? (
                 <button
@@ -498,6 +577,15 @@ export default function FileEditor({ caseName }: { caseName: string }) {
             >
               <FileText className="w-3 h-3 text-blue-400 flex-shrink-0" />
               <span className="truncate">{item.name}</span>
+            </button>
+            <button
+              type="button"
+              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
+              onClick={(e) => { e.stopPropagation(); startRename(itemPath, false); }}
+              title="Rename or move file"
+              aria-label={`Rename ${item.name}`}
+            >
+              <Pencil className="w-3 h-3" />
             </button>
             <Trash2
               className="w-3 h-3 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 cursor-pointer"
@@ -744,6 +832,9 @@ export default function FileEditor({ caseName }: { caseName: string }) {
                 {isModified && <Badge variant="secondary" className="text-[10px] text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30">modified</Badge>}
               </div>
               <div className="flex gap-1">
+                <Button size="sm" variant="ghost" onClick={() => currentFile && startRename(currentFile, false)} title="Rename or move this file">
+                  <Pencil className="w-3 h-3 mr-1" /> Rename
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => { setFileContent(originalContent); toast.info('Changes discarded'); }}>
                   <RotateCcw className="w-3 h-3 mr-1" /> Undo
                 </Button>
@@ -851,6 +942,39 @@ export default function FileEditor({ caseName }: { caseName: string }) {
           </div>
         )}
       </Card>
+
+      {/* ═══ Rename / move ═══ */}
+      <Dialog open={renameTarget !== null} onOpenChange={(open) => { if (!open) closeRename(); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Rename {shownRename?.isDir ? 'folder' : 'file'}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 pt-1">
+            <div>
+              <Label className="text-xs">Path, relative to the case</Label>
+              <Input
+                autoFocus
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onFocus={(e) => e.currentTarget.select()}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !renaming) void doRename(); }}
+                className="font-mono text-sm mt-0.5"
+                spellCheck={false}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Was <span className="font-mono">{shownRename?.path}</span>. Changing the folder part
+                moves it; an existing destination is refused.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={closeRename} disabled={renaming}>Cancel</Button>
+              <Button onClick={doRename} disabled={renaming || !renameValue.trim() || renameValue.trim() === renameTarget?.path}>
+                {renaming ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Renaming…</> : <><Pencil className="w-3 h-3 mr-1" /> Rename</>}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

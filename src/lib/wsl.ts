@@ -141,6 +141,8 @@ let cachedRunDir: string | null = null;
 let cachedTutDir: string | null = null;
 let cachedFoamEnv: Record<string, string> | null = null;
 let cachedVersion: string | null = null;
+/** The bashrc the USER picked (see setOpenFOAMVersion); restored from disk. */
+let selectedBashrc: string | null = null;
 
 // ── Persistent disk cache ──
 // Saves resolved values to ~/.wslgui-cache.json so server restarts don't
@@ -151,6 +153,13 @@ const DISK_CACHE_PATH = path.join(os.homedir(), '.wslgui-cache.json');
 interface DiskCache {
   distro?: string;
   bashrc?: string;
+  /**
+   * The version the user PICKED in the settings, as opposed to the one we
+   * detected. Persisted so that an explicit choice survives a restart: without
+   * it, auto-detection quietly moved the user to the newest install (and to a
+   * different run directory, so their case list changed).
+   */
+  selected?: string;
   runDir?: string;
   tutDir?: string;
   foamEnv?: Record<string, string>;
@@ -180,6 +189,7 @@ let tutDirVerified = false;
   if (!disk || disk.distro !== getDistro()) return;
 
   // Tentatively load values (they'll be validated below)
+  if (disk.selected && disk.selected.startsWith('/')) selectedBashrc = disk.selected;
   if (disk.bashrc && disk.bashrc.startsWith('/')) cachedBashrc = disk.bashrc;
   if (disk.runDir && disk.runDir.startsWith('/')) cachedRunDir = disk.runDir;
   if (disk.tutDir && disk.tutDir.startsWith('/')) cachedTutDir = disk.tutDir;
@@ -217,10 +227,13 @@ let tutDirVerified = false;
         cachedVersion = null; // version depends on foamEnv
       }
     } catch {
-      console.log('[wsl.ts] Disk cache: WSL validation failed, discarding all path caches');
-      cachedBashrc = null;
-      cachedRunDir = null;
-      cachedTutDir = null;
+      // KEEP the cached paths. An exception here means the validation could not
+      // be RUN — WSL still waking up, the distro busy, the call timing out —
+      // not that the paths are gone. Discarding them made a cold start silently
+      // re-detect and switch OpenFOAM version, so the user's case list changed
+      // under them and their cases appeared to vanish. A wrong path costs one
+      // failed command; a wrong version costs trust.
+      console.log('[wsl.ts] Disk cache: WSL unreachable during validation, keeping cached paths');
     }
   }
 })();
@@ -229,6 +242,7 @@ function persistCache(): void {
   saveDiskCache({
     distro: getDistro(),
     bashrc: cachedBashrc || undefined,
+    selected: selectedBashrc || undefined,
     runDir: cachedRunDir || undefined,
     tutDir: cachedTutDir || undefined,
     foamEnv: cachedFoamEnv || undefined,
@@ -345,7 +359,8 @@ done | sort -u
 // Sets the active bashrc path. All subsequent calls (foamSource, getFoamEnv,
 // getRunDirectory, getTutorialDirectory, getOpenFOAMVersion) will use this
 // bashrc. Resets ALL caches so the new environment is picked up immediately.
-let selectedBashrc: string | null = null;
+// (Declared next to the other cache variables at the top of the file, because
+// the disk-cache loader restores it.)
 
 export function setOpenFOAMVersion(bashrcPath: string): boolean {
   if (!bashrcPath || !bashrcPath.startsWith('/') || bashrcPath.includes('..')) return false;
@@ -909,32 +924,53 @@ printf 'SEARCH_DONE:%d\\n' "$count"
 // huge, not useful for the copilot, wastes tokens). Single WSL call: find →
 // file -b (skip binary) → head -c (cap per file) → echo markers. Returns
 // { path, content }[] with paths relative to the case root.
-export function readCaseFilesDeep(caseName: string): { path: string; content: string }[] {
+/** Per-file slice sent to the copilot. Anything longer is cut and MARKED. */
+export const CASE_CONTEXT_FILE_LIMIT = 32_000;
+
+export interface CaseFileSlice {
+  path: string;
+  content: string;
+  /** Size of the file on disk, which may be larger than `content`. */
+  bytes: number;
+  /** True when `content` is only the first CASE_CONTEXT_FILE_LIMIT bytes. */
+  truncated: boolean;
+}
+
+/**
+ * Read a case's dictionaries for the copilot.
+ *
+ * Every slice carries its real size and whether it was cut, because FOAMy
+ * answers with WHOLE files: if it is shown the first 8 KB of a 20 KB
+ * blockMeshDict and cannot tell, it will happily "rewrite" the file and delete
+ * the part it never saw. The caller marks truncated files in the prompt and the
+ * system prompt forbids rewriting them.
+ */
+export function readCaseFilesDeep(caseName: string): CaseFileSlice[] {
   const casePath = getCasePath(caseName);
   const script = `#!/bin/bash
 CASE=${shellQuote(casePath)}
 [ -d "$CASE" ] || { echo "NOEXIST"; exit 0; }
-# Find all files under 0/, system/, constant/ — EXCLUDING constant/polyMesh/.
-# The -path '*/polyMesh/*' -prune skips polyMesh entirely (and its subdirs).
-# Outputs FULL paths; the JS side strips the CASE/ prefix (avoids bash \${f#...}
-# which conflicts with JS template-literal interpolation).
-find "$CASE/0" "$CASE/system" "$CASE/constant" \\
-  -path '*/polyMesh/*' -prune -o \\
+# All files under 0/, system/, constant/ — EXCLUDING constant/polyMesh/.
+# Outputs FULL paths plus the file size; the JS side strips the CASE/ prefix
+# (avoids bash \${f#...} which conflicts with JS template-literal interpolation).
+find "$CASE/0" "$CASE/system" "$CASE/constant" \
+  -path '*/polyMesh/*' -prune -o \
   -type f -print 2>/dev/null | while IFS= read -r f; do
   # Skip binaries
   ft=$(file -b "$f" 2>/dev/null | head -c 40)
   case "$ft" in
     *ELF*|*executable*|*data*|*compressed*) continue ;;
   esac
-  printf '===FILE===%s\\n' "$f"
-  head -c 8000 "$f" 2>/dev/null
+  sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+  printf '===FILE===%s|%s\\n' "$f" "$sz"
+  head -c ${CASE_CONTEXT_FILE_LIMIT} "$f" 2>/dev/null
   printf '\\n===END===\\n'
 done
 `;
   try {
     const out = runInWslScript(Buffer.from(script).toString('base64'), 30000);
     if (out.startsWith('NOEXIST')) return [];
-    const files: { path: string; content: string }[] = [];
+    const files: CaseFileSlice[] = [];
     const blocks = out.split('===FILE===');
     const prefix = casePath + '/';
     for (const block of blocks.slice(1)) {
@@ -942,10 +978,20 @@ done
       if (endIdx < 0) continue;
       const nl = block.indexOf('\n');
       if (nl < 0) continue;
-      const fullPath = block.substring(0, nl).trim();
+      const headerLine = block.substring(0, nl).trim();
+      const sep = headerLine.lastIndexOf('|');
+      const fullPath = sep >= 0 ? headerLine.substring(0, sep) : headerLine;
+      const bytes = sep >= 0 ? Number(headerLine.substring(sep + 1)) || 0 : 0;
       const path = fullPath.startsWith(prefix) ? fullPath.substring(prefix.length) : fullPath;
       const content = block.substring(nl + 1, endIdx).replace(/\n$/, '');
-      if (path) files.push({ path, content });
+      if (path) {
+        files.push({
+          path,
+          content,
+          bytes,
+          truncated: bytes > CASE_CONTEXT_FILE_LIMIT,
+        });
+      }
     }
     return files;
   } catch {
@@ -1402,6 +1448,42 @@ export function deleteFile(caseName: string, filePath: string): string {
 export function deletePath(caseName: string, targetPath: string): string {
   const safePath = validateRelativePath(targetPath);
   return runInWsl(`rm -rf -- ${shellQuote(`${getCasePath(caseName)}/${safePath}`)}`);
+}
+
+/**
+ * Rename (or move) a file or directory inside a case.
+ *
+ * Both paths go through validateRelativePath, so neither can escape the case.
+ * The destination is refused if it already exists — `mv` would otherwise
+ * overwrite a file, or quietly move the source INSIDE the destination when the
+ * destination is a directory, which is not what "rename" means to anyone.
+ * Parent directories of the destination are created, so this doubles as a move.
+ */
+export function renamePath(caseName: string, fromPath: string, toPath: string): string {
+  const safeFrom = validateRelativePath(fromPath, 'Source path');
+  const safeTo = validateRelativePath(toPath, 'Destination path');
+  if (safeFrom === safeTo) return safeTo;
+
+  const casePath = getCasePath(caseName);
+  const src = `${casePath}/${safeFrom}`;
+  const dst = `${casePath}/${safeTo}`;
+  // Every branch exits 0 and reports through stdout on purpose: a non-zero exit
+  // makes runInWslScript throw the raw `wsl … | base64 -d | bash` command line,
+  // and that is what the user would see instead of "already exists: 0/p".
+  const b64 = Buffer.from(`
+SRC=${shellQuote(src)}
+DST=${shellQuote(dst)}
+if [ ! -e "$SRC" ]; then echo "ERROR: not found: ${safeFrom}"; exit 0; fi
+if [ -e "$DST" ]; then echo "ERROR: already exists: ${safeTo}"; exit 0; fi
+mkdir -p -- "$(dirname "$DST")" || { echo "ERROR: cannot create the destination folder"; exit 0; }
+mv -- "$SRC" "$DST" && echo "OK" || echo "ERROR: could not move ${safeFrom}"
+`).toString('base64');
+
+  const result = runInWslScript(b64, 30000).trim();
+  if (!result.startsWith('OK')) {
+    throw new Error(result.replace(/^ERROR:\s*/, '') || 'Rename failed');
+  }
+  return safeTo;
 }
 
 // ── Delete all timestep dirs except 0 ──

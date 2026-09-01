@@ -42,14 +42,61 @@ function fail(msg) {
   process.exit(1);
 }
 
-function copyDir(src, dest) {
+/**
+ * Mirror `src` onto `dest`: copy only what actually differs, and delete what no
+ * longer exists on the source side.
+ *
+ * This used to delete resources/standalone outright and re-copy all ~1300 files
+ * on every build, and `next build` rewrites only a handful of them. Deleting
+ * the stale entries is what keeps that safe — without it the old hashed chunks
+ * under .next/static would pile up inside the .exe.
+ *
+ * Files are compared on size and mtime. copyFileSync does not carry the mtime
+ * across, so it is restored explicitly; otherwise every file would look newer
+ * than its source and the next run would copy everything again.
+ */
+function mirrorDir(src, dest, stats) {
   fs.mkdirSync(dest, { recursive: true });
+
+  const seen = new Set();
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    seen.add(entry.name);
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDir(s, d);
-    else if (entry.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(s), d);
-    else fs.copyFileSync(s, d);
+
+    if (entry.isDirectory()) {
+      mirrorDir(s, d, stats);
+      continue;
+    }
+
+    if (entry.isSymbolicLink()) {
+      const target = fs.readlinkSync(s);
+      let current = null;
+      try { current = fs.readlinkSync(d); } catch (_) {}
+      if (current === target) { stats.kept++; continue; }
+      fs.rmSync(d, { recursive: true, force: true });
+      fs.symlinkSync(target, d);
+      stats.copied++;
+      continue;
+    }
+
+    const from = fs.statSync(s);
+    let to = null;
+    try { to = fs.statSync(d); } catch (_) {}
+    // 2 ms of slack: FAT/NTFS timestamp rounding, not a real difference.
+    if (to && to.isFile() && to.size === from.size && Math.abs(to.mtimeMs - from.mtimeMs) < 2) {
+      stats.kept++;
+      continue;
+    }
+    fs.copyFileSync(s, d);
+    fs.utimesSync(d, from.atime, from.mtime);
+    stats.copied++;
+  }
+
+  for (const entry of fs.readdirSync(dest, { withFileTypes: true })) {
+    if (seen.has(entry.name)) continue;
+    fs.rmSync(path.join(dest, entry.name), { recursive: true, force: true });
+    stats.removed++;
   }
 }
 
@@ -118,17 +165,17 @@ function assembleStandalone() {
   }
   log(`Standalone source: ${path.relative(ROOT, serverDir)}`);
 
-  fs.rmSync(STANDALONE_DST, { recursive: true, force: true });
-  copyDir(serverDir, STANDALONE_DST);
+  const stats = { copied: 0, kept: 0, removed: 0 };
+  mirrorDir(serverDir, STANDALONE_DST, stats);
 
   // `next build` leaves .next/static and public/ outside the standalone dir.
-  // scripts/build.js already copies them in, but re-copy defensively so this
-  // script also works after a bare `next build`.
+  // scripts/build.js already copies them in, so these two mirrors are normally
+  // no-ops; they are what makes this script work after a bare `next build`.
   const staticSrc = path.join(ROOT, ".next", "static");
-  if (fs.existsSync(staticSrc)) copyDir(staticSrc, path.join(STANDALONE_DST, ".next", "static"));
+  if (fs.existsSync(staticSrc)) mirrorDir(staticSrc, path.join(STANDALONE_DST, ".next", "static"), stats);
 
   const publicSrc = path.join(ROOT, "public");
-  if (fs.existsSync(publicSrc)) copyDir(publicSrc, path.join(STANDALONE_DST, "public"));
+  if (fs.existsSync(publicSrc)) mirrorDir(publicSrc, path.join(STANDALONE_DST, "public"), stats);
 
   const envSrc = path.join(ROOT, ".env");
   if (fs.existsSync(envSrc)) fs.copyFileSync(envSrc, path.join(STANDALONE_DST, ".env"));
@@ -145,7 +192,10 @@ function assembleStandalone() {
   const missing = required.filter((r) => !fs.existsSync(path.join(STANDALONE_DST, r)));
   if (missing.length) fail(`assembled standalone is missing: ${missing.join(", ")}`);
 
-  log("Standalone assembled and verified");
+  log(
+    `Standalone mirrored and verified — ${stats.copied} copied, ` +
+    `${stats.kept} unchanged, ${stats.removed} removed`
+  );
 }
 
 async function main() {

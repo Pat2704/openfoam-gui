@@ -93,6 +93,42 @@ const serverJsPath = path.join(standaloneDir, 'server.js');
 const APP_TITLE = 'OpenFOAM Studio - GUI';
 const READY_TIMEOUT_MS = 60000; // 60s should be plenty for Next.js standalone to boot
 
+// Startup timing, printed with every [main] line. Run the exe from a terminal
+// to see where the seconds go — the numbers are the reason for the shape of
+// the startup path below (window first, server in parallel, WSL pre-warmed).
+const T0 = Date.now();
+function elapsed() { return String(Date.now() - T0).padStart(5, ' ') + 'ms'; }
+function log(...args) { console.log('[main]', elapsed(), ...args); }
+
+/**
+ * The page shown while the Next.js server is still booting.
+ *
+ * The window used to be created only AFTER the server answered, so the user
+ * clicked the icon and stared at the desktop for a second or two with no sign
+ * that anything was happening. Now the window appears immediately with this,
+ * and swaps to the real URL when the server is up.
+ *
+ * Inlined as a data: URL — it must not depend on the server it is waiting for.
+ */
+const SPLASH_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
+<!doctype html><html><head><meta charset="utf-8"><title>${APP_TITLE}</title>
+<style>
+  html,body{height:100%;margin:0}
+  body{background:#0f0f0f;color:#e7e7e7;display:flex;align-items:center;justify-content:center;
+       font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+  .b{text-align:center}
+  .t{font-size:17px;font-weight:600;letter-spacing:.2px}
+  .s{margin-top:6px;color:#8b8b8b;font-size:12px}
+  .r{margin:18px auto 0;width:150px;height:2px;background:#262626;overflow:hidden;border-radius:2px}
+  .r i{display:block;width:40%;height:100%;background:#ef6c2b;animation:m 1.1s ease-in-out infinite}
+  @keyframes m{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
+</style></head>
+<body><div class="b">
+  <div class="t">OpenFOAM Studio</div>
+  <div class="s">Starting the local server…</div>
+  <div class="r"><i></i></div>
+</div></body></html>`)}`;
+
 /**
  * Find a free TCP port on 127.0.0.1 by binding to port 0 and reading the
  * assigned port, then immediately closing the listener. There's a tiny race
@@ -124,14 +160,17 @@ function waitForServer(port, host, timeoutMs) {
       if (Date.now() - start > timeoutMs) {
         return reject(new Error('Server did not start within ' + (timeoutMs / 1000) + 's'));
       }
+      // 60ms between attempts: the server usually answers within the first few
+      // hundred ms, and at 300ms we spent most of the wait sleeping past a
+      // server that was already up.
       const req = http.get({ hostname: host, port: port, path: '/', timeout: 1500 }, (res) => {
         res.resume();
         // Any HTTP response means the server is listening.
         if (res.statusCode) return resolve();
-        timer = setTimeout(attempt, 300);
+        timer = setTimeout(attempt, 60);
       });
-      req.on('error', () => { timer = setTimeout(attempt, 300); });
-      req.on('timeout', () => { req.destroy(); timer = setTimeout(attempt, 300); });
+      req.on('error', () => { timer = setTimeout(attempt, 60); });
+      req.on('timeout', () => { req.destroy(); timer = setTimeout(attempt, 60); });
     }
     attempt();
 
@@ -145,7 +184,7 @@ async function startServer() {
   serverStarting = true;
 
   serverPort = await getFreePort();
-  console.log('[main] Using free port:', serverPort);
+  log('Using free port:', serverPort);
 
   // Build env: clone process.env, then set the values Next.js expects.
   // IMPORTANT: strip ELECTRON_RUN_AS_NODE so the bundled node.exe runs as
@@ -200,7 +239,31 @@ async function startServer() {
   serverStarting = false;
 
   await waitForServer(serverPort, '127.0.0.1', READY_TIMEOUT_MS);
-  console.log('[main] Server is ready on port', serverPort);
+  log('Server is ready on port', serverPort);
+  warmUpWsl();
+}
+
+/**
+ * Fire one throwaway request at the WSL layer while the page is still loading.
+ *
+ * The first call into src/lib/wsl.ts pays for everything: `wsl --list -q`, the
+ * distro waking up, validating the cached bashrc, sourcing the OpenFOAM
+ * environment. It costs well over a second on a cold WSL, and the Dashboard
+ * used to pay it on its own first request, with the UI already on screen and
+ * showing an error state while it waited. Doing it here overlaps that cost with
+ * Chromium loading the page.
+ *
+ * Deliberately fire-and-forget: if it fails, the real request will report it.
+ */
+function warmUpWsl() {
+  try {
+    const req = http.get(
+      { hostname: '127.0.0.1', port: serverPort, path: '/api/wsl?action=version', timeout: 30000 },
+      (res) => { res.resume(); res.on('end', () => log('WSL warm-up done')); }
+    );
+    req.on('error', () => {});
+    req.on('timeout', () => req.destroy());
+  } catch (_) { /* never fatal */ }
 }
 
 /**
@@ -339,7 +402,11 @@ function createWindow() {
   Menu.setApplicationMenu(null);
   mainWindow.setMenuBarVisibility(false);
 
-  mainWindow.loadURL('http://127.0.0.1:' + serverPort + '/');
+  // The splash goes up straight away; loadApp() swaps in the real page as soon
+  // as the server answers. Waiting for the server before creating the window
+  // meant the app looked like it had not launched at all.
+  mainWindow.loadURL(SPLASH_HTML);
+  log('Window created (splash)');
 
   // Open external (non-app) links in the user's default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -397,26 +464,53 @@ function createWindow() {
   });
 }
 
+// Single-instance lock, taken BEFORE anything is spawned: a second launch must
+// not start a server of its own, and it exits too early to be sure it would
+// clean one up.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+/**
+ * Start the server WITHOUT waiting for Electron to be ready.
+ *
+ * Spawning node.exe and Chromium's own initialisation are independent, and
+ * they used to run one after the other: whenReady → getFreePort → spawn →
+ * poll → window. Kicking the server off here overlaps the two, and by the time
+ * the window exists the server is usually already answering.
+ */
+const serverReady = gotSingleInstanceLock
+  ? startServer().catch((err) => {
+      // Reported once Electron is ready and a dialog can actually be shown.
+      log('Server startup failed:', err && err.message ? err.message : err);
+      throw err;
+    })
+  : Promise.resolve();
+
+/** Swap the splash for the app once the server answers. */
+async function loadApp() {
+  try {
+    await serverReady;
+  } catch (err) {
+    dialog.showErrorBox(APP_TITLE, 'Startup failed:\n' + (err && err.message ? err.message : err));
+    killServer();
+    app.quit();
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  await mainWindow.loadURL('http://127.0.0.1:' + serverPort + '/');
+  log('App loaded');
+}
+
 app.whenReady().then(async () => {
-  // Single-instance lock: if a second instance is launched, focus the first.
-  const gotLock = app.requestSingleInstanceLock();
-  if (!gotLock) {
-    console.log('[main] Another instance is already running. Quitting.');
+  log('Electron ready');
+  if (!gotSingleInstanceLock) {
+    log('Another instance is already running. Quitting.');
     app.quit();
     return;
   }
 
   registerConfigIpc();
-
-  try {
-    await startServer();
-    createWindow();
-  } catch (err) {
-    console.error('[main] Startup failed:', err);
-    dialog.showErrorBox(APP_TITLE, 'Startup failed:\n' + (err && err.message ? err.message : err));
-    killServer();
-    app.quit();
-  }
+  createWindow();
+  await loadApp();
 });
 
 app.on('second-instance', () => {

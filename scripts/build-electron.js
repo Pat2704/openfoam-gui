@@ -2,13 +2,13 @@
 /**
  * build-electron.js
  *
- * Single entry point for producing OpenFOAMStudio-v1.3-portable.exe.
+ * Single entry point for producing OpenFOAMStudio-v1.4-portable.exe.
  *
  *   1. next build + copy static/public into .next/standalone  (scripts/build.js)
  *   2. assemble electron/resources/{bin,standalone}           (electron/scripts/prepare-resources.js)
  *   3. electron-builder --win, reading electron/electron-builder.yml
  *
- * Output: dist-electron/OpenFOAMStudio-v1.3-portable.exe
+ * Output: dist-electron/OpenFOAMStudio-v1.4-portable.exe
  *
  * Usage:
  *   node scripts/build-electron.js              # full build
@@ -61,10 +61,10 @@ function main() {
     path.join(ROOT, "electron", "electron-builder.yml"),
   ]);
 
-  const out = path.join(ROOT, "dist-electron", "OpenFOAMStudio-v1.3-portable.exe");
+  const out = path.join(ROOT, "dist-electron", "OpenFOAMStudio-v1.4-portable.exe");
   if (fs.existsSync(out)) {
     const mb = (fs.statSync(out).size / 1048576).toFixed(1);
-    log(`SUCCESS: dist-electron/OpenFOAMStudio-v1.3-portable.exe (${mb} MB)`);
+    log(`SUCCESS: dist-electron/OpenFOAMStudio-v1.4-portable.exe (${mb} MB)`);
   } else {
     console.error("[electron] ERROR: expected artifact not found in dist-electron/");
     process.exit(1);
