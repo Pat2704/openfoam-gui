@@ -135,6 +135,20 @@ Shipped in **v1.4**, verified in both the dev server and the packaged app:
 
 All of the above shipped in **v1.4** (bumped, committed, tagged, released).
 
+## 2b. After v1.4
+
+- **The app icon lost its "OF" lettering** (`electron/build/icon.ico`, commit
+  9f21238). Each frame was repaired on its own — not re-rendered, not rescaled
+  from another size — by masking the lettering on its red channel (background
+  and streamlines are teal, red 13-60; the letters are white, red 245+) and
+  filling each row by interpolating between its nearest untouched pixels. The
+  scripts are throwaway, but that method is the one to reuse if the artwork
+  needs another edit.
+- **The v1.4 release asset still carries the old icon**: the release was
+  published before the change, and the user chose on 2026-08-31 to leave it
+  alone rather than replace the asset or cut a 1.4.1. The new icon ships with
+  the next version. `Working/OpenFOAMStudio-v1.4-portable.exe` is up to date.
+
 ## 3. `claude_test`
 
 A scratch case the user told me to create, at
