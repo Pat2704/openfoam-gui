@@ -97,6 +97,8 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   isometric), and the `blockMeshDict` vertex numbers overlaid on the model.
   Drag the bar under the view to make it taller. `checkMesh` and boundary-
   condition validation live here too.
+
+  ![The Mesh tab: the boundary mesh of a T-junction case in wireframe, with its four patches listed above the view, each one able to be recoloured or hidden](screenshots/mesh.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>

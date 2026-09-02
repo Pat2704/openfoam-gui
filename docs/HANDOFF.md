@@ -39,11 +39,10 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing in the code. Three things sit outside it: the trade
-mark request to OpenCFD is unanswered (§2l), the Mesh tab still has no
-screenshot (§5b), and the repository's social preview image has yet to be
-uploaded — the user is doing that one, and it can only be done from Settings.
-The one unexplained thing is the
+**What is open:** nothing in the code. Two things sit outside it: the trade mark
+request to OpenCFD is unanswered (§2l), and the repository's social preview
+image has yet to be uploaded — the user is doing that one, and it can only be
+done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
@@ -1005,30 +1004,27 @@ the canonical filenames to the tags as they were actually published.
 - **Declined by the user, do not re-propose**: auto-hiding `empty`/`wedge`
   patches in the mesh viewer, even though they are 91–99.95% of their cases.
 
-## 5b. The screenshots, and the one still missing
+## 5b. The screenshots
 
 `screenshots/` holds eight PNGs and an .mp4 screen recording. An `.mkv`
 duplicate of that recording, 11 MB and referenced by nothing, was removed on
 2026-09-02. Every file in the directory is referenced by the README; keep it
 that way, and check for orphans after any change.
 
-**A screenshot of the Mesh tab is still missing, and it is the last gap.** The
-user took one on 2026-09-02 and pasted it into the conversation, but it was
-never saved to disk, so it could not be committed. Everything else is in: the
-Claude panel went in as `claude-agent.png` that same evening, which had been the
-other gap.
+**The set is complete.** The two features that distinguish the project had no
+picture until 2026-09-02: the Claude panel went in as `claude-agent.png`, and
+the Mesh tab as `mesh.png` — the boundary mesh of the T-junction in
+`claude_test`, which is the case that shows the viewer off far better than the
+2D ones (§3).
 
-To close it: save the image as `screenshots/mesh.png`, sized like the rest
-(the existing ones run 1418x886 to 1468x999), and add it under the **Mesh**
-bullet in the README's "What it does", with alt text that says what is shown
-rather than naming the tab — that is the pattern the other images follow.
-
-**Screenshots cannot be produced from a session.** The Browser pane caps out
+**Screenshots cannot be produced from a session, so any future one is the
+user's to take.** The Browser pane caps out
 around 800 px wide, below the existing images, and a pane capture cannot be
 written to a file at all. An image pasted into the conversation cannot be
-written to a file either — only one already saved on disk can be picked up. So
-this is always the user's to take; look in `Pictures/Screenshots/` for it. There
-is also no ffmpeg on the machine, so the .mp4 cannot be turned into a GIF here.
+written to a file either — only one already saved on disk can be picked up, so
+look in `Pictures/Screenshots/`, or have the user commit it from the GitHub web
+UI and pull it, which is how `mesh.png` arrived. There is also no ffmpeg on the
+machine, so the .mp4 cannot be turned into a GIF here.
 
 ---
 
