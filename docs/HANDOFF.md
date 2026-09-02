@@ -100,6 +100,9 @@ These are standing instructions, not one-offs:
   until the user says otherwise.
 - **Never run anything destructive against the user's real cases** (`cavity`,
   `nozzleFlow2D`, `shockTube` in the WSL run dir). Test in `claude_test` (§3).
+- **No `Co-Authored-By` trailers.** The user asked on 2026-09-02 to be the only
+  author on the repository. The commits made before that still carry them, and
+  they are not worth rewriting published history for — but do not add any more.
 - **The user writes in Italian**; the repo, its comments and this file are in
   English. Keep both as they are.
 
@@ -998,6 +1001,24 @@ the canonical filenames to the tags as they were actually published.
   version or it is wrong.
 - **Declined by the user, do not re-propose**: auto-hiding `empty`/`wedge`
   patches in the mesh viewer, even though they are 91–99.95% of their cases.
+
+## 5b. The screenshots, and the two that are missing
+
+`screenshots/` holds seven PNGs at about 1468x999 and an .mp4 screen recording.
+An `.mkv` duplicate of that recording, 11 MB and referenced by nothing, was
+removed on 2026-09-02.
+
+**Nothing pictures the two features that actually distinguish the project.**
+There is no screenshot of the Mesh tab and none of the Claude panel — the set
+predates both. They are the two worth taking, at the same 1440x900 so they sit
+with the rest, and the README has an obvious place for each.
+
+They cannot be taken from a session: the Browser pane caps out around 800 px
+wide, which is below the existing images, and a pane screenshot cannot be
+written to a file anyway. This is the user's to do. There is also no ffmpeg on
+the machine, so the .mp4 cannot be turned into a GIF from here.
+
+---
 
 ## 6. Files that are not ours
 
