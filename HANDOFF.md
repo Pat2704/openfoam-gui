@@ -122,8 +122,10 @@ Shipped in **v1.4**, verified in both the dev server and the packaged app:
   fix it: `compression: store` (≈350 MB exe, extraction becomes a plain copy),
   or shipping a zipped `win-unpacked` / an NSIS installer (no per-launch
   extraction at all, ~1.5 s to the window). **Asked on 2026-08-31; the user
-  chose to keep the single 87 MB portable exe and live with the 28 s.** Do not
-  re-propose changing the distribution format unless they raise it.
+  chose to keep the single 87 MB portable exe and live with the 28 s.** They
+  raised it again on 2026-09-02 and the answer is now §4: both artifacts ship,
+  and the folder build is the fast one. `compression: store` was measured and
+  rejected — see the note in electron-builder.yml before trying it.
 - **A transient WSL failure no longer changes the selected OpenFOAM version**
   (`lib/wsl.ts`). The disk-cache validator discarded every cached path when the
   probe threw, so a cold start could silently re-detect and switch version — the
@@ -593,6 +595,41 @@ any 500 announced that Claude Code was not installed.
   The cost is the per-launch COPY into TEMP, not the decompression — only not
   extracting at all removes it (installer, or the win-unpacked folder: window at
   130 ms, interface at ~4 s).
+
+## 2i. A startup that could not be diagnosed, and the half-unpacked folder
+
+The user's folder build died on launch with "the backend server stopped
+unexpectedly (exit code 1)". It was not reproducible here across four scenarios
+(fresh extract, normal close and relaunch, second instance while the first ran,
+extraction into a normal folder launched from Explorer), so the answer came from
+looking at THEIR copy instead of guessing: `Desktop\OpenFOAMStudio-v2-folder`
+held **75 files out of 1,700** and `resources/standalone` was empty. The
+extraction had stopped after four per cent and never resumed. The .zip itself
+was intact — 1,700 entries, `server.js` present, longest path 127 characters, so
+no MAX_PATH involvement.
+
+So the app was right to fail. What was wrong was that it could not say why, and
+three things now fix that:
+
+- **`checkInstallation()` runs before anything is spawned** and names the files
+  that are missing — the server, the bundled node — and says that an unzip did
+  not finish. Verified by emptying `resources/standalone` on a good copy.
+- **A startup log**, truncated per run, at `%APPDATA%\openfoam-studio\startup.log`
+  (the app's *package* name, not the product name). This matters because the
+  portable stub DETACHES stdout: launching the .exe from a terminal shows
+  nothing at all, so before this there was no way to inspect a failed start
+  after the fact.
+- **The server's last 12 lines go into the failure dialog**, instead of an exit
+  code on its own.
+
+One trap found while testing the fix: `app.quit()` before Electron is ready is
+deferred far enough that the window still opens and sits on the splash behind
+the message the user just dismissed. The installation check uses `app.exit(1)`.
+
+Another, for whoever tests this next: the single-instance lock makes a stale
+instance from an earlier test swallow the launch you are trying to observe
+("Another instance is already running"), and the run looks like a pass. Kill
+every `OpenFOAMStudio*` process before each attempt.
 
 ## 3. `claude_test`
 

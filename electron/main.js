@@ -107,7 +107,46 @@ const READY_TIMEOUT_MS = 60000; // 60s should be plenty for Next.js standalone t
 // the startup path below (window first, server in parallel, WSL pre-warmed).
 const T0 = Date.now();
 function elapsed() { return String(Date.now() - T0).padStart(5, ' ') + 'ms'; }
-function log(...args) { console.log('[main]', elapsed(), ...args); }
+function log(...args) {
+  const line = '[main] ' + elapsed() + ' ' + args.join(' ');
+  console.log(line);
+  appendToLogFile(line);
+}
+
+/**
+ * The startup log, on disk.
+ *
+ * A packaged app has nowhere to print: the portable stub detaches stdout, so
+ * launching from a terminal shows nothing, and an error dialog disappears with
+ * the click that dismisses it. When the backend dies at startup — the one
+ * failure that leaves the user with no app at all — this file is what says why.
+ *
+ * It lives beside the rest of the app's own data, is truncated at every launch
+ * so it always describes THIS run, and never throws: a logger that can break
+ * the startup it is meant to explain is worse than no logger.
+ */
+const serverOutput = [];
+let logFileReady = false;
+
+function logFilePath() {
+  try {
+    return path.join(app.getPath('userData'), 'startup.log');
+  } catch (_) {
+    return path.join(require('os').tmpdir(), 'openfoam-studio-startup.log');
+  }
+}
+
+function appendToLogFile(line) {
+  try {
+    const file = logFilePath();
+    if (!logFileReady) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, new Date().toISOString() + '  OpenFOAM Studio starting\n');
+      logFileReady = true;
+    }
+    fs.appendFileSync(file, line + '\n');
+  } catch (_) { /* never let logging break the launch */ }
+}
 
 /**
  * The page shown while the Next.js server is still booting.
@@ -259,8 +298,41 @@ function waitForServer(port, host, timeoutMs) {
   });
 }
 
+/**
+ * Is the app actually all here?
+ *
+ * The folder build is a zip the user unpacks, and an unpack can stop early —
+ * one did, at 75 files out of 1,700, leaving `resources/standalone` empty. The
+ * app then died with "the backend server stopped unexpectedly (exit code 1)",
+ * which tells the user nothing they can act on. Two missing files are worth
+ * naming before anything is launched.
+ */
+function checkInstallation() {
+  const required = [
+    [serverJsPath, 'the application server'],
+    [nodeExePath, 'the bundled Node runtime'],
+  ];
+  const missing = required.filter(([file]) => !fs.existsSync(file));
+  if (!missing.length) return true;
+
+  const list = missing.map(([file, what]) => '  ' + what + ':\n  ' + file).join('\n\n');
+  log('installation incomplete, missing:', missing.map(([f]) => f).join(', '));
+  dialog.showErrorBox(
+    APP_TITLE,
+    'This copy of the app is incomplete — these files are missing:\n\n' + list
+    + '\n\nIf you unzipped the folder build, the unpacking did not finish. '
+    + 'Delete the folder and extract the .zip again, all of it.',
+  );
+  // exit(), not quit(): this runs before Electron is ready, and a quit() here
+  // is deferred long enough that the window still opens and sits on the splash
+  // for ever behind the message the user just dismissed.
+  app.exit(1);
+  return false;
+}
+
 async function startServer() {
   if (serverProcess || serverStarting) return;
+  if (!checkInstallation()) return;
   serverStarting = true;
 
   serverPort = await getFreePort();
@@ -299,10 +371,23 @@ async function startServer() {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
+  /**
+   * Keep the server's last words.
+   *
+   * When it dies, its output is the only thing that says WHY — and it was being
+   * thrown away: the failure dialog quoted an exit code and nothing else, which
+   * is a dead end for anyone who has not launched the app from a terminal (and
+   * the portable stub detaches stdout, so most users cannot). These lines go
+   * into the dialog and into the log file below.
+   */
   const logLine = (chunk) => {
     const text = chunk.toString();
     for (const line of text.split(/\r?\n/)) {
-      if (line.length) console.log('[server] ' + line);
+      if (!line.length) continue;
+      console.log('[server] ' + line);
+      serverOutput.push(line);
+      if (serverOutput.length > 40) serverOutput.shift();
+      appendToLogFile('[server] ' + line);
     }
   };
   serverProcess.stdout.on('data', logLine);
@@ -315,12 +400,18 @@ async function startServer() {
 
   serverProcess.on('exit', (code, signal) => {
     console.log('[main] Server process exited. code=', code, 'signal=', signal);
+    appendToLogFile('[main] server exited code=' + code + ' signal=' + signal);
     serverProcess = null;
-    // If the server dies while the window is still open, surface it.
+    // If the server dies while the window is still open, surface it — WITH what
+    // it said on the way out, and where the full log is.
     if (mainWindow && !mainWindow.isDestroyed()) {
+      const tail = serverOutput.slice(-12).join('\n');
       dialog.showErrorBox(
         APP_TITLE,
-        'The backend server stopped unexpectedly (exit code ' + code + ').\nThe app will now close.'
+        'The backend server stopped unexpectedly '
+        + '(' + (signal ? 'signal ' + signal : 'exit code ' + code) + ').\n\n'
+        + (tail ? 'It said:\n' + tail + '\n\n' : 'It printed nothing before exiting.\n\n')
+        + 'Full log: ' + logFilePath() + '\n\nThe app will now close.'
       );
       app.quit();
     }

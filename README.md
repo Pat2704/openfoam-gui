@@ -38,6 +38,15 @@ want it to start:
 Either way nothing is installed and nothing is written to the registry — put it
 on the Desktop or a USB stick and double-click.
 
+If you take the .zip, make sure the extraction **finishes**: it holds about
+1,700 files, and Windows Explorer has been seen giving up part-way without
+saying so. The app checks on startup and tells you if files are missing, but
+extracting with PowerShell avoids the problem:
+
+```powershell
+Expand-Archive OpenFOAMStudio-v2-folder.zip -DestinationPath OpenFOAMStudio-v2-folder
+```
+
 Windows SmartScreen will warn on first run because the executable is unsigned:
 **More info → Run anyway**.
 
@@ -142,7 +151,7 @@ somewhere unusual.
 
 **Unrestricted mode.** The shield button in the composer says `Guarded` by
 default: Claude may only run the OpenFOAM executables this installation ships,
-one per call, with no shell syntax. Switch it to `No limits` — it asks first —
+one per call, with no shell syntax. Switch it to `No limits` — one click, no dialog —
 and `run_openfoam` becomes a real shell inside the case directory: any command,
 pipes, redirects, chaining, including ones that delete or overwrite. Every call
 still appears in the conversation as it happens, and in the activity log tagged
