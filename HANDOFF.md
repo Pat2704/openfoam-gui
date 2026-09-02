@@ -8,18 +8,23 @@ Last updated: 2026-09-02, at v2.1.0.
 
 ## Where things stand right now (read this first)
 
-**v2.1.0 is cut, built and tagged — and it is all LOCAL.** The working tree is
-clean and nothing is half-finished, but two commits and the `v2.1.0` tag sit on
-top of what GitHub has: the MIT licensing work (§2k) and the version bump.
-Pushing them, and publishing the release, was never asked for. **v2.0.0 is still
-the latest published release.**
+**v2.1.0 is released, and the project is open source under the MIT License.**
+Everything is committed and pushed to `main`, the tag is published, both
+artifacts are attached to the release, and GitHub reports the repository license
+as MIT. The working tree is clean; nothing is half-finished waiting for you.
 
 | | |
 |---|---|
-| latest commit | the v2.1.0 bump, on top of the MIT license commit — **not pushed** |
-| tags | `v2.0.0` at `f51c76a`, pushed; `v2.1.0`, **local only** |
-| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.0.0 — still v2.0.0, both artifacts attached |
-| in `Working/` | `OpenFOAMStudio-v2-portable.exe` and `OpenFOAMStudio-v2-folder.zip`, both rebuilt at 2.1.0, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
+| release commit | `bcc851d` — what `v2.1.0` points at; this file may sit a commit above it |
+| tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `bcc851d` |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
+| in `Working/` | `OpenFOAMStudio-v2-portable.exe` and `OpenFOAMStudio-v2-folder.zip` at 2.1.0, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
+
+**The `v2.1.0` tag builds the shipped binaries**, checked the way the paragraph
+below demands. Any commit after it that touches only this file leaves that true,
+because HANDOFF.md is no longer packaged — see the tracing trap in §5. Do not
+move a published tag to pick such a commit up; that is the mistake v2.0.0 had to
+be repaired from.
 
 **The tag matches what was published.** It was moved on 2026-09-02, at the
 user's request, from the first v2 commit to the last one, so the tagged tree is
@@ -29,10 +34,7 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing is in progress — v2.1.0 is finished and waiting for
-the user to say whether it goes out. Its release notes are already written, in
-`Working/RELEASE-NOTES-v2.1.md`, and BOTH artifacts are the 2.1.0 build. The one
-unexplained thing is the
+**What is open:** nothing is in progress. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
@@ -747,8 +749,9 @@ policy before the project gets any real visibility.
 with no license file, which means all rights reserved — a different legal state,
 not a detail. Re-tagging would also break the rule at the top of this file, that
 the tag must build the shipped binaries. It goes out as a new version. It went out as
-**v2.1.0**: bumped, rebuilt, both artifacts copied to `Working/`, release notes
-written, committed and tagged — all local, since pushing was not asked for.
+**v2.1.0** on 2026-09-02: bumped, rebuilt, both artifacts copied to `Working/`,
+release notes in `Working/RELEASE-NOTES-v2.1.md`, tagged, pushed, and published
+with both artifacts attached. GitHub now shows the repository as MIT.
 
 One thing was checked before any of this and is settled: `.env` is tracked from
 the very first commit, and it holds exactly one line, `NEXT_TELEMETRY_DISABLED=1`
