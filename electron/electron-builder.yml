@@ -26,7 +26,7 @@
 
 appId: com.openfoamstudio.app
 productName: OpenFOAMStudio
-copyright: Copyright © OpenFOAM Studio
+copyright: Copyright © 2026 Tommaso Ferrara
 
 # Pinned to the Electron that shipped in the original 6.1.4 portable build
 # (Electron 31.7.7 / Chromium 126.0.6478.234).
@@ -80,6 +80,16 @@ extraResources:
   # node_modules for it to import from.
   - from: mcp
     to: mcp
+
+# Next to the executable, not under resources/: the MIT license and the notices
+# have to be findable by whoever receives the binary. Nothing else ships a
+# license text — Next.js compiles the web dependencies into the app's own
+# bundles, so their package directories never reach the shipped tree.
+extraFiles:
+  - from: ../LICENSE
+    to: LICENSE.txt
+  - from: ../THIRD-PARTY-NOTICES.md
+    to: THIRD-PARTY-NOTICES.md
 
 # TWO artifacts, always, and they are not alternatives — ship both.
 #

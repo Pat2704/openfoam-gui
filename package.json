@@ -3,6 +3,8 @@
   "version": "2.0.0",
   "private": true,
   "description": "OpenFOAM Studio — desktop GUI for OpenFOAM CFD on Windows via WSL2",
+  "author": "Tommaso Ferrara",
+  "license": "MIT",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "node scripts/build.js",

@@ -2,19 +2,21 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-02, at the v2 release.
+Last updated: 2026-09-02, at the MIT licensing commit.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v2 is released and everything in the repo is committed and pushed to `main`.**
-The working tree is clean; there is nothing half-finished waiting for you.
+**v2 is released. The working tree is clean and there is nothing half-finished
+waiting for you — but the tip of `main` is NOT pushed:** the MIT licensing
+commit (§2k) sits on top of what was published, because pushing it was never
+asked for. Everything before it is on GitHub.
 
 | | |
 |---|---|
-| latest commit | `6c8d390` — unrestricted mode stops at the Windows disk |
-| tag | `v2.0.0`, at `23a3b8a` |
+| latest commit | the MIT license — first commit after `v2.0.0`, **local only** |
+| tag | `v2.0.0`, at `f51c76a` |
 | release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.0.0 — both artifacts attached |
 | in `Working/` | `OpenFOAMStudio-v2-portable.exe`, `OpenFOAMStudio-v2-folder.zip`, `RELEASE-NOTES-v2.md` |
 
@@ -703,6 +705,51 @@ app successfully from that folder, which cannot happen without `server.js`, and
 their machine extracts faster. Their account beats the inference. If it recurs,
 `%APPDATA%\openfoam-studio\startup.log` (§2i) now says what was missing and
 whether the app had been starting from there before.
+
+## 2k. The MIT license, and the attribution that was missing
+
+The user asked on 2026-09-02 for the project to be open source **with their name
+on it**. Both halves are satisfied by an ordinary MIT license: the clause that
+requires the copyright notice to survive in every copy IS the attribution, so no
+custom or badgeware clause was needed — and any such clause would have cost the
+project the "open source" label it was asked for.
+
+`LICENSE` carries `Copyright (c) 2026 Tommaso Ferrara`. The name was then put
+everywhere it has to be visible without reading the repo: `author` and
+`license` in both package.json files (electron's said `"license": "private"`),
+`copyright:` in `electron-builder.yml` — which is what fills LegalCopyright and
+CompanyName in the .exe's Windows properties — the README, and a line in the
+app's own footer.
+
+**The find worth keeping: the packaged app shipped no dependency license text at
+all.** Next compiles three.js, Radix, Recharts and the rest into its own
+bundles, so their package directories, and the LICENSE files inside them, never
+reach `resources/standalone` — `find` over the whole shipped tree returned zero.
+Those licenses are all MIT/ISC/Apache-2.0 and every one of them requires its
+notice to travel with the binary, so `THIRD-PARTY-NOTICES.md` is not a courtesy,
+it is the only place that attribution exists. It is shipped through a new
+`extraFiles` block, which puts it and `LICENSE.txt` NEXT TO the executable
+rather than under `resources/` where nobody would find them. Verified on the
+build: both are there, beside Electron's and Chromium's own.
+
+Two things stated in the README because they will otherwise be asked:
+**OpenFOAM's GPL does not reach this app** — it runs OpenFOAM as a separate
+process through `wsl.exe`, links nothing and redistributes no part of it; and
+**OPENFOAM is a registered trademark of OpenCFD Ltd**, so the disclaimer of
+endorsement is there, and the product name is worth a look at their trademark
+policy before the project gets any real visibility.
+
+**Why this cannot be folded back into `v2.0.0`.** Those binaries were published
+with no license file, which means all rights reserved — a different legal state,
+not a detail. Re-tagging would also break the rule at the top of this file, that
+the tag must build the shipped binaries. It goes out as a new version.
+
+Still open, for whoever publishes: `.env` is tracked from the very first commit.
+The README says it holds only the telemetry switch, but it was never actually
+read — confirm there is no API key in it before giving the repo visibility. A
+key there would be in the history, and would have to be rotated, not deleted.
+
+---
 
 ## 3. `claude_test`
 

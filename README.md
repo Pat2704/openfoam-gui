@@ -263,6 +263,21 @@ Also: don't put secrets in `.env` — that file is copied into the `.exe`.
 
 ## License & credits
 
-OpenFOAM is free software released under the GNU GPL v3 by The OpenFOAM
-Foundation. This GUI is independent and not affiliated with them, and is
-provided "as is", without warranties.
+OpenFOAM Studio is open source under the **MIT License**.
+
+Copyright © 2026 Tommaso Ferrara. The full text is in `LICENSE`. You may use,
+modify, distribute and sell this software, including in closed-source products,
+provided the copyright notice and the license text travel with every copy. The
+software is provided "as is", without warranties.
+
+The third-party components embedded in the packaged application are listed in
+`THIRD-PARTY-NOTICES.md`, which ships alongside the binaries.
+
+**OpenFOAM itself is not part of this project.** It is free software released
+under the GNU GPL v3 by The OpenFOAM Foundation. OpenFOAM Studio runs it as a
+separate program inside WSL2; it does not link against it and redistributes no
+part of it.
+
+OPENFOAM is a registered trademark of OpenCFD Ltd. This project is independent
+and is not approved, sponsored or endorsed by OpenCFD Ltd, ESI Group, or The
+OpenFOAM Foundation.

@@ -348,7 +348,9 @@ export default function Home() {
             )}
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
-            <span className="hidden sm:inline">CFD via WSL2</span>
+            {/* The MIT notice has to reach the person running the app, not
+                only whoever reads the repo. */}
+            <span className="hidden sm:inline">© 2026 Tommaso Ferrara · MIT</span>
             <button
               onClick={() => setShowShortcuts(true)}
               className="flex items-center gap-1 hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-accent"
