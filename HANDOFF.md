@@ -18,12 +18,13 @@ The working tree is clean; there is nothing half-finished waiting for you.
 | release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.0.0 — both artifacts attached |
 | in `Working/` | `OpenFOAMStudio-v2-portable.exe`, `OpenFOAMStudio-v2-folder.zip`, `RELEASE-NOTES-v2.md` |
 
-**One discrepancy to know about:** the tag sits at `23a3b8a`, but the .exe and
-.zip attached to the release were rebuilt from `6c8d390`, four commits later —
-they contain the startup diagnostics (§2i) and the `/mnt/` guard (§2j), which
-the tagged tree does not. So a build from the tag will NOT reproduce the
-published binaries. Moving the tag would fix that and was not done, because
-touching GitHub needs the user to ask (§1). Offer it if a v2.0.1 comes up.
+**The tag matches what was published.** It was moved on 2026-09-02, at the
+user's request, from the first v2 commit to the last one, so the tagged tree is
+the tree the released .exe and .zip were built from — the startup diagnostics
+(§2i) and the `/mnt/` guard (§2j) included. Verified before moving it: the only
+difference between the build commit and the tag is this file. If you ever move a
+published tag again, re-check that same way; a tag that does not build the
+shipped binaries is worse than no tag.
 
 **What is open:** nothing is in progress. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
