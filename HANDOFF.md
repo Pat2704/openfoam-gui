@@ -881,7 +881,10 @@ a string you just added, to prove the exe really carries the new code.
   `Working/.claude/launch.json`, which names that folder in its `--prefix` and
   quietly stops starting the dev server if you rename one without the other.
   Renaming the folder needs the shell's cwd to be somewhere else first — see
-  §4. Done for 2.1 on 2026-09-02, at the user's request.
+  §4. Done for 2.1 on 2026-09-02, at the user's request. The README's badges
+  and its top download link are deliberately version-agnostic — they read
+  `/releases/latest` and the shields API — so they are NOT on this list. Leave
+  them alone; "updating" them is how they would start going stale.
 - **The filenames carry the FULL version, and they are generated — keep it
   that way.** `artifactName` in `electron-builder.yml` uses `${version}`, and
   `scripts/build-electron.js` reads the same field out of

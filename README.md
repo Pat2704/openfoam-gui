@@ -1,11 +1,20 @@
 # OpenFOAM Studio
 
+[![Latest release](https://img.shields.io/github/v/release/Pat2704/openfoam-gui?label=latest%20release&color=0aa344)](https://github.com/Pat2704/openfoam-gui/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Pat2704/openfoam-gui/total?label=downloads)](https://github.com/Pat2704/openfoam-gui/releases)
+[![License: MIT](https://img.shields.io/github/license/Pat2704/openfoam-gui?color=blue)](LICENSE)
+
 A desktop GUI for running **OpenFOAM** CFD simulations inside **WSL2 (Ubuntu)**
 on Windows, with two AI helpers built in: **FOAMy**, a copilot that proposes
 edits you apply, and **Claude**, an agent that does the work itself.
 
 One portable `.exe`. No installer, no Docker, no Node.js, no browser tab.
 Double-click and it opens in its own window.
+
+### → [**Download the latest release**](https://github.com/Pat2704/openfoam-gui/releases/latest)
+
+Windows 10/11 with WSL2. Nothing is installed and nothing is written to the
+registry — see [Install](#install) for which of the two files to take.
 
 ![Dashboard](screenshots/dashboard.png)
 
@@ -27,7 +36,7 @@ A short demo is in [`screenshots/gif_openfoam_studio.mp4`](screenshots/gif_openf
 
 ## Install
 
-Two downloads on the [Releases](../../releases) page, same app — pick by how you
+Two downloads on the [latest release](../../releases/latest) page, same app — pick by how you
 want it to start:
 
 | | |
