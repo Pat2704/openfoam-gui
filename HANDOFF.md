@@ -2,7 +2,7 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-01 — the Claude agent moved inside the app (§2f).
+Last updated: 2026-09-02, at the v2 release.
 
 ---
 
@@ -154,7 +154,7 @@ All of the above shipped in **v1.4** (bumped, committed, tagged, released).
   alone rather than replace the asset or cut a 1.4.1. The new icon ships with
   the next version. `Working/OpenFOAMStudio-v2-portable.exe` is up to date.
 
-## 2c. Phase 1 of the knowledge work — done, uncommitted
+## 2c. Phase 1 of the knowledge work — shipped in v2
 
 The feasibility analysis (option A + E) is implemented. Everything below is in
 the working tree and verified against the live installation.
@@ -218,7 +218,7 @@ separate `reasoning` field, and when the output budget runs out inside it
 Phases 2-4 of the analysis (retrieval over the tutorials, then a local model)
 are not started.
 
-## 2d. Phases A, B and C — done, uncommitted
+## 2d. Phases A, B and C — shipped in v2
 
 - **A — dictionary keys** (`foam-index.ts`, index format 2). `foamToC` says a
   name exists; this says what goes inside it. Three greps over the sources give
@@ -264,7 +264,7 @@ fvSchemes rather than guessing. The `TypeName` grep DOES see most of them, so a
 softer existence check there is possible later; `limitedLinear` and its
 macro-generated family would be false positives, so it was not switched on.
 
-## 2e. Phase D — the example selector, uncommitted
+## 2e. Phase D — the example selector, shipped in v2
 
 `src/lib/foam-retrieval.ts`. Ranks the whole tutorial corpus against the
 question and keeps the best TWO chunks, capped at 1.500 characters: a better
@@ -305,7 +305,7 @@ is not a capability gap that a bigger model closes. Test cost $0,011 on a key
 the user lent and has revoked; it was passed per-request and never written into
 the app's config.
 
-## 2f. The Claude agent, inside the app — uncommitted
+## 2f. The Claude agent, inside the app — shipped in v2
 
 The app now carries a SECOND assistant, next to FOAMy and deliberately unlike
 it. FOAMy proposes a file and the user clicks Apply; Claude reads the case,
