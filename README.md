@@ -16,21 +16,10 @@ Double-click and it opens in its own window.
 Windows 10/11 with WSL2. Nothing is installed and nothing is written to the
 registry — see [Install](#install) for which of the two files to take.
 
-![Dashboard](screenshots/dashboard.png)
+![The dashboard: cases in $FOAM_RUN, with the detected OpenFOAM version and WSL distribution](screenshots/dashboard.png)
 
-<details>
-<summary><b>More screenshots</b> — case wizard, editor, commands, monitor, sources</summary>
-
-![New case wizard](screenshots/new-case.png)
-![File editor](screenshots/file-editor.png)
-![Command panel](screenshots/commands.png)
-![Monitor](screenshots/monitor.png)
-![Applications browser](screenshots/applications.png)
-![Source browser](screenshots/src.png)
-
-</details>
-
-A short demo is in [`screenshots/gif_openfoam_studio.mp4`](screenshots/gif_openfoam_studio.mp4).
+There is also a [short screen recording](screenshots/gif_openfoam_studio.mp4) of
+the app in use.
 
 ---
 
@@ -90,19 +79,36 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
 - **Dashboard** — browse cases in `$FOAM_RUN`, switch WSL distro or OpenFOAM
   version, copy official tutorials.
 - **New Case** — guided wizard from a template (cavity, pipe flow, airfoil,
-  dam break, motorbike…).
+  dam break, motorbike…). It reads the installed OpenFOAM version and writes
+  the case in the layout that version actually wants, then preflights it before
+  you leave the wizard.
+
+  ![The New Case wizard, on the step where the mesh and the patch list are defined](screenshots/new-case.png)
 - **File Editor** — view, edit, create and delete case files.
 - **Commands** — run `blockMesh`, `foamRun`, `snappyHexMesh`… with a command
   list filtered to the OpenFOAM version in use. One-click **Allrun** launches
   the case script in the background and takes you to the Monitor.
 - **Monitor** — live log tail, residual plot, running processes with per-PID
   kill.
+
+  ![The Monitor tab, with the residual plot and the live log tail side by side](screenshots/monitor.png)
 - **Mesh** — 3D view of the case's boundary patches: orbit/zoom/pan, wireframe,
   per-patch colour and visibility, XYZ axes, standard views (±X/±Y/±Z and
   isometric), and the `blockMeshDict` vertex numbers overlaid on the model.
   Drag the bar under the view to make it taller. `checkMesh` and boundary-
   condition validation live here too.
 - **Applications / Src** — browse the installed OpenFOAM sources.
+
+<details>
+<summary>Four more: the command panel, the file editor, the applications and source browsers</summary>
+
+![Command panel](screenshots/commands.png)
+![File editor](screenshots/file-editor.png)
+![Applications browser](screenshots/applications.png)
+![Source browser](screenshots/src.png)
+
+</details>
+
 - **FOAMy** — a chat copilot that reads your case files and proposes edits you
   can apply with one click.
 - **Claude** — an agent that reads, writes and runs your cases itself, on your
