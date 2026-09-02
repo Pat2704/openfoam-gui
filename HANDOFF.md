@@ -2,23 +2,24 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-02, at the MIT licensing commit.
+Last updated: 2026-09-02, at v2.1.0.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v2 is released. The working tree is clean and there is nothing half-finished
-waiting for you — but the tip of `main` is NOT pushed:** the MIT licensing
-commit (§2k) sits on top of what was published, because pushing it was never
-asked for. Everything before it is on GitHub.
+**v2.1.0 is cut, built and tagged — and it is all LOCAL.** The working tree is
+clean and nothing is half-finished, but two commits and the `v2.1.0` tag sit on
+top of what GitHub has: the MIT licensing work (§2k) and the version bump.
+Pushing them, and publishing the release, was never asked for. **v2.0.0 is still
+the latest published release.**
 
 | | |
 |---|---|
-| latest commit | the MIT license — first commit after `v2.0.0`, **local only** |
-| tag | `v2.0.0`, at `f51c76a` |
-| release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.0.0 — both artifacts attached |
-| in `Working/` | `OpenFOAMStudio-v2-portable.exe`, `OpenFOAMStudio-v2-folder.zip`, `RELEASE-NOTES-v2.md` |
+| latest commit | the v2.1.0 bump, on top of the MIT license commit — **not pushed** |
+| tags | `v2.0.0` at `f51c76a`, pushed; `v2.1.0`, **local only** |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.0.0 — still v2.0.0, both artifacts attached |
+| in `Working/` | `OpenFOAMStudio-v2-portable.exe` and `OpenFOAMStudio-v2-folder.zip`, both rebuilt at 2.1.0, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
 
 **The tag matches what was published.** It was moved on 2026-09-02, at the
 user's request, from the first v2 commit to the last one, so the tagged tree is
@@ -28,7 +29,10 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing is in progress. The one unexplained thing is the
+**What is open:** nothing is in progress — v2.1.0 is finished and waiting for
+the user to say whether it goes out. Its release notes are already written, in
+`Working/RELEASE-NOTES-v2.1.md`, and BOTH artifacts are the 2.1.0 build. The one
+unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
@@ -742,12 +746,14 @@ policy before the project gets any real visibility.
 **Why this cannot be folded back into `v2.0.0`.** Those binaries were published
 with no license file, which means all rights reserved — a different legal state,
 not a detail. Re-tagging would also break the rule at the top of this file, that
-the tag must build the shipped binaries. It goes out as a new version.
+the tag must build the shipped binaries. It goes out as a new version. It went out as
+**v2.1.0**: bumped, rebuilt, both artifacts copied to `Working/`, release notes
+written, committed and tagged — all local, since pushing was not asked for.
 
-Still open, for whoever publishes: `.env` is tracked from the very first commit.
-The README says it holds only the telemetry switch, but it was never actually
-read — confirm there is no API key in it before giving the repo visibility. A
-key there would be in the history, and would have to be rotated, not deleted.
+One thing was checked before any of this and is settled: `.env` is tracked from
+the very first commit, and it holds exactly one line, `NEXT_TELEMETRY_DISABLED=1`
+— confirmed by the user on 2026-09-02. There is no key in the history to rotate.
+Keep it that way: that file is committed AND copied into the .exe.
 
 ---
 
@@ -848,6 +854,12 @@ a string you just added, to prove the exe really carries the new code.
   `package.json` and `electron/package.json`, the two top-level fields of
   `package-lock.json` (dependencies share that version string — never
   blanket-replace), `scripts/build-electron.js`, the README, and the folder name.
+  **That list is for a MAJOR bump.** The artifact names carry the major only
+  (`OpenFOAMStudio-v2-…`), so 2.0.0 → 2.1.0 touched four fields and nothing
+  else: `version` in the two package.json files, the two top-level fields of
+  `package-lock.json` — lines 3 and 9; the 2.0.0 further down belong to
+  dependencies — and the stale version in the header comment of
+  `electron-builder.yml`. No filename, no README, no folder rename.
 - **Declined by the user, do not re-propose**: auto-hiding `empty`/`wedge`
   patches in the mesh viewer, even though they are 91–99.95% of their cases.
 
