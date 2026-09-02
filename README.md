@@ -115,6 +115,8 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   Claude subscription. Same idea, opposite direction: FOAMy hands you a file to
   approve, Claude changes the case and tells you what it did.
 
+  ![The Claude panel: the agent inspects a case, runs checkMesh and reports the result, with each tool call shown as a row you can open](screenshots/claude-agent.png)
+
 ### Keyboard shortcuts
 
 `Ctrl+1…7` switch tab · `Ctrl+S` save file · `Ctrl+Enter` send to FOAMy ·
