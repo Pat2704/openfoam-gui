@@ -109,8 +109,14 @@ win:
   icon: build/icon.ico
   # This names the ZIP. The portable target overrides it below with its own —
   # a single name here would have called the folder build "…-portable.zip".
-  artifactName: OpenFOAMStudio-v2-folder.${ext}
+  #
+  # ${version} comes from electron/package.json and MUST stay in both names.
+  # Hard-coded "v2" once shipped a 2.1.0 release whose files were called
+  # OpenFOAMStudio-v2-…, indistinguishable from the 2.0.0 ones already attached
+  # to the previous release. A filename is how someone tells two downloads
+  # apart; it carries the whole version or it is wrong.
+  artifactName: OpenFOAMStudio-v${version}-folder.${ext}
 
 portable:
-  artifactName: OpenFOAMStudio-v2-portable.${ext}
+  artifactName: OpenFOAMStudio-v${version}-portable.${ext}
   unicode: true

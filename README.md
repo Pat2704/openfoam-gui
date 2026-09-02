@@ -32,8 +32,8 @@ want it to start:
 
 | | |
 |---|---|
-| **`OpenFOAMStudio-v2-folder.zip`** | **Recommended.** Unzip once, anywhere, then run `OpenFOAMStudio.exe` from the folder. **The window is up in about a tenth of a second.** |
-| **`OpenFOAMStudio-v2-portable.exe`** | One single file, nothing to unzip. Costs about half a minute at every launch: the portable format unpacks the whole app into TEMP each time it starts. |
+| **`OpenFOAMStudio-v2.1.0-folder.zip`** | **Recommended.** Unzip once, anywhere, then run `OpenFOAMStudio.exe` from the folder. **The window is up in about a tenth of a second.** |
+| **`OpenFOAMStudio-v2.1.0-portable.exe`** | One single file, nothing to unzip. Costs about half a minute at every launch: the portable format unpacks the whole app into TEMP each time it starts. |
 
 Either way nothing is installed and nothing is written to the registry — put it
 on the Desktop or a USB stick and double-click.
@@ -44,7 +44,7 @@ saying so. The app checks on startup and tells you if files are missing, but
 extracting with PowerShell avoids the problem:
 
 ```powershell
-Expand-Archive OpenFOAMStudio-v2-folder.zip -DestinationPath OpenFOAMStudio-v2-folder
+Expand-Archive OpenFOAMStudio-v2.1.0-folder.zip -DestinationPath OpenFOAMStudio
 ```
 
 Windows SmartScreen will warn on first run because the executable is unsigned:
@@ -209,8 +209,8 @@ failed.
 
 ```bash
 npm install
-npm run electron:build     # → dist-electron/OpenFOAMStudio-v2-portable.exe
-                           #   and dist-electron/OpenFOAMStudio-v2-folder.zip
+npm run electron:build     # → dist-electron/OpenFOAMStudio-v<version>-portable.exe
+                           #   and dist-electron/OpenFOAMStudio-v<version>-folder.zip
 ```
 
 Other commands: `npm run dev` (browser, hot reload, port 3000) ·

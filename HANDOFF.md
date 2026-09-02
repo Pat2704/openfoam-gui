@@ -18,7 +18,7 @@ as MIT. The working tree is clean; nothing is half-finished waiting for you.
 | release commit | `bcc851d` — what `v2.1.0` points at; this file may sit a commit above it |
 | tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `bcc851d` |
 | latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
-| in `Working/` | `OpenFOAMStudio-v2-portable.exe` and `OpenFOAMStudio-v2-folder.zip` at 2.1.0, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
+| in `Working/` | `OpenFOAMStudio-v2.1.0-portable.exe` and `OpenFOAMStudio-v2.1.0-folder.zip`, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
 
 **The `v2.1.0` tag builds the shipped binaries**, checked the way the paragraph
 below demands. Any commit after it that touches only this file leaves that true,
@@ -75,8 +75,9 @@ These are standing instructions, not one-offs:
 - **Rebuild the `.exe` after every change.** Not only when asked. Use the fast
   path in §4 — the user explicitly asked for a rebuild with no duplicated steps,
   so never wipe caches to "start clean".
-- **Copy BOTH fresh artifacts over `Working/`** — `OpenFOAMStudio-v2-portable.exe`
-  and `OpenFOAMStudio-v2-folder.zip`. Those are what the user launches, and the
+- **Copy BOTH fresh artifacts over `Working/`** — `OpenFOAMStudio-v<version>-portable.exe`
+  and `OpenFOAMStudio-v<version>-folder.zip`, and DELETE the previous version's
+  pair while you are there. Those are what the user launches, and the
   pair is deliberate: the .exe for a single file, the folder for a startup that
   does not spend 29 seconds unpacking itself. Approved on 2026-08-31 for the
   exe, extended to the zip on 2026-09-02. Earlier binaries stay attached to
@@ -780,8 +781,8 @@ node scripts/build-electron.js --skip-build     # re-package only, skips next bu
 
 | | |
 |---|---|
-| `OpenFOAMStudio-v2-portable.exe` | one file, nothing to install. ~29 s to the window: the portable stub re-extracts the whole app into TEMP on every launch. |
-| `OpenFOAMStudio-v2-folder.zip` | the same app as a folder. Unzip once, run `OpenFOAMStudio.exe` inside it, and nothing is ever extracted again — **window in ~130 ms**, interface at ~4 s. |
+| `OpenFOAMStudio-v<version>-portable.exe` | one file, nothing to install. ~29 s to the window: the portable stub re-extracts the whole app into TEMP on every launch. |
+| `OpenFOAMStudio-v<version>-folder.zip` | the same app as a folder. Unzip once, run `OpenFOAMStudio.exe` inside it, and nothing is ever extracted again — **window in ~130 ms**, interface at ~4 s. |
 
 They are not alternatives and never ship apart: copy BOTH over `Working/`, and
 attach BOTH to every release. `scripts/build-electron.js` fails the build if
@@ -864,17 +865,24 @@ a string you just added, to prove the exe really carries the new code.
   87 MB is the number. A build whose log ends
   `SUCCESS: server.js at .next\standalone\electron\resources\standalone\server.js`
   — a NESTED path — has already been swallowed.
-- **A version bump touches six places at once**: `artifactName` ×2 in
-  `electron/electron-builder.yml` plus its header comment, `version` in
-  `package.json` and `electron/package.json`, the two top-level fields of
-  `package-lock.json` (dependencies share that version string — never
-  blanket-replace), `scripts/build-electron.js`, the README, and the folder name.
-  **That list is for a MAJOR bump.** The artifact names carry the major only
-  (`OpenFOAMStudio-v2-…`), so 2.0.0 → 2.1.0 touched four fields and nothing
-  else: `version` in the two package.json files, the two top-level fields of
-  `package-lock.json` — lines 3 and 9; the 2.0.0 further down belong to
-  dependencies — and the stale version in the header comment of
-  `electron-builder.yml`. No filename, no README, no folder rename.
+- **A version bump is now three fields**, because the artifact names derive
+  themselves: `version` in `package.json` and in `electron/package.json`, and
+  the two top-level fields of `package-lock.json` — lines 3 and 9 only; the
+  same string further down belongs to dependencies, and a blanket replace
+  corrupts the lock. The README's two download filenames are the one thing
+  still written by hand. That is all.
+- **The filenames carry the FULL version, and they are generated — keep it
+  that way.** `artifactName` in `electron-builder.yml` uses `${version}`, and
+  `scripts/build-electron.js` reads the same field out of
+  `electron/package.json` to know what to check for. Neither may be
+  hard-coded again. **This is written from the mistake**: they used to say
+  `OpenFOAMStudio-v2-…`, carrying the major only, and it was reasoned about as
+  a feature — "a minor bump does not touch the filenames". So v2.1.0 was
+  published with files named exactly like the v2.0.0 files already attached to
+  the previous release, and the release notes went as far as explaining to the
+  user how to tell two identically named downloads apart. The user caught it.
+  A filename is how someone tells two downloads apart; it carries the whole
+  version or it is wrong.
 - **Declined by the user, do not re-propose**: auto-hiding `empty`/`wedge`
   patches in the mesh viewer, even though they are 91–99.95% of their cases.
 

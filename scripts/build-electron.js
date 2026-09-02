@@ -2,13 +2,13 @@
 /**
  * build-electron.js
  *
- * Single entry point for producing OpenFOAMStudio-v2-portable.exe.
+ * Single entry point for producing the two release artifacts.
  *
  *   1. next build + copy static/public into .next/standalone  (scripts/build.js)
  *   2. assemble electron/resources/{bin,standalone}           (electron/scripts/prepare-resources.js)
  *   3. electron-builder --win, reading electron/electron-builder.yml
  *
- * Output: dist-electron/OpenFOAMStudio-v2-portable.exe
+ * Output: dist-electron/OpenFOAMStudio-v<version>-{portable.exe,folder.zip}
  *
  * Usage:
  *   node scripts/build-electron.js              # full build
@@ -65,9 +65,15 @@ function main() {
   // one-file download, the .zip is the same app as a folder that starts in a
   // tenth of a second because it never re-extracts itself. A release carries
   // both, so a build that produced only one of them is a failed build.
+  // Built from electron/package.json, the same field electron-builder reads
+  // for ${version} in artifactName. Never hard-code the version here: the two
+  // would drift, and this check would pass on a wrongly named artifact.
+  const appVersion = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "electron", "package.json"), "utf8")
+  ).version;
   const artifacts = [
-    "OpenFOAMStudio-v2-portable.exe",
-    "OpenFOAMStudio-v2-folder.zip",
+    `OpenFOAMStudio-v${appVersion}-portable.exe`,
+    `OpenFOAMStudio-v${appVersion}-folder.zip`,
   ];
   const missing = [];
   for (const name of artifacts) {
