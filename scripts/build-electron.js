@@ -61,12 +61,26 @@ function main() {
     path.join(ROOT, "electron", "electron-builder.yml"),
   ]);
 
-  const out = path.join(ROOT, "dist-electron", "OpenFOAMStudio-v2-portable.exe");
-  if (fs.existsSync(out)) {
-    const mb = (fs.statSync(out).size / 1048576).toFixed(1);
-    log(`SUCCESS: dist-electron/OpenFOAMStudio-v2-portable.exe (${mb} MB)`);
-  } else {
-    console.error("[electron] ERROR: expected artifact not found in dist-electron/");
+  // BOTH artifacts, every time. They are not alternatives: the .exe is the
+  // one-file download, the .zip is the same app as a folder that starts in a
+  // tenth of a second because it never re-extracts itself. A release carries
+  // both, so a build that produced only one of them is a failed build.
+  const artifacts = [
+    "OpenFOAMStudio-v2-portable.exe",
+    "OpenFOAMStudio-v2-folder.zip",
+  ];
+  const missing = [];
+  for (const name of artifacts) {
+    const file = path.join(ROOT, "dist-electron", name);
+    if (fs.existsSync(file)) {
+      const mb = (fs.statSync(file).size / 1048576).toFixed(1);
+      log(`SUCCESS: dist-electron/${name} (${mb} MB)`);
+    } else {
+      missing.push(name);
+    }
+  }
+  if (missing.length) {
+    console.error(`[electron] ERROR: not produced: ${missing.join(", ")}`);
     process.exit(1);
   }
 }

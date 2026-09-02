@@ -27,9 +27,16 @@ A short demo is in [`screenshots/gif_openfoam_studio.mp4`](screenshots/gif_openf
 
 ## Install
 
-1. Download **`OpenFOAMStudio-v2-portable.exe`** from the [Releases](../../releases) page.
-2. Put it anywhere (Desktop, a USB stick — it writes nothing to the registry).
-3. Double-click it.
+Two downloads on the [Releases](../../releases) page, same app — pick by how you
+want it to start:
+
+| | |
+|---|---|
+| **`OpenFOAMStudio-v2-folder.zip`** | **Recommended.** Unzip once, anywhere, then run `OpenFOAMStudio.exe` from the folder. **The window is up in about a tenth of a second.** |
+| **`OpenFOAMStudio-v2-portable.exe`** | One single file, nothing to unzip. Costs about half a minute at every launch: the portable format unpacks the whole app into TEMP each time it starts. |
+
+Either way nothing is installed and nothing is written to the registry — put it
+on the Desktop or a USB stick and double-click.
 
 Windows SmartScreen will warn on first run because the executable is unsigned:
 **More info → Run anyway**.
@@ -189,6 +196,7 @@ failed.
 ```bash
 npm install
 npm run electron:build     # → dist-electron/OpenFOAMStudio-v2-portable.exe
+                           #   and dist-electron/OpenFOAMStudio-v2-folder.zip
 ```
 
 Other commands: `npm run dev` (browser, hot reload, port 3000) ·

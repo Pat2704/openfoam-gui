@@ -81,11 +81,25 @@ extraResources:
   - from: mcp
     to: mcp
 
+# TWO artifacts, always, and they are not alternatives — ship both.
+#
+#   the portable .exe   one file, nothing to install, ~29 s to the window
+#                       because the stub re-extracts everything into TEMP on
+#                       every launch (see the compression note above);
+#
+#   the .zip            the same app as a folder. Unzip once, run
+#                       OpenFOAMStudio.exe from it, and there is no extraction
+#                       ever again: window in ~130 ms, interface at ~4 s.
+#
+# Whoever cuts the next release attaches BOTH to it.
 win:
   target:
     - portable
+    - zip
   icon: build/icon.ico
-  artifactName: OpenFOAMStudio-v2-portable.${ext}
+  # This names the ZIP. The portable target overrides it below with its own —
+  # a single name here would have called the folder build "…-portable.zip".
+  artifactName: OpenFOAMStudio-v2-folder.${ext}
 
 portable:
   artifactName: OpenFOAMStudio-v2-portable.${ext}

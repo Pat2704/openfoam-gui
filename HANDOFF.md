@@ -34,9 +34,12 @@ These are standing instructions, not one-offs:
 - **Rebuild the `.exe` after every change.** Not only when asked. Use the fast
   path in §4 — the user explicitly asked for a rebuild with no duplicated steps,
   so never wipe caches to "start clean".
-- **Copy the fresh exe over `Working/OpenFOAMStudio-v2-portable.exe`.** That is
-  the binary the user actually launches. Approved on 2026-08-31; earlier
-  binaries stay attached to their GitHub releases if one is ever needed.
+- **Copy BOTH fresh artifacts over `Working/`** — `OpenFOAMStudio-v2-portable.exe`
+  and `OpenFOAMStudio-v2-folder.zip`. Those are what the user launches, and the
+  pair is deliberate: the .exe for a single file, the folder for a startup that
+  does not spend 29 seconds unpacking itself. Approved on 2026-08-31 for the
+  exe, extended to the zip on 2026-09-02. Earlier binaries stay attached to
+  their GitHub releases if one is ever needed. §4 has the details.
 - **NEVER push, tag or touch GitHub unless the user asks in that message.**
   Not a `git push`, not a tag, not a release, not replacing a release asset —
   however small and obviously wanted the change is. One authorisation covers one
@@ -607,8 +610,21 @@ npm run electron:build                          # full, ~2.5 min
 node scripts/build-electron.js --skip-build     # re-package only, skips next build
 ```
 
-Then copy `dist-electron/OpenFOAMStudio-v2-portable.exe` over
-`Working/OpenFOAMStudio-v2-portable.exe`.
+**TWO artifacts come out, and they go together everywhere:**
+
+| | |
+|---|---|
+| `OpenFOAMStudio-v2-portable.exe` | one file, nothing to install. ~29 s to the window: the portable stub re-extracts the whole app into TEMP on every launch. |
+| `OpenFOAMStudio-v2-folder.zip` | the same app as a folder. Unzip once, run `OpenFOAMStudio.exe` inside it, and nothing is ever extracted again — **window in ~130 ms**, interface at ~4 s. |
+
+They are not alternatives and never ship apart: copy BOTH over `Working/`, and
+attach BOTH to every release. `scripts/build-electron.js` fails the build if
+either is missing, so this cannot be forgotten by accident. The user asked for
+the pair on 2026-09-02, after the measurement below showed that the portable
+format's startup cost cannot be fixed from inside the app.
+
+The zip's launch is also the honest answer to "why is startup slow": it is the
+same code, and the only difference is that nothing is unpacked at launch.
 
 Nothing in this path re-does work, and it must stay that way:
 
