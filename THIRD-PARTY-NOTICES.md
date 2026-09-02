@@ -44,6 +44,9 @@ the `.com` line, by OpenCFD Ltd). OpenFOAM Studio runs it as a separate program
 inside WSL2 through `wsl.exe`; it neither links against it nor redistributes any
 part of it, so the GPL does not extend to this application.
 
-**OpenFOAM** is a registered trademark of OpenCFD Ltd. This project is
-independent and is not approved, sponsored or endorsed by OpenCFD Ltd, ESI
-Group, or The OpenFOAM Foundation.
+OPENFOAM® is a registered trade mark of OpenCFD Limited, producer and
+distributor of the OpenFOAM software via www.openfoam.com.
+
+This offering is not approved or endorsed by OpenCFD Limited, producer and
+distributor of the OpenFOAM software via www.openfoam.com, and owner of the
+OPENFOAM® and OpenCFD® trade marks.

@@ -4,7 +4,7 @@
 [![Downloads](https://img.shields.io/github/downloads/Pat2704/openfoam-gui/total?label=downloads)](https://github.com/Pat2704/openfoam-gui/releases)
 [![License: MIT](https://img.shields.io/github/license/Pat2704/openfoam-gui?color=blue)](LICENSE)
 
-A desktop GUI for running **OpenFOAM** CFD simulations inside **WSL2 (Ubuntu)**
+A desktop GUI for running **OPENFOAM®** CFD simulations inside **WSL2 (Ubuntu)**
 on Windows, with two AI helpers built in: **FOAMy**, a copilot that proposes
 edits you apply, and **Claude**, an agent that does the work itself.
 
@@ -287,6 +287,9 @@ under the GNU GPL v3 by The OpenFOAM Foundation. OpenFOAM Studio runs it as a
 separate program inside WSL2; it does not link against it and redistributes no
 part of it.
 
-OPENFOAM is a registered trademark of OpenCFD Ltd. This project is independent
-and is not approved, sponsored or endorsed by OpenCFD Ltd, ESI Group, or The
-OpenFOAM Foundation.
+OPENFOAM® is a registered trade mark of OpenCFD Limited, producer and
+distributor of the OpenFOAM software via www.openfoam.com.
+
+This offering is not approved or endorsed by OpenCFD Limited, producer and
+distributor of the OpenFOAM software via www.openfoam.com, and owner of the
+OPENFOAM® and OpenCFD® trade marks.
