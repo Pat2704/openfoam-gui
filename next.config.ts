@@ -36,12 +36,12 @@ const nextConfig: NextConfig = {
       // with errors from a stale duplicate of a file that was already fixed.
       'src/**',
       // Development-only files that the tracer sweeps up because they sit in
-      // the root. None is read at runtime, and HANDOFF.md, AGENTS.md and
-      // CLAUDE.md are internal notes that have no business inside a user's
-      // copy of the app. The license texts deliberately stay: LICENSE and
-      // THIRD-PARTY-NOTICES.md belong with the binary.
+      // the root. None is read at runtime, and docs/ — the handoff notes and
+      // the release notes — along with the generated AGENTS.md and CLAUDE.md,
+      // has no business inside a user's copy of the app. The license texts
+      // deliberately stay: LICENSE and THIRD-PARTY-NOTICES.md belong with the
+      // binary.
       'docs/**',
-      'HANDOFF.md',
       'AGENTS.md',
       'CLAUDE.md',
       'eslint.config.mjs',

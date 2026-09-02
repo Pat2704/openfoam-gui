@@ -1,0 +1,10 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question about using the app
+    url: https://github.com/Pat2704/openfoam-gui/discussions
+    about: Ask in Discussions rather than opening an issue.
+  - name: Question about OpenFOAM itself
+    url: https://www.cfd-online.com/Forums/openfoam/
+    about: >
+      OpenFOAM is not part of this project. For solver, meshing or case setup
+      questions, CFD Online is the right place.

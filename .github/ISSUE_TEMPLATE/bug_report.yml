@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in the app does not work
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The fields below are the ones that decide whether
+        a bug can be reproduced — please do not skip them.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: download
+    attributes:
+      label: Which download are you running?
+      description: The two behave differently at startup, and some bugs appear in only one.
+      options:
+        - The folder .zip (OpenFOAMStudio.exe from the unzipped folder)
+        - The portable .exe
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Right-click the .exe → Properties → Details, or the footer of the app.
+      placeholder: "2.1.0"
+    validations:
+      required: true
+  - type: input
+    id: openfoam
+    attributes:
+      label: OpenFOAM version
+      description: >
+        Run `foamVersion` inside WSL, or read it from the dashboard. Note that
+        only the OpenFOAM Foundation line (9-14) is supported; ESI versions such
+        as v2312 are known not to work correctly.
+      placeholder: "14"
+    validations:
+      required: true
+  - type: input
+    id: wsl
+    attributes:
+      label: WSL distribution
+      description: "`wsl -l -v` in PowerShell."
+      placeholder: "Ubuntu-22.04"
+    validations:
+      required: true
+  - type: textarea
+    id: startup-log
+    attributes:
+      label: Startup log
+      description: >
+        If the app failed to start, paste %APPDATA%\openfoam-studio\startup.log.
+        It is truncated on every run, so copy it right after the failure. Leave
+        empty if the app started fine.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, an OpenFOAM log, the case layout — whatever helps.
