@@ -11,20 +11,32 @@ Last updated: 2026-09-02, at v2.1.0.
 **v2.1.0 is released, and the project is open source under the MIT License.**
 Everything is committed and pushed to `main`, the tag is published, both
 artifacts are attached to the release, and GitHub reports the repository license
-as MIT. The working tree is clean; nothing is half-finished waiting for you.
+as MIT. The working tree is clean. One loose end remains, described under the
+table.
 
 | | |
 |---|---|
-| release commit | `bcc851d` — what `v2.1.0` points at; this file may sit a commit above it |
-| tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `bcc851d` |
+| release commit | `1939f13` — what the attached artifacts were built from |
+| tags | `v2.0.0` at `f51c76a`; `v2.1.0` still at `bcc851d`, see below |
 | latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
 | in `Working/` | `OpenFOAMStudio-v2.1.0-portable.exe` and `OpenFOAMStudio-v2.1.0-folder.zip`, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
 
-**The `v2.1.0` tag builds the shipped binaries**, checked the way the paragraph
-below demands. Any commit after it that touches only this file leaves that true,
-because HANDOFF.md is no longer packaged — see the tracing trap in §5. Do not
-move a published tag to pick such a commit up; that is the mistake v2.0.0 had to
-be repaired from.
+**One thing is left undone, and it is the only loose end in the repo: the
+`v2.1.0` tag does not build the artifacts attached to the release.** It points
+at `bcc851d`, which still names them `OpenFOAMStudio-v2-…`; the assets now on
+the release were built from `1939f13`, which fixed exactly that (§5, the
+filename trap). Moving the tag needs a force-push, which was blocked here and
+was left for the user to approve:
+
+```
+git tag -f -a v2.1.0 -m "v2.1.0 — open source under the MIT License"
+git push --force origin v2.1.0
+```
+
+Until that runs, anyone checking out `v2.1.0` rebuilds files with the old
+names. Content-wise the two builds are the same app. Note that this is the
+invariant at stake, not tidiness: a tag that does not build the shipped
+binaries is worse than no tag — the same rule v2.0.0 had to be repaired for.
 
 **The tag matches what was published.** It was moved on 2026-09-02, at the
 user's request, from the first v2 commit to the last one, so the tagged tree is
@@ -34,7 +46,8 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing is in progress. The one unexplained thing is the
+**What is open:** the `v2.1.0` tag, above — nothing else is in progress. The
+one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
