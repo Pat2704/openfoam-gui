@@ -2,7 +2,7 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-02, at v2.1.0.
+Last updated: 2026-09-02, end of the session that opened the project up.
 
 ---
 
@@ -18,7 +18,7 @@ as MIT. The working tree is clean; nothing is half-finished waiting for you.
 | release commit | `1939f13` — what the attached artifacts were built from |
 | tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d` |
 | latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
-| in `Working/` | the checkout, `OpenFOAMStudio-source/`, and the two artifacts `OpenFOAMStudio-v2.1.0-{portable.exe,folder.zip}`. Release notes moved into the repo, `docs/releases/` (§4b) |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.1.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
@@ -39,8 +39,11 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing in the code. Outside it, the trade mark request to
-OpenCFD is unanswered (§2l). The one unexplained thing is the
+**What is open:** nothing in the code. Three things sit outside it: the trade
+mark request to OpenCFD is unanswered (§2l), the Mesh tab still has no
+screenshot (§5b), and the repository's social preview image has yet to be
+uploaded — the user is doing that one, and it can only be done from Settings.
+The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
@@ -1002,21 +1005,58 @@ the canonical filenames to the tags as they were actually published.
 - **Declined by the user, do not re-propose**: auto-hiding `empty`/`wedge`
   patches in the mesh viewer, even though they are 91–99.95% of their cases.
 
-## 5b. The screenshots, and the two that are missing
+## 5b. The screenshots, and the one still missing
 
-`screenshots/` holds seven PNGs at about 1468x999 and an .mp4 screen recording.
-An `.mkv` duplicate of that recording, 11 MB and referenced by nothing, was
-removed on 2026-09-02.
+`screenshots/` holds eight PNGs and an .mp4 screen recording. An `.mkv`
+duplicate of that recording, 11 MB and referenced by nothing, was removed on
+2026-09-02. Every file in the directory is referenced by the README; keep it
+that way, and check for orphans after any change.
 
-**Nothing pictures the two features that actually distinguish the project.**
-There is no screenshot of the Mesh tab and none of the Claude panel — the set
-predates both. They are the two worth taking, at the same 1440x900 so they sit
-with the rest, and the README has an obvious place for each.
+**A screenshot of the Mesh tab is still missing, and it is the last gap.** The
+user took one on 2026-09-02 and pasted it into the conversation, but it was
+never saved to disk, so it could not be committed. Everything else is in: the
+Claude panel went in as `claude-agent.png` that same evening, which had been the
+other gap.
 
-They cannot be taken from a session: the Browser pane caps out around 800 px
-wide, which is below the existing images, and a pane screenshot cannot be
-written to a file anyway. This is the user's to do. There is also no ffmpeg on
-the machine, so the .mp4 cannot be turned into a GIF from here.
+To close it: save the image as `screenshots/mesh.png`, sized like the rest
+(the existing ones run 1418x886 to 1468x999), and add it under the **Mesh**
+bullet in the README's "What it does", with alt text that says what is shown
+rather than naming the tab — that is the pattern the other images follow.
+
+**Screenshots cannot be produced from a session.** The Browser pane caps out
+around 800 px wide, below the existing images, and a pane capture cannot be
+written to a file at all. An image pasted into the conversation cannot be
+written to a file either — only one already saved on disk can be picked up. So
+this is always the user's to take; look in `Pictures/Screenshots/` for it. There
+is also no ffmpeg on the machine, so the .mp4 cannot be turned into a GIF here.
+
+---
+
+## 5c. How the repository presents itself
+
+Done on 2026-09-02, when the project became something a stranger might land on.
+GitHub's community score went 42% to 100%. What is there and why:
+
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and
+  `.github/` with two issue forms, a chooser config and a PR template.
+- **The bug form is the load-bearing one.** It requires which download was used,
+  the app version, the OpenFOAM version, the WSL distribution and
+  `startup.log` — the four things every past bug needed and none of which a
+  reporter would think to send unprompted. If a class of bug turns out to need
+  something else, add the field there rather than asking each time.
+- `SECURITY.md` points at GitHub's **private vulnerability reporting**, which is
+  enabled on the repo, so no personal email is published. It puts the agent's
+  unrestricted mode and `validateRelativePath` explicitly in scope, and states
+  the known limit of the `/mnt/` check (§2j) so nobody reports it as news.
+- The chooser sends OpenFOAM questions to CFD Online, keeping issues about
+  the app.
+- Wiki and Projects are OFF — they were empty tabs, which reads as abandonment.
+  Issues and Discussions are on, and the chooser links to Discussions.
+- The README opens with badges that read `/releases/latest` and the shields API,
+  so they follow each release on their own (§5). Images sit beside the bullets
+  they illustrate rather than in a gallery nobody opened.
+- `HANDOFF.md` moved to `docs/` so the root reads as a project. It is excluded
+  from the packaged app along with the rest of `docs/` (§5, the tracing trap).
 
 ---
 
