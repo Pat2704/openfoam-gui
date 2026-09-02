@@ -6,6 +6,38 @@ Last updated: 2026-09-02, at the v2 release.
 
 ---
 
+## Where things stand right now (read this first)
+
+**v2 is released and everything in the repo is committed and pushed to `main`.**
+The working tree is clean; there is nothing half-finished waiting for you.
+
+| | |
+|---|---|
+| latest commit | `6c8d390` — unrestricted mode stops at the Windows disk |
+| tag | `v2.0.0`, at `23a3b8a` |
+| release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.0.0 — both artifacts attached |
+| in `Working/` | `OpenFOAMStudio-v2-portable.exe`, `OpenFOAMStudio-v2-folder.zip`, `RELEASE-NOTES-v2.md` |
+
+**One discrepancy to know about:** the tag sits at `23a3b8a`, but the .exe and
+.zip attached to the release were rebuilt from `6c8d390`, four commits later —
+they contain the startup diagnostics (§2i) and the `/mnt/` guard (§2j), which
+the tagged tree does not. So a build from the tag will NOT reproduce the
+published binaries. Moving the tag would fix that and was not done, because
+touching GitHub needs the user to ask (§1). Offer it if a v2.0.1 comes up.
+
+**What is open:** nothing is in progress. The one unexplained thing is the
+folder build that lost `resources/standalone` (§2i, §2j) — the user reports
+having launched the app successfully from that same folder beforehand, which
+rules out the truncated-unpack theory, and no cause was ever proven. The startup
+log added in §2i is what will catch it if it happens again.
+
+**Where the recent work lives:** §2f is the Claude agent, §2g–2j are the four
+rounds of fixes that followed it, newest last. §4 is the build path — it now
+produces TWO artifacts and both ship. §5 is the trap list, and it is the section
+most worth reading before touching startup, packaging or the Browser pane.
+
+---
+
 ## 0. Orientation
 
 **`README.md` is the description of the project** — what the app is, what each
