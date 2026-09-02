@@ -39,7 +39,8 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing is in progress. The one unexplained thing is the
+**What is open:** nothing in the code. Outside it, the trade mark request to
+OpenCFD is unanswered (§2l). The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
@@ -764,6 +765,64 @@ One thing was checked before any of this and is settled: `.env` is tracked from
 the very first commit, and it holds exactly one line, `NEXT_TELEMETRY_DISABLED=1`
 — confirmed by the user on 2026-09-02. There is no key in the history to rotate.
 Keep it that way: that file is committed AND copied into the .exe.
+
+---
+
+## 2l. The trade mark, and why the .exe is not signed
+
+Two questions the user raised on 2026-09-02, once the project went open source.
+
+**The product name probably needs OpenCFD's permission, and a request is
+PENDING.** The OpenCFD trade mark policy has a clause saying third parties must
+not incorporate the trade marks into the names of their goods or services
+without a specific written agreement or licence. "OpenFOAM Studio" is exactly
+that. Their guidelines reinforce it: for an extension to OpenFOAM they
+explicitly discourage both `somethingFoam` names and "OpenFOAM Something" names,
+and point instead at a distinct name of the project's own with OpenFOAM only as
+a description. Two smaller things are also off: the policy forbids changing the
+capitalisation of the mark (so `OpenFOAMStudio` closed up, and `openfoam-gui`
+lowercase, are non-conforming forms), and the guidelines say project URLs should
+not carry the name — though that passage sits in the section about software
+DERIVED from the OpenFOAM source, which this app is not.
+
+A request for written permission was sent to OpenCFD on 2026-09-02 through the
+enquiries form on openfoam.com. The text is kept in
+`Working/OpenCFD-trademark-request.md`. **No answer yet.** Two things to know
+before following it up: the letter deliberately does NOT offer to rename — the
+user cut that paragraph on the grounds that conceding before an objection gives
+the position away — so if the answer is no, the rename is a second conversation
+and the guidelines' preferred form is the place to start. And the strong
+argument in the letter is factual, not apologetic: the app contains no OpenFOAM
+code, redistributes none, and runs the user's own installation as a separate
+process.
+
+**What was already fixed.** The policy prescribes two statements VERBATIM — an
+Acknowledgement of ownership and a Disclaimer of endorsement — and a paraphrase
+does not satisfy it. Both are quoted exactly in the README and in
+`THIRD-PARTY-NOTICES.md`, and the first reference carries `OPENFOAM®`. Also
+worth remembering: the policy forbids describing oneself as an "OpenFOAM
+developer" unless commissioned by OpenCFD — the permitted phrasing is a
+developer USING OpenFOAM technology.
+
+**Code signing was researched and dropped on cost.** Do not redo this research:
+
+- The warning has two halves. Unsigned → "unknown publisher". Signed but new →
+  SmartScreen still warns until reputation accumulates. **EV certificates stopped
+  bypassing SmartScreen in 2024**, so paying more buys nothing here.
+- **SignPath Foundation** is free for OSS and the project now qualifies on
+  licence — but it signs only artifacts it can verify came from an AUTOMATED
+  build of the repository, and this project builds locally on the user's
+  machine. It would need a CI pipeline first. Its certificate is also issued to
+  SignPath Foundation, so THEY would be the publisher, not the user.
+- **Certum Open Source Code Signing**, $58, cloud HSM, no CI needed, publisher
+  string `Open Source Developer, Tommaso Ferrara`. Validity is ONE YEAR — and
+  from 2026-03-01 the industry ceiling is 460 days, so multi-year certificates
+  no longer exist. Timestamped signatures stay valid after expiry, so the
+  recurring cost buys the ability to publish NEW builds, not to keep old ones
+  working.
+- The user decided the recurring cost was not worth it. The README already tells
+  users to click through SmartScreen. **Do not re-propose signing** unless they
+  raise it.
 
 ---
 
