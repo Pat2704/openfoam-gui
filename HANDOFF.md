@@ -631,6 +631,46 @@ instance from an earlier test swallow the launch you are trying to observe
 ("Another instance is already running"), and the run looks like a pass. Kill
 every `OpenFOAMStudio*` process before each attempt.
 
+## 2j. Unrestricted mode stops at the Windows disk
+
+Unrestricted mode runs its shell **in WSL**, and WSL mounts the Windows drives
+at `/mnt/<letter>`. So "no limits" quietly included the user's documents and the
+application's own program files — one `rm -rf /mnt/c/...` away. That is not what
+anyone means by "let the agent work on my cases", so `checkUnrestrictedCommand()`
+in `src/lib/agent-policy.ts` refuses any command mentioning `/mnt/`, the tool
+description says so, and the unrestricted system prompt says so.
+
+Verified on the packaged app: the model declines on its own from the tool
+description, and when forced to call the tool anyway the POLICY refuses — which
+is the half that matters, since the model's judgement is not a control. A plain
+`ls -1 | head -3` still runs, so the mode is otherwise intact.
+
+Two limits stated in the code and worth repeating: this reads the command as
+text, so it stops an accident rather than a determined bypass (a path built in a
+shell variable would pass); and everything inside WSL remains destroyable, which
+is the whole point of the mode.
+
+**What prompted it was a false alarm, and the transcripts are why it stayed
+false.** The user's folder build lost `resources/standalone` and asked whether
+the agent — which they had used in unrestricted mode to delete a case — could
+have done it. Claude Code keeps per-session transcripts under
+`~/.claude/projects/<encoded cwd>/`, and for this agent the cwd is
+`%TEMP%\openfoam-studio-agent`, so every command it has ever run is on disk and
+greppable. All 36 of them stayed inside `/home/.../run` and `/opt/openfoam14`;
+none mentioned `/mnt/`. The three case deletions in that session were each
+asked for explicitly, and `cavity` was re-copied from the tutorials at the
+user's request immediately afterwards. **Read those transcripts before
+attributing anything to the agent** — the answer took two minutes and would
+otherwise have been a guess.
+
+The disappearance of `resources/standalone` remains UNEXPLAINED. The timestamps
+looked like a truncated unpack (folder created 14:47:24, last file 14:47:34,
+against ~40 s for a full extraction here), but the user reports launching the
+app successfully from that folder, which cannot happen without `server.js`, and
+their machine extracts faster. Their account beats the inference. If it recurs,
+`%APPDATA%\openfoam-studio\startup.log` (§2i) now says what was missing and
+whether the app had been starting from there before.
+
 ## 3. `claude_test`
 
 A scratch case the user told me to create, at

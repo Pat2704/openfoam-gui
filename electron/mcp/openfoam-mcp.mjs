@@ -92,10 +92,11 @@ const TOOLS = [
     name: 'run_openfoam',
     description: MODE === 'unrestricted'
       ? 'Run a command inside a case directory, in WSL. UNRESTRICTED MODE is on: this is a real ' +
-        'shell — any command, pipes, redirects and chaining all work, and nothing is filtered out. ' +
-        'The user turned this on deliberately. Say what you are about to run before running ' +
-        'anything destructive. Use background: true for long solves. Returns the exit code and ' +
-        'the last lines of output.'
+        'shell — any command, pipes, redirects and chaining all work. The one thing still refused ' +
+        'is the Windows disk: paths under /mnt/ are out of bounds, because that is the user\'s own ' +
+        'documents and this application\'s files, and no OpenFOAM work needs them. Everything ' +
+        'inside WSL is yours. Say what you are about to run before running anything destructive. ' +
+        'Use background: true for long solves. Returns the exit code and the last lines of output.'
       : 'Run one OpenFOAM executable inside a case (blockMesh, checkMesh, foamRun, snappyHexMesh, ' +
         'decomposePar, Allrun, …). Only executables this installation actually ships are accepted, ' +
         'and shell syntax (pipes, redirects, chaining) is refused. For a parallel run write exactly ' +

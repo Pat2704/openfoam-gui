@@ -155,7 +155,12 @@ one per call, with no shell syntax. Switch it to `No limits` — one click, no d
 and `run_openfoam` becomes a real shell inside the case directory: any command,
 pipes, redirects, chaining, including ones that delete or overwrite. Every call
 still appears in the conversation as it happens, and in the activity log tagged
-`[unrestricted]`. The setting is remembered, and changing it restarts the agent
+`[unrestricted]`.
+
+One limit survives even there: **paths under `/mnt/` are refused**. That is the
+Windows disk as WSL sees it — your documents, and this app'"'"'s own files — and no
+OpenFOAM work needs to reach it. Everything inside WSL is fair game, which is
+the point of the mode. The setting is remembered, and changing it restarts the agent
 while keeping the conversation.
 
 Model and reasoning depth are chosen in the composer, the way Claude Desktop

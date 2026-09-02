@@ -122,6 +122,37 @@ function checkCommand(raw: string): { ok: true; command: string } | { ok: false;
   return { ok: true, command };
 }
 
+/**
+ * The one line unrestricted mode does not cross: out of WSL.
+ *
+ * "No limits" means a real shell for CFD work — the whole Linux side, including
+ * the OpenFOAM installation and anything under the user's WSL home. It does NOT
+ * mean the Windows disk, and WSL exposes that at /mnt/<drive>: from there a
+ * single `rm -rf` reaches the user's documents, or the app's own program files,
+ * which is never what "let the agent work on my cases" was asking for.
+ *
+ * Two honest limits on this check. It reads the command as text, so a
+ * determined bypass (building the path in a variable, say) is possible — it
+ * stops an accident, not an adversary. And everything inside WSL stays
+ * reachable, which is the point of the mode.
+ */
+const WINDOWS_MOUNT = /(^|[^\w/])\/mnt\//;
+
+function checkUnrestrictedCommand(raw: string): { ok: true; command: string } | { ok: false; reason: string } {
+  const command = raw.trim();
+  if (!command) return { ok: false, reason: 'empty command' };
+  if (WINDOWS_MOUNT.test(command)) {
+    return {
+      ok: false,
+      reason: 'even with the limits off, this agent stays inside WSL: /mnt/… is the Windows disk '
+        + '(your documents, and this application\'s own files), and nothing about an OpenFOAM case '
+        + 'needs to reach it. Work under $FOAM_RUN or the OpenFOAM installation instead, and ask '
+        + 'the user if a Windows file really has to change.',
+    };
+  }
+  return { ok: true, command };
+}
+
 // ── Tools ───────────────────────────────────────────────────────────────────
 
 export type ToolResult = { text: string } | { error: string };
@@ -182,7 +213,7 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
     case 'run_openfoam': {
       const name = validateCaseName(str('case'));
       const decision = unrestricted
-        ? ({ ok: true, command: str('command').trim() } as const)
+        ? checkUnrestrictedCommand(str('command'))
         : checkCommand(str('command'));
       if (!decision.ok) return { error: decision.reason };
       if (!decision.command) return { error: 'empty command' };
