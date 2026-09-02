@@ -845,6 +845,18 @@ a string you just added, to prove the exe really carries the new code.
   The fix is the `outputFileTracingExcludes` list in `next.config.ts`
   (`dist-electron`, `electron`, `screenshots`) — swapping `join(process.cwd(),…)`
   for `resolve(…)` did NOT help, which is worth knowing before trying it again.
+  The same list is also what keeps DEVELOPMENT files out of a user's copy: the
+  tracer sweeps up whatever sits in the root, so `HANDOFF.md`, `AGENTS.md`,
+  `CLAUDE.md`, the eslint/postcss/tsconfig files and `components.json` were all
+  riding inside the .exe until 2026-09-02. They are excluded by name now.
+  `LICENSE`, `README.md` and `THIRD-PARTY-NOTICES.md` deliberately stay — they
+  belong with the binary. Two useful consequences: `prepare-resources.js`
+  deletes what the exclusion removed on the next build (it reported
+  `9 removed`), and HANDOFF is no longer packaged, so editing THIS file no
+  longer changes the artifacts. Anything excluded here must be proven not to be
+  a runtime dependency: verify with the packaged-server run below, not by
+  reasoning about it. That run answered `{"running":true,...}` after the change.
+
   **Check the reported size on every build**: `build-electron.js` prints it, and
   87 MB is the number. A build whose log ends
   `SUCCESS: server.js at .next\standalone\electron\resources\standalone\server.js`

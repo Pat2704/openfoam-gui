@@ -35,6 +35,19 @@ const nextConfig: NextConfig = {
       // type-checked as if it were the project, which broke `npm run check`
       // with errors from a stale duplicate of a file that was already fixed.
       'src/**',
+      // Development-only files that the tracer sweeps up because they sit in
+      // the root. None is read at runtime, and HANDOFF.md, AGENTS.md and
+      // CLAUDE.md are internal notes that have no business inside a user's
+      // copy of the app. The license texts deliberately stay: LICENSE and
+      // THIRD-PARTY-NOTICES.md belong with the binary.
+      'HANDOFF.md',
+      'AGENTS.md',
+      'CLAUDE.md',
+      'eslint.config.mjs',
+      'postcss.config.mjs',
+      'components.json',
+      'tsconfig.json',
+      'tsconfig.tsbuildinfo',
     ],
   },
 };
