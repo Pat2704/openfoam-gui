@@ -874,8 +874,14 @@ a string you just added, to prove the exe really carries the new code.
   themselves: `version` in `package.json` and in `electron/package.json`, and
   the two top-level fields of `package-lock.json` — lines 3 and 9 only; the
   same string further down belongs to dependencies, and a blanket replace
-  corrupts the lock. The README's two download filenames are the one thing
-  still written by hand. That is all.
+  corrupts the lock. Three things are still written by hand, and two of them
+  live OUTSIDE the repo, where nothing here can catch them: the README's two
+  download filenames, **the source folder itself**
+  (`Working/OpenFOAMStudio_v<version>-source`), and
+  `Working/.claude/launch.json`, which names that folder in its `--prefix` and
+  quietly stops starting the dev server if you rename one without the other.
+  Renaming the folder needs the shell's cwd to be somewhere else first — see
+  §4. Done for 2.1 on 2026-09-02, at the user's request.
 - **The filenames carry the FULL version, and they are generated — keep it
   that way.** `artifactName` in `electron-builder.yml` uses `${version}`, and
   `scripts/build-electron.js` reads the same field out of
@@ -897,4 +903,6 @@ a string you just added, to prove the exe really carries the new code.
 Next.js agent-rules block) and are gitignored — they carry no project state, and
 anything written there is overwritten on the next dev run. `Working/.claude/
 launch.json`, one level up, is the Browser pane's dev-server config; it lives
-outside the repo on purpose.
+outside the repo on purpose. It hard-codes the source folder's name as its
+`npm --prefix`, so it has to be edited whenever that folder is renamed — which
+a version bump does. Nothing in the repo can catch that for you.
