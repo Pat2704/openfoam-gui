@@ -12,6 +12,7 @@
     "electron": "electron electron",
     "electron:prepare": "node electron/scripts/prepare-resources.js",
     "electron:build": "node scripts/build-electron.js",
+    "release:check": "node scripts/check-release.js",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "check": "npm run typecheck && npm run lint"

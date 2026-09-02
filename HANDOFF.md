@@ -18,7 +18,7 @@ as MIT. The working tree is clean; nothing is half-finished waiting for you.
 | release commit | `1939f13` — what the attached artifacts were built from |
 | tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d` |
 | latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
-| in `Working/` | `OpenFOAMStudio-v2.1.0-portable.exe` and `OpenFOAMStudio-v2.1.0-folder.zip`, plus `RELEASE-NOTES-v2.md` and `RELEASE-NOTES-v2.1.md` |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, and the two artifacts `OpenFOAMStudio-v2.1.0-{portable.exe,folder.zip}`. Release notes moved into the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
@@ -47,7 +47,8 @@ log added in §2i is what will catch it if it happens again.
 
 **Where the recent work lives:** §2f is the Claude agent, §2g–2j are the four
 rounds of fixes that followed it, newest last. §4 is the build path — it now
-produces TWO artifacts and both ship. §5 is the trap list, and it is the section
+produces TWO artifacts and both ship — and §4b is how a release is named and
+published. §5 is the trap list, and it is the section
 most worth reading before touching startup, packaging or the Browser pane.
 
 ---
@@ -829,6 +830,43 @@ curl http://127.0.0.1:3117/api/wsl?action=ping
 Also grep the packed bundle under `win-unpacked/resources/standalone/.next` for
 a string you just added, to prove the exe really carries the new code.
 
+## 4b. Names, and how a release goes out
+
+**The version in `package.json` is the only place a version is typed.
+Everything else quotes it.** Agreed with the user on 2026-09-02, after finding
+the same version written five different ways — tags with one, two and three
+components, three shapes of release title, artifact names that had stopped
+matching their tag, and notes files that matched nothing.
+
+| | |
+|---|---|
+| `package.json` | `X.Y.Z` — semver, always three components, because npm accepts nothing else. Every one- or two-component name in this project was a hand-made divergence from it. |
+| tag | `vX.Y.Z` |
+| release title | `OpenFOAM Studio vX.Y.Z — <what changed>` — the product name because titles travel out of context, and a subtitle that says what is NEW. The v1 line used `Standalone (WSL2)` five times, which distinguishes nothing. |
+| artifacts | `OpenFOAMStudio-vX.Y.Z-{portable.exe,folder.zip}`, generated from `${version}` |
+| release notes | `docs/releases/vX.Y.Z.md`, in the repo |
+
+Publishing, in order:
+
+```
+npm run electron:build
+npm run release:check vX.Y.Z          # or with the tag already on HEAD
+gh release create vX.Y.Z dist-electron/OpenFOAMStudio-vX.Y.Z-portable.exe   dist-electron/OpenFOAMStudio-vX.Y.Z-folder.zip   --title "OpenFOAM Studio vX.Y.Z — <what changed>"   --notes-file docs/releases/vX.Y.Z.md
+```
+
+`scripts/check-release.js` is the guard: it compares the tag against
+`package.json`, checks the three version fields agree with each other, and
+refuses if either artifact or the notes file is missing. It exists because the
+drift it catches already happened once — see the filename trap in §5.
+
+**The old tags were left alone.** `v1` … `v1.4` predate the three-component
+rule and are published URLs; rewriting them would break links for the sake of
+tidiness. Their TITLES were realigned on 2026-09-02, which is safe because a
+title is not an address, and `docs/releases/README.md` carries the mapping from
+the canonical filenames to the tags as they were actually published.
+
+---
+
 ## 5. Traps that have already cost time
 
 - **The three packaged-app-only traps are documented in the README** ("Three
@@ -874,17 +912,19 @@ a string you just added, to prove the exe really carries the new code.
   themselves: `version` in `package.json` and in `electron/package.json`, and
   the two top-level fields of `package-lock.json` — lines 3 and 9 only; the
   same string further down belongs to dependencies, and a blanket replace
-  corrupts the lock. Three things are still written by hand, and two of them
-  live OUTSIDE the repo, where nothing here can catch them: the README's two
-  download filenames, **the source folder itself**
-  (`Working/OpenFOAMStudio_v<version>-source`), and
-  `Working/.claude/launch.json`, which names that folder in its `--prefix` and
-  quietly stops starting the dev server if you rename one without the other.
-  Renaming the folder needs the shell's cwd to be somewhere else first — see
-  §4. Done for 2.1 on 2026-09-02, at the user's request. The README's badges
-  and its top download link are deliberately version-agnostic — they read
-  `/releases/latest` and the shields API — so they are NOT on this list. Leave
-  them alone; "updating" them is how they would start going stale.
+  corrupts the lock. **One** thing is still written by hand: the README's two
+  download filenames in the Install table. Everything else derives itself, and
+  `npm run release:check` refuses the release if any of it disagrees.
+  The source folder used to carry the version too — it was
+  `Working/OpenFOAMStudio_v2.1-source` for about an hour — and it does not any
+  more, on purpose: it is a checkout, not an artifact, git already knows the
+  version, and renaming it every release also meant editing
+  `Working/.claude/launch.json`, which names it in its `--prefix`. Two manual
+  steps removed. It is plain `Working/OpenFOAMStudio-source` now.
+  The README's badges and its top download link are deliberately
+  version-agnostic — they read `/releases/latest` and the shields API — so they
+  are NOT on this list. Leave them alone; "updating" them is how they would
+  start going stale.
 - **The filenames carry the FULL version, and they are generated — keep it
   that way.** `artifactName` in `electron-builder.yml` uses `${version}`, and
   `scripts/build-electron.js` reads the same field out of
@@ -907,5 +947,5 @@ Next.js agent-rules block) and are gitignored — they carry no project state, a
 anything written there is overwritten on the next dev run. `Working/.claude/
 launch.json`, one level up, is the Browser pane's dev-server config; it lives
 outside the repo on purpose. It hard-codes the source folder's name as its
-`npm --prefix`, so it has to be edited whenever that folder is renamed — which
-a version bump does. Nothing in the repo can catch that for you.
+`npm --prefix`, so renaming that folder silently stops the dev server — nothing
+in the repo can catch it for you. A version bump no longer renames it (§5).

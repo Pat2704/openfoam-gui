@@ -40,6 +40,7 @@ const nextConfig: NextConfig = {
       // CLAUDE.md are internal notes that have no business inside a user's
       // copy of the app. The license texts deliberately stay: LICENSE and
       // THIRD-PARTY-NOTICES.md belong with the binary.
+      'docs/**',
       'HANDOFF.md',
       'AGENTS.md',
       'CLAUDE.md',
