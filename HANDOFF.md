@@ -2,7 +2,7 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-08-31, at the v1.4 release.
+Last updated: 2026-09-01 — the Claude agent moved inside the app (§2f).
 
 ---
 
@@ -34,9 +34,14 @@ These are standing instructions, not one-offs:
 - **Rebuild the `.exe` after every change.** Not only when asked. Use the fast
   path in §4 — the user explicitly asked for a rebuild with no duplicated steps,
   so never wipe caches to "start clean".
-- **Copy the fresh exe over `Working/OpenFOAMStudio-v1.4-portable.exe`.** That is
+- **Copy the fresh exe over `Working/OpenFOAMStudio-v2-portable.exe`.** That is
   the binary the user actually launches. Approved on 2026-08-31; earlier
   binaries stay attached to their GitHub releases if one is ever needed.
+- **NEVER push, tag or touch GitHub unless the user asks in that message.**
+  Not a `git push`, not a tag, not a release, not replacing a release asset —
+  however small and obviously wanted the change is. One authorisation covers one
+  action, not the rest of the session. Finish the work, build, commit if that
+  was asked, then stop and say what is ready to push.
 - **Wait for an explicit go-ahead before cutting a new version.** Version bump,
   commit, tag and release are the user's call, never automatic.
 - **Nothing is committed without being asked.** Changes live in the working tree
@@ -147,7 +152,444 @@ All of the above shipped in **v1.4** (bumped, committed, tagged, released).
 - **The v1.4 release asset still carries the old icon**: the release was
   published before the change, and the user chose on 2026-08-31 to leave it
   alone rather than replace the asset or cut a 1.4.1. The new icon ships with
-  the next version. `Working/OpenFOAMStudio-v1.4-portable.exe` is up to date.
+  the next version. `Working/OpenFOAMStudio-v2-portable.exe` is up to date.
+
+## 2c. Phase 1 of the knowledge work — done, uncommitted
+
+The feasibility analysis (option A + E) is implemented. Everything below is in
+the working tree and verified against the live installation.
+
+- **`src/lib/foam-index.ts`** builds the installed version's own vocabulary in
+  ONE WSL call: `foamToC -all` plus its convenience flags, plus `-help` for all
+  151 executables. Measured on OpenFOAM 14: **8.4 s**, 1.513 selectable names,
+  145 scalar BCs, 96 vector BCs, 19 solver modules, 153 functionObjects, 151
+  applications. Cached in `~/.wslgui-foam-index.json`, invalidated when the
+  selected bashrc changes.
+- **It must not block.** `runInWslScriptAsync()` was added to `wsl.ts` for this:
+  everything else in that file is `execFileSync`, which for an eight-second call
+  would freeze every other request in the server. Verified: a concurrent request
+  answered in 153 ms during a build.
+- **`/api/foam-index`** — `status`, `build`, `slice`, `bc`, `app`, and POST
+  `validate` / `suggest`.
+- **The copilot gets slices, not the index.** `topicsFor()` routes on the words
+  in the question; a boundary-condition question attaches 1.255 tokens (measured
+  in the server log), against ~98k for the whole index. The system prompt says
+  those lists are authoritative and that names outside them do not exist here.
+- **Nothing is applied unchecked.** `validateDictText()` checks `type` inside
+  `boundaryField`, `model` inside RAS/LES and `solver` in controlDict against
+  the RIGHT namespace — `distributionSizeGroup` exists on 14 but as a field
+  source, so it is still an error in a boundaryField. The chat shows the unknown
+  names inside the proposed file and asks again on Apply; the wizard folds them
+  into its preflight.
+- **Suggestions are word-based, not edit-distance.** The failure that matters is
+  a rename between versions, where the distance is large but the words survive:
+  `atmBoundaryLayerInletVelocity → atmosphericBoundaryLayerVelocity` is 10 edits
+  apart. Scored on shared camelCase words first, distance as the tiebreak;
+  typos (`noSlipTYPO → noSlip`) still resolve.
+- **The wizard's hardcoded BC list is gone** — it now shows the 187 the install
+  offers, and no longer offers `atmBoundaryLayerInletVelocity`, which does not
+  exist on 14. The short built-in list survives only as the fallback for the
+  seconds before the index answers, and for 9/10 where `foamToC` does not exist.
+- **The index is built at startup**, fired by the same warm-up in
+  `electron/main.js` that wakes WSL, so it is ready before the first question.
+- Found and fixed in passing: the floating FOAMy launcher sat exactly on top of
+  the wizard's **Next** button (measured 1194-1250 px against 1172-1254 px on a
+  1280-wide window), so clicking Next opened the chat.
+
+**Verified end to end with a real model** (Groq `openai/gpt-oss-20b`, on a key
+the user lent for the test and has since revoked — it was passed per-request and
+never written into the app's config). Same question, same model, twice:
+
+| | without the slice | with it |
+|---|---|---|
+| ABL inlet velocity type | wandered ("fixedValue? fixedGradient? OpenFOAM 14, maybe 1.4?") and answered `fixedValue` | `atmosphericBoundaryLayerVelocity` |
+| steady incompressible run | `application simpleFoam;` + `simpleFoam` — neither exists on 14 | `solver incompressibleFluid;` + `foamRun`, and it says the list has no simpleFoam |
+
+Then the whole chain: asked for a complete `0/U`, the model returned an apply
+block using `atmosphericBoundaryLayerVelocity, zeroGradient, noSlip, empty`, and
+the validator confirmed all four against the installation. 925-2090 prompt
+tokens per question.
+
+Found during that test and fixed: Groq's gpt-oss models put their thinking in a
+separate `reasoning` field, and when the output budget runs out inside it
+`content` comes back EMPTY with finish_reason "stop" — which surfaced as
+"Groq: empty or malformed response". `groq.ts` now says what actually happened.
+
+Phases 2-4 of the analysis (retrieval over the tutorials, then a local model)
+are not started.
+
+## 2d. Phases A, B and C — done, uncommitted
+
+- **A — dictionary keys** (`foam-index.ts`, index format 2). `foamToC` says a
+  name exists; this says what goes inside it. Three greps over the sources give
+  `TypeName("x")` → class → base classes → the keys each reads, and the graph is
+  walked upwards, which is the whole point: `nutkWallFunction` declares NO keys
+  of its own and inherits **Cmu, E, kappa** from its parent. A fourth grep picks
+  up the member-initialiser idiom (`Cmu_("Cmu", this->typeDict(type), 0.09)`),
+  which is how every turbulence model declares its coefficients — without it
+  `kEpsilon` came back empty. Result: **1.333 of 1.513 types have keys**;
+  kEpsilon → C1 C2 C3 Cmu sigmaEps sigmak, SpalartAllmaras → Cb1 Cb2 Cs Cv1 Cw2
+  Cw3 kappa sigmaNut. Keys are attached to the prompt only for types the
+  question actually names. Build cost went 8.4 s → 10.5 s.
+  These keys are used to TELL the model, never to tell the user a key is wrong:
+  the extraction is a best effort (macro-generated families are missed), and a
+  gap here would be indistinguishable from a real error there.
+- **B — syntax check** (`checkDictSyntax`). Every proposed file is parsed by
+  `foamDictionary` on a copy in /tmp before it can be applied, and the parser's
+  own sentence is what the user sees: *"ill defined primitiveEntry starting at
+  keyword 'type' on line 7 and ending at line 10"*. Shown in the chat block, in
+  the confirm dialog, and in the wizard preflight. Caveat found while testing: a
+  MISSING FINAL BRACE is tolerated by the parser, so this catches bad entries,
+  not every malformed file.
+  **The trap that cost the most here: any OpenFOAM binary aborts (exit 134,
+  `fileName::stripInvalid`) when the working directory is the Windows-mounted
+  path, because this user's home has a space in it.** Every WSL script that runs
+  an OpenFOAM binary must `cd` to a Linux-side directory first — the index build
+  already did, the syntax check did not, and every file came back "broken".
+- **C — examples from the tutorials** (`foam-examples.ts`). When a question
+  names a type, one real use is pulled from the installed tutorials: the
+  SMALLEST file that mentions it, ±6/12 lines around the match, polyMesh and
+  logs excluded. A question about `nutkWallFunction` gets
+  `fluid/roomHeating/0/nut`, which is eight lines and shows the exact shape.
+  Grep on purpose, not embeddings: a type name is a literal string, so exact
+  matching is the correct tool rather than a weaker one.
+
+Measured end to end on one question mentioning two types: examples 671 chars +
+ground truth 325 tokens, whole request assembled in 936 ms.
+
+`foamToC` does NOT expose linear solvers, smoothers or numerical schemes (GAMG,
+symGaussSeidel, limitedLinear are all absent) — those tables only register when
+a solver loads its libraries. The validator therefore abstains on fvSolution and
+fvSchemes rather than guessing. The `TypeName` grep DOES see most of them, so a
+softer existence check there is possible later; `limitedLinear` and its
+macro-generated family would be false positives, so it was not switched on.
+
+## 2e. Phase D — the example selector, uncommitted
+
+`src/lib/foam-retrieval.ts`. Ranks the whole tutorial corpus against the
+question and keeps the best TWO chunks, capped at 1.500 characters: a better
+choice at the same prompt cost, not a bigger payload. 20.030 chunks from 5.494
+files, indexed in ~34 s and cached in `~/.wslgui-foam-corpus.json` (9,7 MB).
+Built at startup after the index; until it is ready the copilot falls back to
+the grep path from phase C.
+
+**It is BM25, not embeddings, and that was a deliberate substitution.** Local
+embeddings mean a 130 MB model plus onnxruntime's native binaries inside a Next
+standalone bundle inside an asar — against an exe the user chose to keep at
+87 MB, and against an app that needs no network today. The trade was measured
+rather than assumed, and the measurement found something better than either
+option:
+
+- With technical wording the lexical selector is already right: `kEpsilon steady
+  SIMPLE` → `incompressibleFluid/cylinder/system/fvSolution`, `blockMeshDict
+  simpleGrading hex` → a real blockMeshDict.
+- **In Italian it collapsed.** "come impongo una portata volumetrica
+  all'ingresso" returned thermal-baffle files; "parete con funzione di parete"
+  returned nothing. The corpus is English and identifiers; the user writes
+  Italian, and no lexical scorer bridges that.
+- A fixed IT→OpenFOAM glossary (~65 terms, in the module) fixed it: the same
+  questions now return `0/U` of a duct case, `0/nut` files, and real
+  blockMeshDicts. That is the cheap half of what a multilingual embedding model
+  would buy.
+
+So the remaining case for embeddings is phrasing the glossary does not
+anticipate. If the logs show that happening on real questions, there is now
+evidence for spending the 130 MB; until then there is not.
+
+**Grounding helps a frontier model exactly as much as a small one** — the
+question the user asked before funding this. gpt-4.1, without the slice:
+`atmBoundaryLayerInletVelocity` (the 13 name) and `application simpleFoam;`
+(does not exist on 14). With it: `atmosphericBoundaryLayerVelocity` and
+`solver incompressibleFluid;` + `foamRun`. Same failures as gpt-oss-20b, so this
+is not a capability gap that a bigger model closes. Test cost $0,011 on a key
+the user lent and has revoked; it was passed per-request and never written into
+the app's config.
+
+## 2f. The Claude agent, inside the app — uncommitted
+
+The app now carries a SECOND assistant, next to FOAMy and deliberately unlike
+it. FOAMy proposes a file and the user clicks Apply; Claude reads the case,
+writes the files and runs OpenFOAM itself. Both stay.
+
+**This replaced an earlier design, and the reason matters.** The first version
+exposed the app over MCP so that Claude Code, running in a TERMINAL, could
+drive it — the user pasted a `claude mcp add …` line from a panel in the
+Dashboard settings. The user rejected it on 2026-09-01: the conversation lived
+in a terminal instead of in the app. The direction is now inverted. The app
+launches Claude Code itself, headless, and the chat is a panel. The setup panel
+and the rendezvous file are gone; the tool server and its policy survived
+unchanged, because those were never the part that was wrong.
+
+**It runs on the user's SUBSCRIPTION, not an API key** — their explicit choice,
+and the reason the API path was not reused: FOAMy already offers four providers
+and a key, so a second key-based chat would be redundant and would bill for what
+the plan already covers. `total_cost_usd` in the result event is therefore
+informational, not a charge.
+
+- **`src/lib/claude-cli.ts`** finds the binary, authenticates, and drives it.
+  The Claude Code that ships with the desktop app lives under a VERSION-NAMED
+  directory (`%APPDATA%\Claude\claude-code\2.1.247\claude.exe`), so the path
+  changes with every update — the newest is picked, with a standalone install,
+  `PATH` and `OFSTUDIO_CLAUDE_PATH` as fallbacks.
+- **The launch flags are the design**, and three of them are load-bearing:
+  `--tools ""` turns every built-in tool off; `--mcp-config` supplies ours;
+  `--strict-mcp-config` is what stops the session inheriting the user's
+  **claude.ai connectors** — without it a probe run came up holding eleven
+  Google Drive tools. `--setting-sources ''` does the same for their settings
+  files. Verified after the fact: `system/init` reports exactly the nine
+  `mcp__openfoam__*` tools and nothing else.
+- **One long-lived child per conversation**, spoken to over
+  `--input-format stream-json`, so a turn is one round trip rather than a cold
+  start. Model and effort are LAUNCH flags, so changing either restarts the
+  process with `--resume <uuid>` — which is why session persistence is left on
+  and why the app generates the session UUID itself.
+- **`--effort` is the "reasoning" control** the user asked for (low → max), and
+  it is sent only for models that accept it: Haiku 4.5 predates it and returns
+  an error. `--model` takes aliases (`opus`/`sonnet`/`haiku`) rather than pinned
+  ids, so the list does not go stale when a model is superseded.
+- **Sign-in is driven from the panel.** `claude auth login --claudeai` opens the
+  browser itself and prints the URL; when the browser is already signed in it
+  completes on its own, otherwise it waits on stdin for the code, which the
+  panel can send. No terminal at any point.
+- **`src/lib/agent-policy.ts`** is the old `/api/mcp` route's policy, moved into
+  a lib and unchanged in substance: addressed by case name through the UI's own
+  validators, execution limited to the 156 commands this installation ships,
+  every call logged. `/api/agent/tools` is now the thin HTTP surface;
+  `/api/agent` is status, sign-in and the SSE conversation.
+- **`src/components/claude-panel.tsx`** is laid out like Claude Desktop rather
+  than like a chat widget: assistant text plain on the page, only the user's
+  turn in a bubble, thinking and tool calls as collapsible rows in the flow, and
+  the model and reasoning pickers INSIDE the composer. The Claude burst is drawn
+  as SVG, not shipped as an asset.
+
+Verified end to end against the live installation, in the dev server and from
+the UI: a turn that read `claude_test/system/controlDict`; a turn that wrote
+`controlDict`, validated it, ran `checkMesh` to exit 0 and then REFUSED to
+delete `0.orig`, telling the user to do it in the app; and `foam_lookup`
+rejecting `atmBoundaryLayerInletVelocity` with the OpenFOAM 14 name. The six
+boundaries hold as before — `rm`, `mv`, `blockMesh; rm -rf /`, `../../escaped.txt`,
+a `../../../etc` case name and an absolute write path are all refused.
+
+**THE BINARY IS NOT WHERE IT LOOKS LIKE IT IS, AND THE TEST CONTEXT LIES.**
+On this machine an ordinary process cannot see `%APPDATA%\Claude` at all:
+`readdirSync` returns ENOENT, and a listing of `%APPDATA%` comes back with 77
+entries instead of 79 — `Claude` and `gltest` simply are not in it. Confirmed
+from three independent contexts: an agent shell sees them, a process launched
+by Explorer does not, and a process created through WMI does not either. A
+bounded walk of `AppData` (4 deep), `Program Files`, `Program Files (x86)` and
+`.local` from the real session found NO reachable claude binary at all, while
+`~/.claude/.credentials.json` does exist there.
+
+The consequence for testing is the part worth remembering: **an agent shell may
+run inside a sandbox with a different filesystem view, and anything it launches
+inherits that view.** Every "the app finds Claude Code" result in this session
+came from launching the app out of that shell, and every one of them was a
+false positive — the user was right each time they said it still failed. To
+test something that depends on the real filesystem, launch it the way the user
+does: `explorer.exe <path>`, or `Invoke-CimMethod Win32_Process Create`. Then
+read the answer out of the app's own HTTP API rather than the GUI.
+
+So detection cannot rest on a guessed location. The panel now takes a PATH the
+user can set (stored as `claude-agent-path`, sent with every request, tried
+first and never answered from cache), the search covers the npm global install
+and several other roots, and the "not found" screen tells the user to install
+the CLI (`npm install -g @anthropic-ai/claude-code`, which lands in
+`%APPDATA%
+pm` — on PATH and readable by any process) instead of being a dead
+end. Verified in the real session view: a bad path reports "there is no file at
+that path", a reachable executable is accepted with `source: 'the path you
+set'`.
+
+**npm's shims cannot be spawned, and the PATH lookup finding them is not
+enough.** `npm install -g @anthropic-ai/claude-code` puts `claude`,
+`claude.cmd` and `claude.ps1` in `%APPDATA%
+pm`, and `where claude` finds
+them — but from Node, on this machine, they fail with ENOENT, **EINVAL** and
+UNKNOWN respectively. The EINVAL is the fix for CVE-2024-27980: Node refuses to
+spawn a `.cmd`/`.bat` without `shell: true`. The real binary is beside them at
+`node_modules/@anthropic-ai/claude-code/bin/claude.exe`, so `resolveShim()`
+treats a shim as a POINTER to the executable rather than as the executable, and
+that npm path is now a first-class candidate. A `.cmd` is still runnable as a
+last resort, through a shell with the path quoted — this user's profile has a
+space in it. Verified end to end on the app launched FROM EXPLORER: detected as
+`npm global install` 2.1.258, already signed in, and a turn that read
+`controlDict` and ran `checkMesh` to exit 0.
+
+**The server cannot be trusted to find claude.exe from its own environment.**
+The panel reported "Claude Code was not found" on the packaged app while it sat
+in the normal place, and the diagnostics said the search had found NO candidate
+at all — not a slow probe, but a search looking somewhere else. It was never
+reproduced: the same build, launched here as both `win-unpacked` and the
+portable .exe, found it every time, which points at the environment the server
+inherits on a particular launch (%APPDATA% differs, for instance, when the app
+runs with different privileges). So the dependency was removed rather than
+theorised about: `locateClaudeCode()` in `electron/main.js` resolves the path
+with `app.getPath('appData')` — which asks Windows for the running user's
+roaming folder instead of reading the variable — and passes it as
+`OFSTUDIO_CLAUDE_PATH`. The server's own search stays as the fallback. Verified
+on the portable build: `source: OFSTUDIO_CLAUDE_PATH`, and a full agent turn
+through it. If it ever fails again, the panel now lists the paths tried WITH
+the APPDATA / USERPROFILE / homedir the server saw, which settles it in one
+look.
+
+**Two things about testing the packaged app that cost time here:** it takes a
+single-instance lock, so a second copy exits immediately and silently (a launch
+that "does nothing" is usually this); and the portable stub DETACHES, so the
+`[main]` log never reaches a terminal that launched it — find the server port
+from the process tree instead (`node.exe` under `%TEMP%\...
+esourcesin`).
+
+**A failed search for the binary used to be permanent.** `findClaude()` cached
+`null` on failure and returned it forever, so ONE slow probe — the first
+`claude --version` runs moments after the portable stub has extracted 348 MB
+into TEMP, with Defender scanning a binary it has never seen — left the app
+insisting Claude Code was not installed for the rest of the run, with a "Look
+again" button that re-read the same cached no. Now only a SUCCESS is cached, the
+probe waits 60 s instead of 15, "Look again" sends `?refresh=1` which forces a
+fresh search, and the reason each candidate failed is kept and shown in the
+panel instead of being swallowed by `catch {}`. The panel also stops treating a
+failed status REQUEST as a missing installation — they were the same branch, so
+any 500 announced that Claude Code was not installed.
+
+**Four traps found while building this, all fixed, all worth knowing:**
+
+- **`Math.cos` output in JSX breaks hydration.** The Claude mark's rays were
+  computed inline, and server and client serialise the same float differently
+  (`9.74833395016046` against `…0160461`) — React reported a mismatch on every
+  load. The geometry is now computed once at module scope with `.toFixed(3)`.
+  Anything generated into an attribute needs the same treatment.
+- **Two floating panels need ONE stacking order, and it cannot live in a
+  className.** Both windows and both launchers were `z-[100]`, so DOM order
+  decided: opening FOAMy left the Claude launcher sitting on top of its window,
+  and the window you had just opened could sit behind the one you had not
+  touched. `src/lib/floating-order.ts` now owns it — the two launchers share
+  one constant depth, and a window takes the next value when it opens and on
+  `onMouseDownCapture` (capture, so a control that stops the event still raises
+  the window). Measured: launchers 100/100, FOAMy opened 101, Claude opened
+  after 102, clicking FOAMy 103.
+- **The whole app's toasts were invisible, in two independent ways, and had
+  been from the start.** Ten components call sonner's `toast()`, and (a)
+  sonner's `<Toaster />` was never mounted anywhere — the layout mounts the
+  Radix one from `components/ui/toaster.tsx`, which is driven by a different
+  `useToast()` hook — and (b) sonner does not inject its own stylesheet and
+  nobody imported `sonner/dist/styles.css`, so even once mounted the toast was
+  created at `opacity: 0`, translated 73 px down, and removed a few seconds
+  later: present in the DOM, measurable, and never drawn. Both are fixed in
+  `src/components/ui/sonner.tsx`, which must stay a CLIENT component. Measured
+  afterwards: `data-mounted` false → true, `opacity` 0 → **1**, at (900, 623)
+  on a 1280×720 viewport.
+  Two lessons: this is why the Claude panel's sign-in failure looked like a
+  dead button, so a message the user MUST see now also renders inside the panel;
+  and a toast cannot be judged from a Browser-pane screenshot at all — the
+  animation is over or not yet started at every moment you can capture, so
+  measure `opacity` from a MutationObserver instead of looking.
+- **The sign-in button existed only while signed OUT**, which is exactly when
+  nobody is looking at it. Once signed in the panel never said who you were, and
+  the only account control was a 9 px "Sign out" in the footer — the user
+  reported it as "I cannot sign in, there are no buttons for it" while being
+  signed in the whole time. There is now a persistent account control in the
+  panel header (identity, plan, the Claude Code version found, and Sign in /
+  Sign out), with a dot on the icon when signed out. State that only exists in
+  one branch of a state machine is state the user cannot find.
+- **A floating launcher can be placed off screen and never recover.** The
+  position is set in a `useEffect` from `window.innerWidth`, which can still be
+  0 — the button then sits at `x=-86`, present in the DOM and invisible. Both
+  panels now refuse to place below a 100 px viewport, retry on a frame, and
+  re-park on resize; dragging still writes `style.transform` directly. Measured
+  afterwards on a 1280×720 viewport: FOAMy at (1194, 634), Claude at (1194,
+  564), and ZERO overlap with any control of the New Case wizard — the Next
+  button ends at x=1190, which is the collision §2f's predecessor had.
+- **`execFileSync` in a route blocks the whole server**, the same lesson
+  `wsl.ts` already carries. Probing the binary and the auth status is two
+  process launches on every panel open, so both are `promisify(execFile)` now,
+  with the install cached, the in-flight probe shared, and auth cached 15 s.
+- **The desktop app does not leave credentials the CLI can read.** It injects
+  them into the processes IT spawns (`CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`,
+  `ANTHROPIC_BASE_URL`), so a CLI launched by anything else reports
+  `Not logged in` until `claude auth login` is run once on its own. That is why
+  the panel has a sign-in step at all, and why `childEnv()` STRIPS every
+  inherited `CLAUDE_CODE_*`, `CLAUDECODE` and `ANTHROPIC_*` variable: during
+  development this app can itself be started from a Claude Code session, and an
+  inherited `ANTHROPIC_API_KEY` would quietly bill the API for what the user
+  asked to run on their subscription.
+
+## 2g. The three changes of 2026-09-02
+
+- **An UNRESTRICTED switch in the Claude panel.** Off by default, asked about
+  before it goes on, remembered afterwards. On, `run_openfoam` stops being an
+  allowlist and becomes a shell in the case directory: any command, pipes,
+  redirects, chaining. The design point worth keeping: the mode travels in the
+  tool server's ENVIRONMENT (`OFSTUDIO_AGENT_MODE`), never in tool arguments, so
+  the model cannot grant it to itself — everything the model writes arrives as
+  `args`. It is therefore a launch property of the agent process, and flipping
+  the switch restarts that process with `--resume`, exactly like model and
+  effort. The activity log tags those calls `[unrestricted]`. Verified with the
+  same request in both modes: guarded refused `ls -la | wc -l` and fell back to
+  `list_case_files`; unrestricted ran it and answered 9.
+
+- **The icon lost the three dashes behind the trailing edge**
+  (`electron/build/icon.ico`), so the artwork is symmetric. The method is the
+  reusable part: each frame repaired ON ITS OWN, the dashes identified by
+  geometry rather than coordinates — a short bright run, inside the airfoil's
+  row band, starting at the trailing edge — and the removed pixels refilled by
+  interpolating their nearest untouched neighbours above and below. Two attempts
+  had to be thrown away first: filtering on brightness alone erased the right
+  half of every streamline, and a global trailing-edge test missed the topmost
+  dash because it starts in the same column as the tip, several rows higher.
+  ALWAYS diff the result against the original frame by frame — that is what
+  caught both. The 16 and 24 px frames are deliberately untouched: the dashes
+  measure 62 against a background of 65 there, already dissolved, and touching
+  them only damages streamlines.
+
+- **The splash has a real percentage bar**, driven from the startup milestones
+  in `electron/main.js` (30% waiting for the server, 72% server ready, 80%
+  loading the interface, 97% dom-ready). It creeps between milestones but never
+  past the next one, so a stall reads as a stall rather than as progress. Both
+  the value and the label are monotonic, and that rule is load-bearing: the
+  server is spawned BEFORE Electron is ready, so "waiting for the server" is
+  reported before the window exists, and without it the first update from
+  `createWindow()` rewound the text to "starting the server". Every phase is
+  logged, which is how that bug was found — measured after the fix: window at
+  130 ms, server at 789 ms, page loaded at 4.1 s.
+
+  **What it cannot do is appear instantly on double-click.** About 28 seconds
+  pass between the double-click and the first line of our code, while the NSIS
+  portable stub deletes and re-extracts 348 MB into TEMP; no window can exist
+  before the app has started. Only a distribution change removes that (an
+  installer, or a zipped `win-unpacked`). Raised with the user on 2026-09-02 and
+  left with them to decide.
+
+## 2h. The 2026-09-02 round of fixes
+
+- **A replaced child process must not touch the session it no longer owns.**
+  Changing the model, the effort or the guarded/unrestricted switch stops the
+  agent process and starts a new one immediately — and the OLD process's `exit`
+  event arrives AFTER the new one is already running. Its handler nulled
+  `session.child` and, seeing `busy`, reported "Claude Code stopped unexpectedly
+  (exit 0)" — or "(exit null)", when the exit came from `kill()`, which is the
+  bare `null` the user kept having to resend past. Both the `exit` and `error`
+  handlers now begin with `if (session.child !== child) return;`. Reproduced
+  before the fix (turn 1 at effort low, turn 2 at effort high → error) and
+  verified after (ALPHA → BETA → GAMMA clean, then six consecutive turns clean).
+
+  **This also explains "it says it already did that".** The turn failed in the
+  UI while Claude Code had actually done the work, so on the user's resend the
+  model said — correctly, from its side — that it had already done it. One bug,
+  two symptoms.
+
+- **Every dialog in the app was hidden behind the chat panels.** `alert-dialog`
+  and `dialog` were at `z-50` while the floating panels start at 100, so any
+  confirmation raised while FOAMy or Claude was open appeared underneath it —
+  including FOAMy's "apply anyway?" and the dashboard's delete prompts. Both are
+  now `z-[1000]`, under sonner's toasts at 2000. The guarded/unrestricted toggle
+  no longer confirms at all: the user asked for a single click.
+
+- **`compression: store` is not the answer to the 29-second portable startup**,
+  and the numbers are in `electron/electron-builder.yml` so nobody tries it
+  again: 29.3 s compressed against 26.2 s uncompressed, for 263 MB more .exe.
+  The cost is the per-launch COPY into TEMP, not the decompression — only not
+  extracting at all removes it (installer, or the win-unpacked folder: window at
+  130 ms, interface at ~4 s).
 
 ## 3. `claude_test`
 
@@ -165,8 +607,8 @@ npm run electron:build                          # full, ~2.5 min
 node scripts/build-electron.js --skip-build     # re-package only, skips next build
 ```
 
-Then copy `dist-electron/OpenFOAMStudio-v1.4-portable.exe` over
-`Working/OpenFOAMStudio-v1.4-portable.exe`.
+Then copy `dist-electron/OpenFOAMStudio-v2-portable.exe` over
+`Working/OpenFOAMStudio-v2-portable.exe`.
 
 Nothing in this path re-does work, and it must stay that way:
 
@@ -212,6 +654,22 @@ a string you just added, to prove the exe really carries the new code.
   `javascript_tool` and read numbers instead), Radix ignores synthetic events,
   and a pane left idle silently stops delivering clicks until the tab is closed
   and reopened.
+- **Next's file tracer will copy the WHOLE project into `.next/standalone`,
+  and the .exe triples in size.** `src/lib/claude-cli.ts` hunts for an
+  executable across several directories, so it is full of paths the tracer
+  cannot resolve statically; when that happens the tracer stops reasoning and
+  takes the entire tracing root. The standalone went 26 MB → 533 MB, carrying
+  `screenshots/`, `electron/` (with the 70 MB bundled node.exe) and
+  `dist-electron/` — the previous .exe packed inside the new one, 87 MB → 268 MB.
+  It also COMPOUNDS: `electron/resources/standalone` is inside the root, so the
+  next build copies the previous copy; one more build reached **1.7 GB**.
+  The fix is the `outputFileTracingExcludes` list in `next.config.ts`
+  (`dist-electron`, `electron`, `screenshots`) — swapping `join(process.cwd(),…)`
+  for `resolve(…)` did NOT help, which is worth knowing before trying it again.
+  **Check the reported size on every build**: `build-electron.js` prints it, and
+  87 MB is the number. A build whose log ends
+  `SUCCESS: server.js at .next\standalone\electron\resources\standalone\server.js`
+  — a NESTED path — has already been swallowed.
 - **A version bump touches six places at once**: `artifactName` ×2 in
   `electron/electron-builder.yml` plus its header comment, `version` in
   `package.json` and `electron/package.json`, the two top-level fields of

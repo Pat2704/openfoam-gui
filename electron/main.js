@@ -15,6 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const http = require('http');
+const crypto = require('crypto');
 const net = require('net');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +92,14 @@ const standaloneDir = path.join(resourcesBase, 'standalone');
 const serverJsPath = path.join(standaloneDir, 'server.js');
 
 const APP_TITLE = 'OpenFOAM Studio - GUI';
+
+// ── The Claude agent's tool channel ─────────────────────────────────────────
+// The app launches Claude Code itself (src/lib/claude-cli.ts) and hands it the
+// MCP server in electron/mcp/openfoam-mcp.mjs as its only tools. That server
+// calls back into the app, and this token is what proves the call came from
+// the agent we started rather than from another local program that guessed the
+// port. Regenerated every launch. See src/lib/agent-policy.ts for the policy.
+const agentToken = crypto.randomBytes(24).toString('hex');
 const READY_TIMEOUT_MS = 60000; // 60s should be plenty for Next.js standalone to boot
 
 // Startup timing, printed with every [main] line. Run the exe from a terminal
@@ -108,6 +117,10 @@ function log(...args) { console.log('[main]', elapsed(), ...args); }
  * that anything was happening. Now the window appears immediately with this,
  * and swaps to the real URL when the server is up.
  *
+ * The bar is DETERMINATE and shows a percentage, driven by progress() below
+ * from the real milestones of the startup — not an animation that would run
+ * just the same if the server had died.
+ *
  * Inlined as a data: URL — it must not depend on the server it is waiting for.
  */
 const SPLASH_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
@@ -119,15 +132,82 @@ const SPLASH_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
   .b{text-align:center}
   .t{font-size:17px;font-weight:600;letter-spacing:.2px}
   .s{margin-top:6px;color:#8b8b8b;font-size:12px}
-  .r{margin:18px auto 0;width:150px;height:2px;background:#262626;overflow:hidden;border-radius:2px}
-  .r i{display:block;width:40%;height:100%;background:#ef6c2b;animation:m 1.1s ease-in-out infinite}
-  @keyframes m{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
+  .r{margin:18px auto 0;width:190px;height:4px;background:#262626;overflow:hidden;border-radius:3px}
+  .r i{display:block;width:0%;height:100%;background:#ef6c2b;border-radius:3px;
+       transition:width .25s ease-out}
+  .p{margin-top:8px;color:#8b8b8b;font-size:11px;font-variant-numeric:tabular-nums}
 </style></head>
 <body><div class="b">
   <div class="t">OpenFOAM Studio</div>
-  <div class="s">Starting the local server…</div>
-  <div class="r"><i></i></div>
-</div></body></html>`)}`;
+  <div class="s" id="s">Starting the local server…</div>
+  <div class="r"><i id="bar"></i></div>
+  <div class="p" id="pct">0%</div>
+</div>
+<script>
+  window.setProgress = function (pct, label) {
+    var p = Math.max(0, Math.min(100, Math.round(pct)));
+    document.getElementById('bar').style.width = p + '%';
+    document.getElementById('pct').textContent = p + '%';
+    if (label) document.getElementById('s').textContent = label;
+  };
+</script>
+</body></html>`)}`;
+
+/**
+ * How far along the startup is, as a number the user can watch.
+ *
+ * Two rules keep it honest: it never goes backwards, and it never reaches a
+ * milestone before that milestone has actually happened. Between milestones it
+ * creeps towards — but never past — the next one, so a stall looks like a stall
+ * instead of like progress.
+ */
+let splashReady = false;
+let appLoading = false;
+let progressValue = 0;
+let progressLabel = 'Starting the local server…';
+let progressCap = 0;
+let creepTimer = null;
+
+let loggedLabel = '';
+
+function progress(pct, label) {
+  // The label follows the VALUE, and neither goes backwards. The server is
+  // spawned before Electron is ready, so "waiting for the server" is reported
+  // before the window exists; without this guard the first update from
+  // createWindow would then rewind the text to "starting the server" while the
+  // bar stayed where it was.
+  if (pct < progressValue) return;
+  progressValue = pct;
+  if (label) progressLabel = label;
+  // One line per PHASE, not per creep tick: the startup log already carries
+  // timestamps, so this is where the percentage can be checked against what
+  // actually happened.
+  if (progressLabel !== loggedLabel) {
+    loggedLabel = progressLabel;
+    log('progress', progressValue + '% —', progressLabel);
+  }
+  if (!splashReady || appLoading || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents
+    .executeJavaScript(
+      'window.setProgress && window.setProgress(' + progressValue + ',' + JSON.stringify(progressLabel) + ')',
+      true,
+    )
+    .catch(() => { /* the splash is already gone */ });
+}
+
+/** Creep towards `cap` while we wait for something that has no percentage. */
+function creepTo(cap, label) {
+  progressCap = cap;
+  if (label) progressLabel = label;
+  if (creepTimer) return;
+  creepTimer = setInterval(() => {
+    if (progressValue < progressCap - 1) progress(progressValue + 1);
+  }, 220);
+}
+
+function stopCreep() {
+  if (creepTimer) { clearInterval(creepTimer); creepTimer = null; }
+}
 
 /**
  * Find a free TCP port on 127.0.0.1 by binding to port 0 and reading the
@@ -196,6 +276,16 @@ async function startServer() {
   env.PORT = String(serverPort);
   env.HOSTNAME = '127.0.0.1';
   env.NEXT_TELEMETRY_DISABLED = '1';
+  // What the server needs in order to launch the agent's tool server: the
+  // shared secret, the node that can run it (the packaged app ships no other),
+  // and where it lives inside the installation.
+  env.OFSTUDIO_AGENT_TOKEN = agentToken;
+  env.OFSTUDIO_MCP_NODE = nodeExePath;
+  env.OFSTUDIO_MCP_SCRIPT = path.join(resourcesBase, 'mcp', 'openfoam-mcp.mjs');
+  // Where Claude Code lives, resolved HERE rather than in the server. See
+  // locateClaudeCode() for why the server cannot be trusted to find it alone.
+  const claudePath = locateClaudeCode();
+  if (claudePath) env.OFSTUDIO_CLAUDE_PATH = claudePath;
   // Avoid the Node worker being affected by the parent's color/CI settings.
   env.FORCE_COLOR = '0';
   env.NO_COLOR = '1';
@@ -238,9 +328,69 @@ async function startServer() {
 
   serverStarting = false;
 
+  progress(30, 'Waiting for the local server…');
+  creepTo(70);
   await waitForServer(serverPort, '127.0.0.1', READY_TIMEOUT_MS);
+  stopCreep();
+  progress(72, 'Server ready — loading the interface…');
   log('Server is ready on port', serverPort);
   warmUpWsl();
+}
+
+/**
+ * Find the Claude Code the agent panel drives, and tell the server where it is.
+ *
+ * The server can find it by itself — it looks under %APPDATA%\Claude\claude-code
+ * and in the usual standalone locations — but that search depends on the
+ * environment the server INHERITS, and a packaged app is exactly where that
+ * assumption breaks: a user reported the panel insisting Claude Code was not
+ * installed while it sat in the normal place, and the search reported finding
+ * no candidate at all, which means it was not looking where the files are.
+ *
+ * `app.getPath('appData')` does not read %APPDATA%; it asks Windows through the
+ * shell API for the roaming folder of the user who is actually running the app.
+ * So resolving the path on this side removes the whole class of failure, and
+ * the server's own search stays as the fallback for anything unusual.
+ *
+ * Everything here is best-effort: a throw must never stop the server starting.
+ */
+function locateClaudeCode() {
+  const roots = [];
+  try { roots.push(app.getPath('appData')); } catch (_) { /* too early, or unavailable */ }
+  if (process.env.APPDATA) roots.push(process.env.APPDATA);
+  try { roots.push(path.join(require('os').homedir(), 'AppData', 'Roaming')); } catch (_) { /* ignore */ }
+
+  for (const root of roots) {
+    if (!root) continue;
+    const base = path.join(root, 'Claude', 'claude-code');
+    let versions;
+    try {
+      versions = fs.readdirSync(base).filter(d => /^\d+\.\d+/.test(d));
+    } catch (_) {
+      continue;
+    }
+    // Newest first: the desktop app keeps every version it has installed, and
+    // "2.1.9" must sort BELOW "2.1.247".
+    versions.sort((a, b) => {
+      const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+      const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        if ((pa[i] || 0) !== (pb[i] || 0)) return (pb[i] || 0) - (pa[i] || 0);
+      }
+      return 0;
+    });
+    for (const v of versions) {
+      const exe = path.join(base, v, 'claude.exe');
+      try {
+        if (fs.existsSync(exe)) {
+          log('Claude Code at', exe);
+          return exe;
+        }
+      } catch (_) { /* keep looking */ }
+    }
+  }
+  log('Claude Code not found from the main process; the server will search too');
+  return '';
 }
 
 /**
@@ -256,14 +406,27 @@ async function startServer() {
  * Deliberately fire-and-forget: if it fails, the real request will report it.
  */
 function warmUpWsl() {
-  try {
-    const req = http.get(
-      { hostname: '127.0.0.1', port: serverPort, path: '/api/wsl?action=version', timeout: 30000 },
-      (res) => { res.resume(); res.on('end', () => log('WSL warm-up done')); }
-    );
-    req.on('error', () => {});
-    req.on('timeout', () => req.destroy());
-  } catch (_) { /* never fatal */ }
+  const fire = (path, label, timeout) => {
+    try {
+      const req = http.get(
+        { hostname: '127.0.0.1', port: serverPort, path, timeout },
+        (res) => { res.resume(); res.on('end', () => log(label)); }
+      );
+      req.on('error', () => {});
+      req.on('timeout', () => req.destroy());
+    } catch (_) { /* never fatal */ }
+  };
+
+  fire('/api/wsl?action=version', 'WSL warm-up done', 30000);
+  // Build the OpenFOAM index (foamToC + every -help, about eight seconds) while
+  // the user is still reading the dashboard, so the copilot has the installed
+  // version's real vocabulary from the first question. Server-side it runs on a
+  // spawned child, so it does not block any other request.
+  fire('/api/foam-index?action=build', 'OpenFOAM index ready', 180000);
+  // The tutorial corpus the example selector ranks over: ~34 s to index 20.000
+  // chunks, once per installation. Fired last, because the copilot is useful
+  // without it (it falls back to a grep) and useless without the index above.
+  fire('/api/foam-index?action=corpus&build=1', 'tutorial corpus ready', 300000);
 }
 
 /**
@@ -406,7 +569,15 @@ function createWindow() {
   // as the server answers. Waiting for the server before creating the window
   // meant the app looked like it had not launched at all.
   mainWindow.loadURL(SPLASH_HTML);
+  // executeJavaScript before the splash has parsed does nothing, so the first
+  // update waits for it and replays whatever progress was reached meanwhile.
+  mainWindow.webContents.once('did-finish-load', () => {
+    splashReady = true;
+    progress(progressValue, progressLabel);
+  });
   log('Window created (splash)');
+  progress(6, 'Starting the local server…');
+  creepTo(30);
 
   // Open external (non-app) links in the user's default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -496,7 +667,16 @@ async function loadApp() {
     return;
   }
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  progress(80, 'Loading the interface…');
+  creepTo(97);
+  mainWindow.webContents.once('dom-ready', () => { stopCreep(); progress(97); });
+
   await mainWindow.loadURL('http://127.0.0.1:' + serverPort + '/');
+  // From here the real page owns the window; nothing must try to script the
+  // splash that is no longer there.
+  stopCreep();
+  appLoading = true;
   log('App loaded');
 }
 

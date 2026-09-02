@@ -14,7 +14,7 @@
 #                           --config electron/electron-builder.yml
 #
 # `--projectDir electron` makes electron-builder read electron/package.json
-# (name: openfoam-studio, version 1.4.0, main: main.js) as the app manifest,
+# (name: openfoam-studio, version 2.0.0, main: main.js) as the app manifest,
 # which is exactly what ends up inside resources/app.asar.
 #
 # Note: the original 6.1.4 build was produced on Linux, where electron-builder
@@ -33,6 +33,22 @@ copyright: Copyright © OpenFOAM Studio
 electronVersion: 31.7.7
 
 asar: true
+
+# Compression is deliberately left at the default (LZMA), and here is the
+# measurement that settles it.
+#
+# The NSIS portable stub deletes and re-extracts the whole payload into TEMP on
+# EVERY launch — inherent to the format, not something the app can skip. The
+# obvious idea is to stop compressing so the extraction becomes a plain copy.
+# Measured on 2026-09-02, same machine, three runs each:
+#
+#     LZMA (87 MB)   29.3 s · 29.0 s
+#     store (350 MB) 26.2 s · 26.6 s · 25.7 s
+#
+# Three seconds for 263 MB. The cost is the COPY, not the decompression, so the
+# only thing that actually removes it is not extracting at all: an NSIS
+# installer, or shipping the win-unpacked folder (window in ~130 ms, interface
+# at ~4 s, measured). Do not try `store` again without re-reading this.
 
 directories:
   output: ../dist-electron
@@ -58,13 +74,19 @@ extraResources:
   # The assembled Next.js standalone build.
   - from: resources/standalone
     to: standalone
+  # The agent's tool server. The app launches Claude Code itself and hands it
+  # this as its only tools (src/lib/claude-cli.ts). Dependency-free on purpose:
+  # it runs with the bundled node.exe above, and the packaged app ships no
+  # node_modules for it to import from.
+  - from: mcp
+    to: mcp
 
 win:
   target:
     - portable
   icon: build/icon.ico
-  artifactName: OpenFOAMStudio-v1.4-portable.${ext}
+  artifactName: OpenFOAMStudio-v2-portable.${ext}
 
 portable:
-  artifactName: OpenFOAMStudio-v1.4-portable.${ext}
+  artifactName: OpenFOAMStudio-v2-portable.${ext}
   unicode: true

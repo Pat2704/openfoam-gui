@@ -2,7 +2,14 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+// The app calls sonner's toast() from a dozen components, but sonner's own
+// host was never mounted — so every one of those messages was silently
+// dropped, including "Claude Code is not installed on this machine" when the
+// sign-in button was pressed. It must come through the client wrapper: see
+// src/components/ui/sonner.tsx for why importing it here directly does not work.
+import { SonnerToaster } from "@/components/ui/sonner";
 import ChatPopup from "@/components/chat-popup";
+import ClaudePanel from "@/components/claude-panel";
 import { CaseProvider } from "@/lib/case-context";
 import { ThemeProvider } from "next-themes";
 import { ConfirmHost } from "@/components/ui/confirm-host";
@@ -41,7 +48,9 @@ export default function RootLayout({
         <CaseProvider>
           {children}
           <Toaster />
+          <SonnerToaster />
           <ChatPopup />
+          <ClaudePanel />
           <ConfirmHost />
         </CaseProvider>
         </ThemeProvider>

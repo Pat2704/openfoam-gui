@@ -45,12 +45,21 @@ import {
   type FieldConfig, type Flavour, type MeshSpec, type TurbulenceModel,
 } from '@/lib/case-templates';
 
-const BC_TYPES = [
+/**
+ * Fallback list, used only until the installation answers.
+ *
+ * Hand-written lists of OpenFOAM names go stale silently: this one shipped with
+ * `atmBoundaryLayerInletVelocity`, which exists on 13 and was renamed on 14 —
+ * exactly the kind of error the index in src/lib/foam-index.ts exists to stop.
+ * The real list comes from foamToC via /api/foam-index; these are the handful
+ * that are stable across every version, for the seconds before it arrives.
+ */
+const BC_TYPES_FALLBACK = [
   'fixedValue', 'zeroGradient', 'noSlip', 'slip', 'symmetry', 'symmetryPlane', 'empty',
   'inletOutlet', 'outletInlet', 'fixedFluxPressure', 'totalPressure', 'pressureInletOutletVelocity',
   'flowRateInletVelocity', 'kqRWallFunction', 'epsilonWallFunction', 'omegaWallFunction',
-  'nutkWallFunction', 'nutUWallFunction', 'calculated', 'freestream', 'turbulentIntensityKineticEnergyInlet',
-  'atmBoundaryLayerInletVelocity', 'codedFixedValue', 'uniformFixedValue', 'cyclic', 'wedge',
+  'nutkWallFunction', 'nutUWallFunction', 'calculated', 'freestream', 'codedFixedValue',
+  'uniformFixedValue', 'cyclic', 'wedge',
 ];
 
 const STEPS = [
@@ -75,6 +84,9 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   // so it is detected first and shown to the user, who can override it.
   const [flavour, setFlavour] = useState<Flavour>('modular');
   const [detectedVersion, setDetectedVersion] = useState<string | null>(null);
+  /** Boundary condition names the installation actually offers (see below). */
+  const [bcTypes, setBcTypes] = useState<string[]>(BC_TYPES_FALLBACK);
+  const [bcFromInstall, setBcFromInstall] = useState(false);
 
   const [caseName, setCaseName] = useState('');
   const [existingCases, setExistingCases] = useState<string[]>([]);
@@ -147,6 +159,23 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
         setDetectedVersion(String(data.version).trim());
         setFlavour(flavourForVersion(Number.isFinite(major) ? major : null));
       } catch { /* keep the modular default */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // The real boundary-condition list, straight from foamToC. Falls back to the
+  // short built-in list if the index is not built yet or the version predates
+  // foamToC (9/10), so the wizard always works — just with fewer choices.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/foam-index?action=bc');
+        const data = await res.json();
+        if (cancelled || !data?.ready || !Array.isArray(data.types) || !data.types.length) return;
+        setBcTypes(data.types);
+        setBcFromInstall(true);
+      } catch { /* keep the fallback */ }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -271,6 +300,17 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
     setPreviewContent(content); setPreviewField(name); setShowPreview(true);
   };
 
+  /**
+   * Names in the files about to be written that this OpenFOAM does not know.
+   *
+   * The wizard generates from templates, so this should normally be empty — it
+   * is here to catch the case where the templates drift away from a version, or
+   * the user hand-edits a dictionary in step 4/5 and mistypes a type.
+   */
+  const [nameProblems, setNameProblems] = useState<{ name: string; where: string; suggestions: string[] }[]>([]);
+  /** Files the wizard is about to write that OpenFOAM's parser rejects. */
+  const [syntaxProblems, setSyntaxProblems] = useState<{ path: string; message: string; line: number | null }[]>([]);
+
   // ── Preflight checks, shown on the last step ────────────────────────────
   const problems = useMemo(() => {
     const out: string[] = [];
@@ -298,8 +338,18 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
     if (turbulence === 'laminar' && staleTurbulenceFields.length) {
       out.push(`Laminar run, but 0/ still carries ${staleTurbulenceFields.join(', ')}.`);
     }
+
+    for (const p of nameProblems) {
+      out.push(
+        `${p.where}: "${p.name}" does not exist in this OpenFOAM` +
+        (p.suggestions.length ? ` — did you mean ${p.suggestions.join(', ')}?` : '.'),
+      );
+    }
+    for (const p of syntaxProblems) {
+      out.push(`${p.path}: OpenFOAM cannot parse this file — ${p.message}${p.line ? ` (line ${p.line})` : ''}.`);
+    }
     return out;
-  }, [caseName, existingCases, blockMeshDict, fields, patches, turbulence, staleTurbulenceFields]);
+  }, [caseName, existingCases, blockMeshDict, fields, patches, turbulence, staleTurbulenceFields, nameProblems, syntaxProblems]);
 
   const filesToWrite = useMemo(() => {
     const list: { path: string; content: string }[] = [];
@@ -314,6 +364,24 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
     return list;
   }, [fields, flavour, controlDict, fvSchemes, fvSolution, blockMeshDict, transportName,
       turbulenceName, transportProps, turbProps, needsGravity, gravity]);
+
+  useEffect(() => {
+    if (step !== 6) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/foam-index', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'validate', files: filesToWrite }),
+        });
+        const data = await res.json();
+        if (cancelled || !data?.ready) return;
+        if (Array.isArray(data.problems)) setNameProblems(data.problems);
+        if (Array.isArray(data.syntax)) setSyntaxProblems(data.syntax);
+      } catch { /* the preflight simply does not show this check */ }
+    })();
+    return () => { cancelled = true; };
+  }, [step, filesToWrite]);
 
   const handleCreate = async () => {
     const c = caseName.trim();
@@ -769,8 +837,8 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
                             />
                             <Select value={bc.type} onValueChange={(v) => updateBC(activeFieldIdx, bi, { type: v })}>
                               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                              <SelectContent>
-                                {BC_TYPES.map(t => <SelectItem key={t} value={t} className="text-xs font-mono">{t}</SelectItem>)}
+                              <SelectContent className="max-h-72">
+                                {bcTypes.map(t => <SelectItem key={t} value={t} className="text-xs font-mono">{t}</SelectItem>)}
                               </SelectContent>
                             </Select>
                             <Input
@@ -789,6 +857,11 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
                   </ScrollArea>
                   <p className="text-[11px] text-muted-foreground mt-1.5">
                     Mesh patches: {patches.map(p => `${p.name} (${p.role})`).join(' · ')}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {bcFromInstall
+                      ? `Condition types: ${bcTypes.length}, read from the installed OpenFOAM${detectedVersion ? ' ' + detectedVersion : ''}.`
+                      : 'Condition types: built-in short list (the installation has not answered yet).'}
                   </p>
                 </div>
               </div>
@@ -968,8 +1041,12 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
         ))}
       </div>
 
-      {/* Navigation */}
-      <div className="flex justify-between sticky bottom-0 bg-background py-2 border-t mt-2">
+      {/* Navigation.
+          pr-16 keeps "Next" clear of the floating FOAMy launcher, which is
+          fixed at the bottom-right with z-100 and otherwise sits exactly on top
+          of it — measured: the launcher occupies 1194-1250 px and the button
+          1172-1254 px on a 1280-wide window, so the click opens the chat. */}
+      <div className="flex justify-between sticky bottom-0 bg-background py-2 pr-16 border-t mt-2">
         <Button variant="outline" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>
           <ChevronLeft className="w-4 h-4 mr-1" /> Back
         </Button>

@@ -428,8 +428,8 @@ export default function Dashboard({
 
       {/* Settings Dialog — OpenFOAM version selection */}
       <Dialog open={showSettings} onOpenChange={setShowSettings}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>OpenFOAM Version</DialogTitle></DialogHeader>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Settings</DialogTitle></DialogHeader>
           <div className="space-y-4 pt-2">
             <p className="text-sm text-muted-foreground">
               Select which version of OpenFOAM to use. All paths (installation, cases, tutorials) will be updated automatically.

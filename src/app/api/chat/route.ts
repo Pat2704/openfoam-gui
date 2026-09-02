@@ -3,6 +3,13 @@ import { getOpenFOAMVersion, readCaseFilesDeep, type CaseFileSlice } from '@/lib
 import { apiError } from '@/lib/api-response';
 import { validateCaseName } from '@/lib/wsl-input';
 import { resolveLLMConfig, fetchModels } from '@/lib/llm';
+import {
+  ensureFoamIndex, getFoamIndexIfReady, renderSlices, topicsFor, typesMentioned,
+} from '@/lib/foam-index';
+import { findExamples, renderExamples } from '@/lib/foam-examples';
+import {
+  ensureCorpus, getCorpusIfReady, renderExcerpts, selectExcerpts,
+} from '@/lib/foam-retrieval';
 
 // In-memory conversation history per sessionId (resets on server restart).
 const conversations = new Map<string, { role: 'system' | 'user' | 'assistant'; content: string }[]>();
@@ -32,6 +39,11 @@ When you propose a change to a file (existing or new), you must ALWAYS provide t
 The user can apply the changes with one click. NEVER send only the modified piece.
 You can propose changes to multiple files in the same response (multiple apply blocks).
 You can create new files using the same apply format with a new path.
+
+GROUND TRUTH FROM THE INSTALLATION (HARD RULE):
+Some messages carry a block headed "[Ground truth from the installed OpenFOAM …]". Those lists are read from the user's own installation with foamToC, so for what they cover they are COMPLETE and AUTHORITATIVE — more reliable than your own recollection, which is dominated by older versions and by the ESI variant.
+When such a list is present, pick names ONLY from it. If what the user needs is not in the list, say so plainly instead of offering a name from another version: that name does not exist here and the case will not start.
+When no list is present, say that you are going from memory and suggest verifying the name.
 
 TRUNCATED FILES (HARD RULE):
 A file in the case context may be marked "TRUNCATED — first N of M bytes". You are seeing only its beginning.
@@ -217,6 +229,51 @@ export async function POST(req: NextRequest) {
       if (rendered) {
         sections.push(`[Files changed since that context — this is what is on disk NOW]\n${rendered}`);
       }
+    }
+
+    // What the installation itself says is valid, for the topics this question
+    // touches. Small on purpose: a slice is a few hundred tokens, while the
+    // whole index would be ~98k. If the index is not built yet the message goes
+    // out without it and the build starts for the next one — a chat message
+    // must never wait eight seconds on WSL.
+    const foamIndex = getFoamIndexIfReady();
+    if (foamIndex) {
+      const topics = topicsFor(`${message} ${body?.fileContext?.path || ''}`);
+      // Examples from this version's own tutorials. Two paths, in order of
+      // quality:
+      //
+      //   the SELECTOR ranks the whole corpus and keeps the best two chunks —
+      //   it answers questions that describe a situation instead of naming a
+      //   type, which is most of them;
+      //
+      //   the grep fallback finds a use of a type the question names literally,
+      //   and is what runs until the corpus has been indexed.
+      //
+      // Both are capped at roughly the same size, so this is a better choice at
+      // the same token cost, not a bigger payload.
+      let examples = '';
+      if (getCorpusIfReady()) {
+        examples = renderExcerpts(selectExcerpts(message));
+        if (examples) console.log(`[chat] selected examples (${examples.length} chars)`);
+      } else {
+        void ensureCorpus();
+        const mentioned = typesMentioned(foamIndex, message, 2);
+        if (mentioned.length) {
+          examples = renderExamples(await findExamples(mentioned));
+          if (examples) console.log(`[chat] grep examples for ${mentioned.join(', ')} (${examples.length} chars)`);
+        }
+      }
+      if (examples) sections.push(examples);
+
+      const slice = renderSlices(foamIndex, topics, message);
+      if (slice) {
+        sections.push(slice);
+        // One line per message: which lists were attached and how big they were.
+        // This is the number to watch if token usage ever looks wrong.
+        console.log(`[chat] ground truth: ${topics.join(', ')} (${slice.length} chars ≈ ${Math.round(slice.length / 4)} tokens)`);
+      }
+    } else {
+      void ensureFoamIndex();
     }
 
     sections.push(message);

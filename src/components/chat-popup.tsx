@@ -12,6 +12,7 @@ import { useCaseContext } from '@/lib/case-context';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, saveFoamyConfig } from '@/lib/foamy-store';
+import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
 
 // ── Provider presets ──
 interface ProviderPreset {
@@ -80,6 +81,21 @@ interface AppliedFile {
   status: 'idle' | 'applying' | 'ok' | 'error';
 }
 
+/** A name the installed OpenFOAM does not accept where it was used. */
+interface FoamNameProblem {
+  file: string;
+  name: string;
+  where: string;
+  suggestions: string[];
+}
+
+/** A file OpenFOAM's own parser cannot read. */
+interface FoamSyntaxProblem {
+  path: string;
+  message: string;
+  line: number | null;
+}
+
 export default function ChatPopup() {
   const { caseName, activeFile, setActiveFile } = useCaseContext();
   const [open, setOpen] = useState(false);
@@ -136,21 +152,52 @@ export default function ChatPopup() {
 
   // ── Window positioning ──
   const [winPos, setWinPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+  // Shared with the Claude panel — see src/lib/floating-order.ts.
+  const [z, setZ] = useState(LAUNCHER_Z + 1);
+  const raise = useCallback(() => { if (!isFront(z)) setZ(bringToFront()); }, [z]);
   const [size, setSize] = useState({ w: 420, h: 560 });
   const isDragging = useRef<string | null>(null);
   const isResizing = useRef(false);
   const dragStart = useRef({ mx: 0, my: 0, left: 0, top: 0 });
   const resizeStart = useRef({ mx: 0, my: 0, w: 0, h: 0 });
 
-  // Initialize button position once
+  /**
+   * Park the launcher at the bottom right.
+   *
+   * Guarded, because the viewport can still be 0×0 when this first runs (a
+   * window that has not been laid out yet), and `innerWidth - 86` is then -86:
+   * the button exists, the DOM calls it visible, and it is nowhere on screen,
+   * with nothing to move it back. So placing is retried until the viewport is
+   * real, and repeated on resize whenever the button would be left outside the
+   * window. Dragging is untouched — it still writes `style.transform` directly.
+   *
+   * Same guard as src/components/claude-panel.tsx, where the bug was found.
+   */
   useEffect(() => {
-    if (!btnInitialized.current && btnRef.current) {
-      const x = window.innerWidth - 86;
-      const y = window.innerHeight - 86;
+    const place = () => {
+      const button = btnRef.current;
+      if (!button) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (vw < 100 || vh < 100) return;          // not laid out yet; try later
+      const { left, top } = btnPosRef.current;
+      const outside = left > vw - 56 || top > vh - 56 || left < 0 || top < 0;
+      if (btnInitialized.current && !outside) return;
+      const x = Math.max(0, vw - 86);
+      const y = Math.max(0, vh - 86);
       btnPosRef.current = { left: x, top: y };
-      btnRef.current.style.transform = `translate(${x}px, ${y}px)`;
+      button.style.transform = `translate(${x}px, ${y}px)`;
       btnInitialized.current = true;
-    }
+    };
+
+    place();
+    // One rAF covers the common case of a viewport measured a tick late.
+    const frame = requestAnimationFrame(place);
+    window.addEventListener('resize', place);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', place);
+    };
   }, []);
 
   const handleOpen = useCallback(() => {
@@ -160,6 +207,7 @@ export default function ChatPopup() {
     const h = Math.min(size.h, vh - 40);
     setWinPos({ left: vw - w - 24, top: vh - h - 24 });
     setSize({ w, h });
+    setZ(bringToFront());
     setOpen(true);
   }, [size]);
 
@@ -250,6 +298,36 @@ export default function ChatPopup() {
   const caseContextSentRef = useRef(false);
   /** Files written since the context was sent, with their current content. */
   const changedFilesRef = useRef<Map<string, string>>(new Map());
+
+  /**
+   * Names in a proposed file that the installed OpenFOAM does not know.
+   *
+   * Keyed by apply-block, filled in the background as messages arrive. This is
+   * the check that turns "the copilot is sometimes imprecise" into "the
+   * imprecision is caught before it reaches your case": the names come from
+   * foamToC, so a flag here is a fact about the installation, not an opinion.
+   */
+  const [nameProblems, setNameProblems] = useState<Record<string, FoamNameProblem[]>>({});
+  /** Files whose syntax the parser rejected, keyed by apply-block. */
+  const [syntaxProblems, setSyntaxProblems] = useState<Record<string, FoamSyntaxProblem[]>>({});
+
+  const checkNames = useCallback(async (path: string, content: string, blockKey: string) => {
+    try {
+      const res = await fetch('/api/foam-index', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'validate', files: [{ path, content }] }),
+      });
+      const data = await res.json();
+      if (!data?.ready) return { names: [] as FoamNameProblem[], syntax: [] as FoamSyntaxProblem[] };
+      const names = (Array.isArray(data.problems) ? data.problems : []) as FoamNameProblem[];
+      const syntax = (Array.isArray(data.syntax) ? data.syntax : []) as FoamSyntaxProblem[];
+      setNameProblems(prev => ({ ...prev, [blockKey]: names }));
+      setSyntaxProblems(prev => ({ ...prev, [blockKey]: syntax }));
+      return { names, syntax };
+    } catch {
+      return { names: [] as FoamNameProblem[], syntax: [] as FoamSyntaxProblem[] };
+    }
+  }, []);
   const loadCaseContext = useCallback(async () => {
     if (!caseName) return;
     setLoadingContext(true);
@@ -392,6 +470,44 @@ export default function ChatPopup() {
   const applyFileChange = useCallback(async (filePath: string, content: string, blockKey: string, skipReadCheck = false) => {
     if (!caseName) return;
 
+    // Check the type names against the installation before touching the file.
+    // Re-checked here rather than trusting the background pass: the background
+    // one may not have finished, and this is the last point where the user can
+    // still say no.
+    const { names: problems, syntax } = await checkNames(filePath, content, blockKey);
+    if (syntax.length) {
+      const ok = await confirmDialog(
+        `OpenFOAM's own parser cannot read this file:
+
+` +
+        syntax.map(p => `• ${p.message}` + (p.line ? ` (line ${p.line})` : '')).join('\n') +
+        `
+
+Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
+        { title: 'File does not parse', confirmLabel: 'Apply anyway', destructive: true },
+      );
+      if (!ok) {
+        setAppliedFiles(prev => ({ ...prev, [blockKey]: { path: filePath, status: 'idle' } }));
+        return;
+      }
+    }
+    if (problems.length) {
+      const lines = problems
+        .slice(0, 6)
+        .map(p => `• ${p.name} (${p.where})` + (p.suggestions.length ? `\n   did you mean: ${p.suggestions.join(', ')}` : ''));
+      const ok = await confirmDialog(
+        `This OpenFOAM installation does not know ${problems.length === 1 ? 'a name' : problems.length + ' names'} used in "${filePath}":\n\n` +
+        lines.join('\n') +
+        (problems.length > 6 ? `\n… and ${problems.length - 6} more` : '') +
+        `\n\nApply anyway?`,
+        { title: 'Unknown names', confirmLabel: 'Apply anyway', destructive: true },
+      );
+      if (!ok) {
+        setAppliedFiles(prev => ({ ...prev, [blockKey]: { path: filePath, status: 'idle' } }));
+        return;
+      }
+    }
+
     if (!skipReadCheck) {
       try {
         const readRes = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent(filePath)}`);
@@ -452,6 +568,22 @@ export default function ChatPopup() {
       await applyFileChange(match.path, match.content, match.key);
     }
   }, [applyFileChange]);
+
+  /**
+   * Check every proposed file as soon as a reply lands, so the warning is on
+   * screen before the user reaches for Apply — not after they click it.
+   */
+  useEffect(() => {
+    const last = messages.length - 1;
+    if (last < 0 || messages[last].role !== 'assistant' || messages[last].truncated) return;
+    const applyRegex = /```apply:([^\n]+)\n([\s\S]*?)```/g;
+    let m: RegExpExecArray | null;
+    let i = 0;
+    while ((m = applyRegex.exec(messages[last].content)) !== null) {
+      void checkNames(m[1].trim(), m[2], `msg${last}-${i}`);
+      i++;
+    }
+  }, [messages, checkNames]);
 
   // ── Send message ──
   const sendMessage = useCallback(async () => {
@@ -617,6 +749,38 @@ export default function ChatPopup() {
                   )}
                 </div>
               </div>
+              {syntaxProblems[blockKey]?.length ? (
+                <div className="px-3 py-2 border-b border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-[11px]">
+                  <div className="font-medium text-red-800 dark:text-red-300 mb-1">
+                    OpenFOAM cannot parse this file:
+                  </div>
+                  <ul className="space-y-0.5">
+                    {syntaxProblems[blockKey].map((p, i) => (
+                      <li key={i} className="font-mono">
+                        {p.message}{p.line ? ` (line ${p.line})` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {nameProblems[blockKey]?.length ? (
+                <div className="px-3 py-2 border-b border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 text-[11px]">
+                  <div className="font-medium text-amber-800 dark:text-amber-300 mb-1">
+                    Not in this OpenFOAM installation:
+                  </div>
+                  <ul className="space-y-0.5">
+                    {nameProblems[blockKey].slice(0, 4).map((p, i) => (
+                      <li key={i} className="font-mono">
+                        <span className="text-red-600 dark:text-red-400">{p.name}</span>
+                        <span className="text-muted-foreground"> · {p.where}</span>
+                        {p.suggestions.length > 0 && (
+                          <span className="text-muted-foreground"> → {p.suggestions.join(', ')}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               <pre className="p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap max-h-[200px] overflow-y-auto">{code}</pre>
             </div>
           );
@@ -804,8 +968,8 @@ export default function ChatPopup() {
               handleOpen();
             }
           }}
-          className="fixed z-[100] w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/25 flex items-center justify-center group cursor-grab active:cursor-grabbing transition-shadow duration-150"
-          style={{ left: 0, top: 0, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
+          className="fixed w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/25 flex items-center justify-center group cursor-grab active:cursor-grabbing transition-shadow duration-150"
+          style={{ left: 0, top: 0, zIndex: LAUNCHER_Z, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
           title="FOAMy - OpenFOAM Assistant (draggable)"
         >
           <MessageCircle className="w-6 h-6" />
@@ -816,8 +980,11 @@ export default function ChatPopup() {
       {/* Chat Window */}
       {open && (
         <div
-          className="fixed z-[100] flex flex-col rounded-xl border shadow-2xl bg-card overflow-hidden"
-          style={{ left: winPos.left, top: winPos.top, width: size.w, height: size.h }}
+          className="fixed flex flex-col rounded-xl border shadow-2xl bg-card overflow-hidden"
+          style={{ left: winPos.left, top: winPos.top, width: size.w, height: size.h, zIndex: z }}
+          // Capture, so clicking anywhere in the window raises it — including
+          // on a control that stops the event before it would bubble to here.
+          onMouseDownCapture={raise}
         >
           {/* Header */}
           <div

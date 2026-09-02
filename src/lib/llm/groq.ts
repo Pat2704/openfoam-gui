@@ -71,8 +71,20 @@ export class GroqProvider implements LLMProvider {
       }
 
       const data = await res.json();
-      const reply = data?.choices?.[0]?.message?.content;
+      const message = data?.choices?.[0]?.message;
+      const reply = message?.content;
       if (typeof reply !== 'string' || !reply) {
+        // Reasoning models (Groq's gpt-oss line) answer in two parts: their
+        // thinking goes to `reasoning` and the answer to `content`. When the
+        // output budget runs out inside the thinking, `content` comes back
+        // empty with finish_reason "stop" — which reads as a broken provider
+        // unless the message says what actually happened.
+        if (typeof message?.reasoning === 'string' && message.reasoning) {
+          throw new Error(
+            'Groq: the model spent its whole output budget on internal reasoning and ' +
+            'returned no answer. Ask something narrower, or pick a model that does not reason.',
+          );
+        }
         throw new Error(`Groq: empty or malformed response. Response: ${JSON.stringify(data).slice(0, 300)}`);
       }
 

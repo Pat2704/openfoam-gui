@@ -121,7 +121,8 @@ function runInWslWithInput(cmd: string, input: string, timeout = 30000): string 
 }
 
 // Variant: runInWsl with a base64-encoded bash script (avoids quoting issues)
-function runInWslScript(b64: string, timeout = 30000): string {
+// Exported for src/lib/foam-index.ts, which builds its whole index in one call.
+export function runInWslScript(b64: string, timeout = 30000): string {
   const distro = getDistro();
   const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; echo "${b64}" | base64 -d | bash`;
   try {
@@ -133,6 +134,59 @@ function runInWslScript(b64: string, timeout = 30000): string {
   } catch (e: any) {
     throw new Error((e.stderr || e.message || 'WSL command failed').trim());
   }
+}
+
+/**
+ * Same as runInWslScript, but without blocking the event loop.
+ *
+ * Everything else in this file is synchronous, which is fine for the sub-second
+ * calls the UI makes one at a time. The OpenFOAM index build is different: it
+ * runs foamToC plus 151 `-help` invocations and takes about eight seconds, and
+ * execFileSync would freeze every other request in the server for that whole
+ * time — including the ones the page makes while the user waits.
+ */
+export function runInWslScriptAsync(b64: string, timeout = 120000): Promise<string> {
+  const distro = getDistro();
+  const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; echo "${b64}" | base64 -d | bash`;
+  return new Promise((resolve, reject) => {
+    // windowsHide is mandatory here like everywhere else in this file — see the
+    // banner at the top: a console child steals focus in the packaged app.
+    const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+      windowsHide: true,
+      env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      child.kill();
+      reject(new Error(`WSL script timed out after ${timeout} ms`));
+    }, timeout);
+
+    child.stdout.setEncoding('utf-8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf-8');
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+
+    child.on('error', (err) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      // A non-zero exit still carries useful stdout for scripts that report
+      // their own errors, so only reject when there is nothing to work with.
+      if (code !== 0 && !stdout) reject(new Error((stderr || `WSL exited with ${code}`).trim()));
+      else resolve(stdout);
+    });
+  });
 }
 
 // ── Caches (in-memory + persistent disk) ──

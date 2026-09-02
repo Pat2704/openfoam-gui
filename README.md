@@ -1,7 +1,8 @@
 # OpenFOAM Studio
 
 A desktop GUI for running **OpenFOAM** CFD simulations inside **WSL2 (Ubuntu)**
-on Windows, with an integrated AI copilot (**FOAMy**).
+on Windows, with two AI helpers built in: **FOAMy**, a copilot that proposes
+edits you apply, and **Claude**, an agent that does the work itself.
 
 One portable `.exe`. No installer, no Docker, no Node.js, no browser tab.
 Double-click and it opens in its own window.
@@ -26,7 +27,7 @@ A short demo is in [`screenshots/gif_openfoam_studio.mp4`](screenshots/gif_openf
 
 ## Install
 
-1. Download **`OpenFOAMStudio-v1.4-portable.exe`** from the [Releases](../../releases) page.
+1. Download **`OpenFOAMStudio-v2-portable.exe`** from the [Releases](../../releases) page.
 2. Put it anywhere (Desktop, a USB stick — it writes nothing to the registry).
 3. Double-click it.
 
@@ -41,6 +42,7 @@ Windows SmartScreen will warn on first run because the executable is unsigned:
 | WSL2 + Ubuntu | 22.04 or 24.04 — check with `wsl --list -v` |
 | OpenFOAM | v9 → v14, installed inside WSL |
 | LLM API key | optional, only for the FOAMy chat |
+| Claude desktop app | optional, only for the Claude agent — it runs on your subscription |
 
 Node.js is **not** needed — one is bundled inside the `.exe`.
 
@@ -78,6 +80,9 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
 - **Applications / Src** — browse the installed OpenFOAM sources.
 - **FOAMy** — a chat copilot that reads your case files and proposes edits you
   can apply with one click.
+- **Claude** — an agent that reads, writes and runs your cases itself, on your
+  Claude subscription. Same idea, opposite direction: FOAMy hands you a file to
+  approve, Claude changes the case and tells you what it did.
 
 ### Keyboard shortcuts
 
@@ -104,6 +109,45 @@ to starts with nothing configured. Everything except the chat works without it.
 
 ---
 
+## Setting up the Claude agent (optional)
+
+Click the orange burst button (bottom-right, above FOAMy's) → **Sign in**. Your
+browser opens once; after that the panel is ready.
+
+It needs the **Claude desktop app** installed, because that is where the Claude
+Code it drives — and your subscription — lives. There is no API key and nothing
+is billed per message: the agent runs on the plan you already pay for. The app
+finds the binary by itself (newest version under
+`%APPDATA%\Claude\claude-code\`); set `OFSTUDIO_CLAUDE_PATH` if yours lives
+somewhere unusual.
+
+**What it is allowed to do**, and cannot be talked out of:
+
+- read and write files inside your **run directory only** — case names and
+  paths go through the same validators the rest of the app uses, so `..`, an
+  absolute path or a symlink gets it nowhere;
+- run **only executables this OpenFOAM installation actually ships** (156 of
+  them, read from the installation itself), one command per call — no pipes, no
+  redirects, no chaining;
+- **nothing else.** It has no shell, no filesystem access outside those tools,
+  and no web access. `rm` and `mv` are not on the list, so deleting or moving a
+  file is not something it can express — it will tell you to do it yourself.
+
+**Unrestricted mode.** The shield button in the composer says `Guarded` by
+default: Claude may only run the OpenFOAM executables this installation ships,
+one per call, with no shell syntax. Switch it to `No limits` — it asks first —
+and `run_openfoam` becomes a real shell inside the case directory: any command,
+pipes, redirects, chaining, including ones that delete or overwrite. Every call
+still appears in the conversation as it happens, and in the activity log tagged
+`[unrestricted]`. The setting is remembered, and changing it restarts the agent
+while keeping the conversation.
+
+Model and reasoning depth are chosen in the composer, the way Claude Desktop
+does it. Every tool call appears in the conversation as a card you can open, so
+what it read, wrote and ran is on screen rather than in a log file.
+
+---
+
 ## Troubleshooting
 
 **The WSL2 badge is red** — run `wsl --status`; if the distro hangs, `wsl --shutdown`
@@ -118,13 +162,33 @@ the bundled server's output is printed there with a `[server]` prefix.
 **FOAMy doesn't answer** — gear icon → check provider, key and model are saved,
 then **Test connection**.
 
+**"Claude Code is not installed here"** — the agent needs the Claude desktop
+app. If it is installed somewhere the app does not look, set
+`OFSTUDIO_CLAUDE_PATH` to the full path of `claude.exe`.
+
+**The agent says it is not signed in** — open the account icon in the panel
+header and click **Sign in**. It uses your Claude subscription, not an API key,
+so a signed-out CLI is the only thing that stops it.
+
+**"Claude Code was not found" although the Claude app is installed** — the copy
+of the CLI bundled inside the desktop app is not always readable by other
+programs. Install the CLI itself, which lands somewhere any program can reach:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+Or type the full path to your `claude.exe` in the box on that screen. **Look
+again** forces a fresh search and lists every path tried with the reason it
+failed.
+
 ---
 
 ## Building from source
 
 ```bash
 npm install
-npm run electron:build     # → dist-electron/OpenFOAMStudio-v1.4-portable.exe
+npm run electron:build     # → dist-electron/OpenFOAMStudio-v2-portable.exe
 ```
 
 Other commands: `npm run dev` (browser, hot reload, port 3000) ·
@@ -139,8 +203,11 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 |---|---|
 | `electron/main.js` | spawns the server, opens the window, stores the FOAMy config |
 | `electron/preload.js` | the only renderer↔main bridge (FOAMy config) |
+| `electron/mcp/openfoam-mcp.mjs` | the agent's tool server — dependency-free, launched by the app |
 | `src/lib/wsl.ts` | every OpenFOAM interaction goes through here |
 | `src/lib/foamy-store.ts` | where the API key is persisted |
+| `src/lib/claude-cli.ts` | finds, authenticates and drives the Claude Code process |
+| `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
 | `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
 | `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |
 | `src/app/api/**` | REST endpoints the UI talks to |

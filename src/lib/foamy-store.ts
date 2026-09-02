@@ -26,6 +26,15 @@ export const FOAMY_KEYS = [
   'foamy-model-id',
   'foamy-base-url',
   'foamy-api-format',
+  // The Claude agent's two choices. They live here for the same reason the
+  // rest does: in the packaged app the page origin changes every launch, so
+  // localStorage would forget them between runs.
+  'claude-agent-model',
+  'claude-agent-effort',
+  // Where Claude Code is, when the automatic search cannot reach it.
+  'claude-agent-path',
+  // Whether the guard rails are off for the Claude agent.
+  'claude-agent-unrestricted',
 ] as const;
 
 export type FoamyConfig = Partial<Record<(typeof FOAMY_KEYS)[number], string>>;
@@ -77,6 +86,18 @@ export async function loadFoamyConfig(): Promise<FoamyConfig> {
     // localStorage can throw in private windows / when site data is blocked.
     return {};
   }
+}
+
+/**
+ * Change some keys and leave the others alone.
+ *
+ * saveFoamyConfig writes EVERY key, blanking the ones it was not given — which
+ * is what FOAMy's settings form wants, and exactly what a panel that only owns
+ * two of the keys must not do.
+ */
+export async function patchFoamyConfig(partial: FoamyConfig): Promise<void> {
+  const current = await loadFoamyConfig();
+  await saveFoamyConfig({ ...current, ...partial });
 }
 
 export async function saveFoamyConfig(config: FoamyConfig): Promise<void> {
