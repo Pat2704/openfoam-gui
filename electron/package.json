@@ -1,6 +1,6 @@
 {
   "name": "openfoam-studio",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "OpenFOAM Studio — desktop GUI for OpenFOAM CFD (Electron wrapper around the Next.js standalone build)",
   "author": "Tommaso Ferrara",
   "license": "MIT",

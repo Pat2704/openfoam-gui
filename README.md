@@ -30,8 +30,8 @@ want it to start:
 
 | | |
 |---|---|
-| **`OpenFOAMStudio-v2.3.0-folder.zip`** | **Recommended.** Unzip once, anywhere, then run `OpenFOAMStudio.exe` from the folder. **The window is up in about a tenth of a second.** |
-| **`OpenFOAMStudio-v2.3.0-portable.exe`** | One single file, nothing to unzip. Costs about half a minute at every launch: the portable format unpacks the whole app into TEMP each time it starts. |
+| **`OpenFOAMStudio-v2.3.1-folder.zip`** | **Recommended.** Unzip once, anywhere, then run `OpenFOAMStudio.exe` from the folder. **The window is up in about a tenth of a second.** |
+| **`OpenFOAMStudio-v2.3.1-portable.exe`** | One single file, nothing to unzip. Costs about half a minute at every launch: the portable format unpacks the whole app into TEMP each time it starts. |
 
 Either way nothing is installed and nothing is written to the registry — put it
 on the Desktop or a USB stick and double-click.
@@ -42,7 +42,7 @@ saying so. The app checks on startup and tells you if files are missing, but
 extracting with PowerShell avoids the problem:
 
 ```powershell
-Expand-Archive OpenFOAMStudio-v2.3.0-folder.zip -DestinationPath OpenFOAMStudio
+Expand-Archive OpenFOAMStudio-v2.3.1-folder.zip -DestinationPath OpenFOAMStudio
 ```
 
 Windows SmartScreen will warn on first run because the executable is unsigned:
