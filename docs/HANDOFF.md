@@ -9,13 +9,22 @@ Last updated: 2026-09-03.
 ## Where things stand right now (read this first)
 
 **v2.1.0 is released, and the project is open source under the MIT License.**
-Everything is committed and pushed to `main`, the tag is published, both
-artifacts are attached to the release, and GitHub reports the repository license
-as MIT. The working tree is clean; nothing is half-finished waiting for you.
+The tag is published, both artifacts are attached to the release, and GitHub
+reports the repository license as MIT.
+
+**But `main` is now AHEAD of what is published.** The 2026-09-03 session (§2m)
+committed six changes that have NOT been pushed and are NOT in any release, and
+it rebuilt the artifacts in `Working/` from them. So the two files sitting there
+are v2.1.0 by NAME and newer than v2.1.0 by CONTENT — the released ones are the
+copies attached to the GitHub release, and that is where to get them if the
+difference ever matters. Nothing is half-finished; the whole of §2m is done,
+built and verified. What it is waiting for is the user's word to push, and a
+version bump if it is to go out as a release.
 
 | | |
 |---|---|
 | release commit | `1939f13` — what the attached artifacts were built from |
+| local `main` | ahead of `origin/main` by the six commits of §2m, unpushed |
 | tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d` |
 | latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
 | in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.1.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
@@ -39,17 +48,17 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing in the code. Two things sit outside it: the trade mark
-request to OpenCFD is unanswered (§2l), and the repository's social preview
-image has yet to be uploaded — the user is doing that one, and it can only be
-done from Settings. The one unexplained thing is the
+**What is open:** nothing in the code. Three things sit outside it: §2m is
+committed but unpushed and unreleased, the trade mark request to OpenCFD is
+unanswered (§2l), and the repository's social preview image has yet to be
+uploaded — the user is doing that one, and it can only be done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
 rules out the truncated-unpack theory, and no cause was ever proven. The startup
 log added in §2i is what will catch it if it happens again.
 
 **Where the recent work lives:** §2f is the Claude agent, §2g–2j are the four
-rounds of fixes that followed it, newest last. §4 is the build path — it now
+rounds of fixes that followed it, and §2m is the 2026-09-03 round, newest last. §4 is the build path — it now
 produces TWO artifacts and both ship — and §4b is how a release is named and
 published. §5 is the trap list, and it is the section
 most worth reading before touching startup, packaging or the Browser pane.
@@ -840,6 +849,95 @@ developer USING OpenFOAM technology.
 
 ---
 
+## 2m. The 2026-09-03 round
+
+Five things the user asked for, in one session. All committed, all in the
+rebuilt artifacts, none pushed.
+
+- **The mesh toolbar resets on every reload.** The vertex numbers were read from
+  `system/blockMeshDict` once and then kept in the scene, and the toggle reused
+  whatever was already there — so after editing the dictionary and re-meshing,
+  Reload replaced the geometry and left the numbers describing the vertices the
+  case USED to have. Unfixable from the UI, too: pressing Vertices again only
+  hid and re-showed the same stale sprites. Reload now disposes them instead of
+  hiding them, which makes the next press re-read the file, and it puts
+  wireframe and the axes back off with them. Switching case goes through the
+  same helper. Measured before and after: wireframe/axes/vertices all on with
+  20 labels, then all off with the count cleared.
+
+- **The axes are a corner triad now** — three solid arrows with X, Y and Z on
+  them, in a 96 px square at the bottom left, instead of an AxesHelper standing
+  at the case origin and rescaled to the model on every fit. It has its own
+  scene and an orthographic camera, and it takes the main camera's direction AND
+  its up vector, so it follows a trackball roll rather than only the orbit.
+  Two things worth keeping: solid geometry because a helper's lines are one
+  pixel wide however the material is configured, and MeshBasicMaterial because
+  that scene has no lights and wants none. **Every render now goes through one
+  `drawFrame()`** — the on-demand path, the immediate path and the rAF loop that
+  runs during a gesture — because a viewport or scissor left set on the renderer
+  clips whatever is drawn next.
+
+- **The command list is read from the installation** (`src/lib/foam-commands.ts`,
+  `/api/commands?action=catalog`). This was asked as a question — are the
+  commands in the sidebar the real ones? — and the answer was no. The sidebar
+  rendered a hand-written table of 103 commands filtered by a hand-written
+  `minVersion`; checked against the two installs on this machine, **56 of those
+  103 do not exist there** (foamCalc, yPlusRAS, patchAverage and the rest of the
+  pre-v5 post-processing utilities; cfMesh, which is a separate product; solver
+  module names that were simply wrong — compressibleFluid, LagrangianDPM) while
+  **108 installed executables were missing from it**.
+  It now comes from `$FOAM_APPBIN`, the shell utilities in `$WM_PROJECT_DIR/bin`
+  and `foamToC -solvers`: 233 entries on 14. Descriptions are the Description
+  block of each command's own source header, and the categories are OpenFOAM's
+  own directory taxonomy (`utilities/mesh/generation` → Mesh Generation), so
+  neither can drift from the version being described. One WSL call, ~2 s, cached
+  in `~/.wslgui-foam-commands.json` and invalidated with the bashrc. The static
+  table in `openfoam-data.ts` survives as the fallback for those two seconds and
+  for a machine with no WSL.
+  **The find worth keeping: `bin/` holds a tombstone script for every superseded
+  solver.** `simpleFoam` DOES exist on 13 and 14 — as a script whose whole job is
+  to say it "has been superseded and replaced by the more general
+  incompressibleFluid solver module". 37 of them. They are kept, struck through,
+  in a Superseded category: typing simpleFoam is exactly the question that
+  script answers. Solver modules are controlDict values rather than
+  executables, so clicking one inserts `foamRun -solver <name>`.
+
+- **A question about a command is answered installation → `-help` → web, and the
+  answer says which** (`src/lib/foam-help.ts`, `src/lib/web-search.ts`). Both
+  copilots knew which NAMES exist here — that is what §2c built — but nothing
+  about the detail underneath one, so "what does this option do" was answered
+  from memory, which for OpenFOAM means from v9/v10 and from ESI. Three tiers:
+  the index and the catalogue; then the command's own `-help`, run in WSL and
+  cached for the life of the process; then a web search, and only when the first
+  two found nothing at all. Every finding carries its source, and both system
+  prompts require the reply to carry that through — including saying when it is
+  answering from its own training instead.
+  FOAMy gets the findings attached to the message. The agent gets `foam_help` as
+  a tenth tool. **The guarded prompt used to say the agent had "no web access",
+  and that is no longer true**; it now names the one tool that reaches outside
+  the machine and when it does.
+  Measured on the PACKAGED build: `snappyHexMesh` and `checkMesh` resolve from
+  index + `-help` with no web call, and that `-help` is what carries
+  "-overwrite: Deprecated option, this is now default behaviour". `setExprFields`,
+  which this Foundation build does not have, falls through to the web in ~3 s
+  and returns three sources plus the installation's own "does not exist here,
+  the closest names are…".
+  Two limits that are deliberate and are in the code: **the web query is built
+  from OpenFOAM identifiers, never from the user's sentence** — better results,
+  and their question stays theirs — and **ESI's doc.openfoam.com is ranked below
+  openfoam.org, cfd.direct and CFD Online and flagged as a different fork**,
+  because it dominates the results for almost every OpenFOAM term while
+  documenting syntax that is frequently invalid here. `/api/foam-index?action=help&name=X`
+  exposes the chain so the tiers can be checked without going through a model.
+
+- **`-overwrite` is gone from the quick command and from eight reference
+  entries.** The user flagged `snappyHexMesh -overwrite`; checking it against the
+  installs showed the flag is deprecated on 13 AND 14 — "Deprecated option, this
+  is now default behaviour" in each binary's own `-help` — and that the same is
+  true of createPatch, refineMesh, splitMeshRegions, collapseEdges,
+  renumberMesh and autoPatch. Overwriting is the default now; `-noOverwrite` is
+  the opt-out, and that is what the reference lists.
+
 ## 3. `claude_test`
 
 A scratch case the user told me to create, at
@@ -1069,7 +1167,12 @@ GitHub's community score went 42% to 100%. What is there and why:
 
 `AGENTS.md` and `CLAUDE.md` in this folder are generated by `next dev` (the
 Next.js agent-rules block) and are gitignored — they carry no project state, and
-anything written there is overwritten on the next dev run. `Working/.claude/
+anything written there is overwritten on the next dev run.
+**The block itself tells you to commit it** ("committing it with your work keeps
+the tree clean"). Do not: both names are in `.gitignore`, `git status` is clean
+with them present, and `next dev` only rewrites them when the current block is
+MISSING, so nothing is churning. Checked on 2026-09-03 — this is the answer, not
+an oversight. `Working/.claude/
 launch.json`, one level up, is the Browser pane's dev-server config; it lives
 outside the repo on purpose. It hard-codes the source folder's name as its
 `npm --prefix`, so renaming that folder silently stops the dev server — nothing
