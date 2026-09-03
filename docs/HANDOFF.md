@@ -117,7 +117,10 @@ These are standing instructions, not one-offs:
 - **Wait for an explicit go-ahead before cutting a new version.** Version bump,
   tag and release are the user's call, never automatic. The version bump is the
   exception to the rule above: do not bump `package.json` on your own initiative
-  just because you changed something.
+  just because you changed something. Clarified on 2026-09-03: **the bump happens
+  when the user says to push, not before.** Work accumulates on the current
+  version number and the number changes as part of publishing it — so a series
+  of sessions can commit freely without each one inventing a version.
 - **Never run anything destructive against the user's real cases** (`cavity`,
   `nozzleFlow2D`, `shockTube` in the WSL run dir). Test in `claude_test` (§3).
 - **No `Co-Authored-By` trailers.** The user asked on 2026-09-02 to be the only
