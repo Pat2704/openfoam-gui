@@ -2,7 +2,7 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-02, end of the session that opened the project up.
+Last updated: 2026-09-03.
 
 ---
 
@@ -91,15 +91,24 @@ These are standing instructions, not one-offs:
   does not spend 29 seconds unpacking itself. Approved on 2026-08-31 for the
   exe, extended to the zip on 2026-09-02. Earlier binaries stay attached to
   their GitHub releases if one is ever needed. §4 has the details.
+- **Commit every change to the working tree, without being asked.** Agreed with
+  the user on 2026-09-03, replacing the earlier rule that nothing was committed
+  unless asked. If you edited a file — code, docs, this file — the work is not
+  finished until it is committed, in commits that are coherent on their own with
+  a message that says what changed and why. Nothing is left sitting uncommitted
+  for the user to find. This does NOT extend one step further: a commit is local,
+  and it stays local.
 - **NEVER push, tag or touch GitHub unless the user asks in that message.**
   Not a `git push`, not a tag, not a release, not replacing a release asset —
   however small and obviously wanted the change is. One authorisation covers one
-  action, not the rest of the session. Finish the work, build, commit if that
-  was asked, then stop and say what is ready to push.
+  action, not the rest of the session. Finish the work, build, commit, then stop
+  and say what is ready to push. **Push and a new version are the ONE thing the
+  user still commands explicitly** — that is the whole point of committing
+  freely: the history moves on its own, what leaves this machine does not.
 - **Wait for an explicit go-ahead before cutting a new version.** Version bump,
-  commit, tag and release are the user's call, never automatic.
-- **Nothing is committed without being asked.** Changes live in the working tree
-  until the user says otherwise.
+  tag and release are the user's call, never automatic. The version bump is the
+  exception to the rule above: do not bump `package.json` on your own initiative
+  just because you changed something.
 - **Never run anything destructive against the user's real cases** (`cavity`,
   `nozzleFlow2D`, `shockTube` in the WSL run dir). Test in `claude_test` (§3).
 - **No `Co-Authored-By` trailers.** The user asked on 2026-09-02 to be the only
