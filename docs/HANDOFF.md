@@ -4001,10 +4001,24 @@ error made a healthy case look broken at a glance.
   it will bite the next one.
 
 The dead 8 s `setTimeout`/`verifyPid` block that `proc.on('close')` always beat
-is gone; the close handler reports the captured PID directly. A detached
-background process still survives only while the app keeps WSL warm (the Monitor
-poll does) — verified it lives across an 8 s warm window, and dies if the WSL
-distro is left to idle out. That is the pre-existing WSL behaviour, unchanged.
+is gone; the close handler reports the captured PID directly.
+
+**A background command SURVIVES closing the app, and it does not need the app to
+keep WSL warm.** This was measured properly on 2026-09-03 after an earlier note
+here got it wrong. Faithful test — launch `sleep 850 &` through the packaged
+server, then `taskkill /F /T` the server tree exactly as `killServer()` does,
+then touch WSL not at all for 120 s: the process is still running (129 s of
+elapsed time on it) and the distro was never restarted (uptime 390 s).
+
+What keeps it alive is `wslhost.exe`, which belongs to the WSL service and not
+to the app, so the app's taskkill never reaches it. The earlier wrong conclusion
+came from a test that force-killed `wslhost` as well — kill that and the
+detached process dies even though the distro itself stays up, which is a thing
+worth knowing but is NOT what closing the app does.
+
+So the real enders are the ones outside the app: `wsl --shutdown`, a Windows
+restart or hibernation, or the distro genuinely idling out over a long enough
+period. Not quitting OpenFOAM Studio.
 
 Verified end to end on the PACKAGED build: a two-echo command streams as two
 separate events a second apart, a failing checkMesh shows the FATAL line red
