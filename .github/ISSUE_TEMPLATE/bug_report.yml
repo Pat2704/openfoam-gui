@@ -30,7 +30,7 @@ body:
     attributes:
       label: App version
       description: Right-click the .exe → Properties → Details, or the footer of the app.
-      placeholder: "2.2.1"
+      placeholder: "2.3.0"
     validations:
       required: true
   - type: input
