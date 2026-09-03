@@ -1633,6 +1633,8 @@ export function executeCommandAsync(
 
         let fullCmd: string;
         let pidFile: string | null = null;
+        // Declared out here because verifyPid, below, reports on it.
+        let hasRedirect = false;
 
         if (isBackground) {
           const inner = trimmed.slice(0, -1).trimEnd(); // remove trailing &
@@ -1640,20 +1642,30 @@ export function executeCommandAsync(
           const tmpScript = `/tmp/wslgui_bg_${scriptId}.sh`;
           pidFile = `/tmp/wslgui_bg_${scriptId}.pid`;
 
-          const hasRedirect = />|>>|&>|&>>/.test(inner);
-          // Derive the log name from what the USER typed, not from the
-          // normalized form: normalizeCommand() prefixes `./x` and Allrun /
-          // Allclean with `bash `, which would name every such log log.bash.
-          const originalInner = command.trim().replace(/&$/, '').trim();
-          const commandToken = originalInner.split(/\s+/)[0]
-            || inner.trim().split(/\s+/)[0] || 'unknown';
-          const cmdName = path.posix.basename(commandToken).replace(/[^A-Za-z0-9._-]/g, '_') || 'command';
-          const outputRedirect = hasRedirect ? '' : ` > log.${cmdName} 2>&1`;
+          // A background command gets EXACTLY the redirection the user wrote,
+          // and none if they wrote none.
+          //
+          // It used to invent ` > log.<command> 2>&1` whenever there was no
+          // redirect, which meant `foamRun &` quietly created a file the user
+          // had not asked for and did not know the name of. The user asked for
+          // that to stop on 2026-09-03. The consequence is real and is reported
+          // rather than hidden: with nothing capturing it, the output of a
+          // detached process goes nowhere and cannot be recovered afterwards,
+          // so the terminal says so when it starts one. The app's own
+          // background launches (Allrun, the foamRun quick command) write their
+          // redirect explicitly and are unaffected.
+          hasRedirect = />|>>|&>|&>>/.test(inner);
+          const outputRedirect = '';
 
+          // The PID is written FIRST, before the ~2.6 s OpenFOAM bashrc source.
+          // Sourcing it took longer than the launcher's poll window, so the pid
+          // never appeared in time and a background command was reported as
+          // failed to start. exec preserves the pid, so writing it up here keeps
+          // it valid once the real command replaces this shell.
           const scriptContent = `#!/bin/bash
+echo $$ > "${pidFile}"
 ${src}
 cd ${shellQuote(casePath)} 2>/dev/null || exit 1
-echo $$ > "${pidFile}"
 exec ${inner}${outputRedirect}
 `;
           const workerB64 = Buffer.from(scriptContent).toString('base64');
@@ -1694,6 +1706,9 @@ fi
         });
 
         let resolved = false;
+        // Set from the launcher's one control line, and kept out of what the
+        // user sees — see the stdout handler.
+        let capturedBgPid: string | null = null;
 
         const finish = (code: number, out: string) => {
           if (resolved) return;
@@ -1706,6 +1721,13 @@ fi
 
         proc.stdout.on('data', (data: Buffer) => {
           const str = data.toString();
+          if (isBackground) {
+            // A background launcher's ONLY stdout is the control line
+            // "BG_PID=<pid>". Capture the pid and show the user none of it.
+            const m = str.match(/BG_PID=(\d+)/);
+            if (m) capturedBgPid = m[1];
+            return;
+          }
           appendOutput(str);
           onLog?.(str);
         });
@@ -1717,6 +1739,19 @@ fi
         });
 
         proc.on('close', (code) => {
+          if (isBackground) {
+            if (capturedBgPid) {
+              finish(0, hasRedirect
+                ? `Started in the background — PID ${capturedBgPid}. Follow it in the Monitor tab.`
+                : `Started in the background — PID ${capturedBgPid}. Nothing is capturing its ` +
+                  `output; add \` > log.<name> 2>&1\` before the & to keep it. Follow it in the Monitor tab.`);
+            } else {
+              finish(0,
+                'Started in the background, but its PID could not be confirmed — WSL may still be ' +
+                'starting up. Check the Monitor tab to see whether it is running.');
+            }
+            return;
+          }
           finish(code || 0, output);
         });
 
@@ -1726,69 +1761,6 @@ fi
             reject(err);
           }
         });
-
-        if (isBackground) {
-          setTimeout(() => {
-            if (!resolved) {
-              try { proc.unref(); } catch {}
-
-              const bgPidMatch = output.match(/BG_PID=(\d+)/);
-              const capturedPid = bgPidMatch ? bgPidMatch[1] : null;
-
-              if (!capturedPid) {
-                let retryPid: string | null = null;
-                try {
-                  if (pidFile) {
-                    const pidOut = runInWsl(`cat "${pidFile}" 2>/dev/null`, 5000);
-                    retryPid = pidOut.trim() || null;
-                  }
-                } catch { /* ignore */ }
-
-                if (!retryPid) {
-                  finish(-1,
-                    output + '\n\n[ERROR] Unable to confirm background command startup.\n' +
-                    'WSL is probably still starting the VM. Try again in a few seconds.\n'
-                  );
-                  return;
-                }
-                verifyPid(retryPid);
-              } else {
-                verifyPid(capturedPid);
-              }
-            }
-          }, 8000);
-        }
-
-        function verifyPid(pid: string) {
-          validatePid(pid);
-          const maxAttempts = 5;
-          const attemptInterval = 2000;
-          let attempts = 0;
-
-          const tryVerify = () => {
-            attempts++;
-            try {
-              const checkResult = runInWsl(
-                `kill -0 "${pid}" 2>/dev/null && echo "ALIVE" || echo "DEAD"`,
-                5000
-              );
-              if (checkResult.trim().includes('ALIVE')) {
-                finish(0, output || `(started in background, PID ${pid})`);
-              } else if (attempts < maxAttempts) {
-                setTimeout(tryVerify, attemptInterval);
-              } else {
-                finish(0, output || `(background command terminated quickly, PID ${pid})`);
-              }
-            } catch {
-              if (attempts < maxAttempts) {
-                setTimeout(tryVerify, attemptInterval);
-              } else {
-                finish(0, output || `(started in background — unable to verify status, PID ${pid})`);
-              }
-            }
-          };
-          setTimeout(tryVerify, 1000);
-        }
       } catch (err) {
         reject(err);
       }

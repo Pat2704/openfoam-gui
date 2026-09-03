@@ -54,6 +54,63 @@ function orderCategories(present: string[]): string[] {
   return [...known, ...rest];
 }
 
+/**
+ * Colour one line of OpenFOAM output.
+ *
+ * The old rendering painted the WHOLE block red when the exit code was
+ * non-zero, which is worse than no colour at all: the three lines that say
+ * what went wrong end up exactly as red as the two hundred lines of banner and
+ * progress around them. Measured on a failing blockMesh: 23 lines on stdout,
+ * all of them innocuous, and 10 on stderr carrying the actual error — and the
+ * two streams are merged into one by the time they reach here.
+ *
+ * So the block stays neutral and the LINES carry the meaning. Everything below
+ * is a shape OpenFOAM's own output takes, in the order it is worth noticing.
+ */
+function lineClass(line: string): string {
+  if (/^\s*-->\s*FOAM FATAL/.test(line)) return 'text-red-400 font-semibold';
+  if (/^\s*-->\s*FOAM Warning/.test(line)) return 'text-amber-500';
+  if (/^\s*FOAM exiting/.test(line)) return 'text-red-400/80';
+  // The solver's own clock: the line you look for when scrolling a long log.
+  if (/^Time = /.test(line)) return 'text-cyan-500 font-semibold';
+  if (/^(Courant Number|deltaT|ExecutionTime)/.test(line)) return 'text-muted-foreground';
+  // Convergence, and the end of a run.
+  if (/(solution singularity|Final residual = |converged in)/.test(line)) return 'text-foreground/60';
+  if (/^\s*End\s*$/.test(line)) return 'text-green-500';
+  // The banner every OpenFOAM binary prints before doing anything.
+  if (/^(Build\s*:|Exec\s*:|Date\s*:|Time\s*:|Host\s*:|PID\s*:|Case\s*:|nProcs\s*:|I\/O\s*:|fileModificationChecking|allowSystemOperations|Create time|\/\*|\\\*|\| |=====)/.test(line)) {
+    return 'text-muted-foreground/50';
+  }
+  return '';
+}
+
+/**
+ * Above this many lines the per-line spans stop paying for themselves and the
+ * block is rendered as plain text. A 5 MiB log is 100k lines; React does not
+ * need to make 100k elements to tell you a run finished.
+ */
+const MAX_COLOURED_LINES = 3000;
+
+function OutputBlock({ text }: { text: string }) {
+  const lines = React.useMemo(() => text.split('\n'), [text]);
+  if (lines.length > MAX_COLOURED_LINES) {
+    return <>{text}</>;
+  }
+  return (
+    <>
+      {lines.map((line, i) => {
+        const cls = lineClass(line);
+        return (
+          <span key={i} className={cls || undefined}>
+            {line}
+            {i < lines.length - 1 ? '\n' : ''}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 interface CommandOutput {
   success: boolean;
   exitCode: number;
@@ -66,6 +123,8 @@ interface HistoryEntry {
   output: string;
   success: boolean;
   timestamp: string;
+  /** Undefined while the command is still running. */
+  exitCode?: number;
 }
 
 interface TermState {
@@ -92,6 +151,30 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
   const containerRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
+
+  // ── Following a running command ──
+  //
+  // Chunks arrive as fast as the process writes, so they are buffered in a ref
+  // and flushed on a timer: one re-render every 80 ms instead of one per write,
+  // which is the difference between a readable stream of text and a stuttering
+  // page.
+  //
+  // A TIMER and not requestAnimationFrame, which was the first attempt and was
+  // wrong. rAF does not run while a window is hidden or occluded — the same
+  // property the mesh viewer documents — so a minimised app, or one behind
+  // another window, would buffer the whole run and paint it in one go at the
+  // end. Which is exactly the behaviour this change exists to remove. Measured:
+  // with rAF the transcript stayed empty for all eight seconds of a
+  // once-a-second command and filled in at the end; with the timer it grows as
+  // the output arrives.
+  const pendingRef = useRef('');
+  const flushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const FLUSH_MS = 80;
+  // Whether to keep the view pinned to the newest line. Set false the moment
+  // the user scrolls up — following the output must never fight someone
+  // reading it — and back to true when they return to the bottom.
+  const stickRef = useRef(true);
+  const [stuck, setStuck] = useState(true);
 
   // ── Sidebar state ──
   const [searchTerm, setSearchTerm] = useState('');
@@ -211,12 +294,52 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   }, []);
 
-  // Auto-scroll only inside the terminal container, skip first render
+  /** Pin to the bottom, unless the user has scrolled away from it. */
+  const scrollToEnd = useCallback(() => {
+    const el = containerRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // A new command always scrolls into view; the first render does not.
   useEffect(() => {
     if (!mounted.current) { mounted.current = true; return; }
+    stickRef.current = true;
+    setStuck(true);
     const el = containerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [term.lines]);
+  }, [term.lines.length]);
+
+  // 24 px of slack: a scrollbar that is one or two pixels off the end still
+  // counts as "at the bottom", which is what a wheel click leaves behind.
+  const onTranscriptScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (atBottom !== stickRef.current) {
+      stickRef.current = atBottom;
+      setStuck(atBottom);
+    }
+  }, []);
+
+  const jumpToEnd = useCallback(() => {
+    stickRef.current = true;
+    setStuck(true);
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // Nothing half-flushed survives an unmount.
+  useEffect(() => () => {
+    if (flushRef.current !== null) clearTimeout(flushRef.current);
+  }, []);
+
+  // Keep the newest text in view as it arrives. An effect, not a call inside
+  // the flush: this runs after React has committed the new text to the DOM, so
+  // scrollHeight is the height that includes it.
+  const lastOutputLength = term.lines.length ? term.lines[term.lines.length - 1].output.length : 0;
+  useEffect(() => {
+    scrollToEnd();
+  }, [lastOutputLength, scrollToEnd]);
 
   // ── Sidebar logic ──
   // The installation's own list when it has answered; the static table,
@@ -287,22 +410,99 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
       lines: [...prev.lines, { command: trimmed, output: '', success: false, timestamp: new Date().toLocaleTimeString() }],
     }));
 
+    // Append whatever has arrived since the last frame to the entry being
+    // written. One re-render per frame, not one per chunk.
+    const flush = () => {
+      flushRef.current = null;
+      const chunk = pendingRef.current;
+      if (!chunk) return;
+      pendingRef.current = '';
+      setTerm(prev => {
+        const updated = [...prev.lines];
+        const i = updated.length - 1;
+        if (i < 0) return prev;
+        updated[i] = { ...updated[i], output: updated[i].output + chunk };
+        return { ...prev, lines: updated };
+      });
+      // Scrolling is handled by the effect above, which runs after the text is
+      // actually in the DOM.
+    };
+    const queue = (chunk: string) => {
+      pendingRef.current += chunk;
+      if (flushRef.current === null) flushRef.current = setTimeout(flush, FLUSH_MS);
+    };
+
     try {
       const res = await fetch('/api/commands', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ caseName, command: trimmed, parallel: false, nProcs: 1, background: false }),
+        body: JSON.stringify({ caseName, command: trimmed, parallel: false, nProcs: 1, background: false, stream: true }),
       });
-      const data: CommandOutput = await res.json();
+
+      if (!res.ok || !res.body) {
+        throw new Error(`the server refused the command (HTTP ${res.status})`);
+      }
+
+      // Newline-delimited JSON. A chunk from the network can split a line in
+      // half, so the tail is carried over to the next read.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamed = false;
+      let exitCode = 0;
+      let finalOutput = '';
+      let failure: string | null = null;
+
+      const handle = (raw: string) => {
+        const line = raw.trim();
+        if (!line) return;
+        let msg: { t?: string; d?: string; exitCode?: number; output?: string; message?: string };
+        try { msg = JSON.parse(line); } catch { return; }
+        if (msg.t === 'out' && typeof msg.d === 'string') {
+          streamed = true;
+          queue(msg.d);
+        } else if (msg.t === 'end') {
+          exitCode = typeof msg.exitCode === 'number' ? msg.exitCode : 0;
+          finalOutput = typeof msg.output === 'string' ? msg.output : '';
+        } else if (msg.t === 'error') {
+          failure = msg.message || 'the command could not be started';
+        }
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          handle(buffer.slice(0, nl));
+          buffer = buffer.slice(nl + 1);
+        }
+      }
+      if (buffer) handle(buffer);
+
+      // Land whatever the last timer would have flushed, before closing the entry.
+      if (flushRef.current !== null) { clearTimeout(flushRef.current); flushRef.current = null; }
+      const tail = pendingRef.current;
+      pendingRef.current = '';
+
+      if (failure) throw new Error(failure);
+
+      const success = exitCode === 0;
       setTerm(prev => {
         const updated = [...prev.lines];
-        const last = updated[updated.length - 1];
-        updated[updated.length - 1] = { ...last, output: data.output || data.message, success: data.success };
+        const i = updated.length - 1;
+        if (i >= 0) {
+          // A background command streams nothing and reports one line, which
+          // arrives on the end event instead.
+          const body = streamed ? updated[i].output + tail : finalOutput;
+          updated[i] = { ...updated[i], output: body, success, exitCode };
+        }
         return { ...prev, lines: updated, running: false };
       });
-      if (data.success) toast.success(data.message);
-      else toast.error(`Error (exit ${data.exitCode})`);
-      return data.success;
+      if (success) toast.success('Command completed');
+      else toast.error(`Error (exit ${exitCode})`);
+      return success;
     } catch (e: any) {
       setTerm(prev => {
         const updated = [...prev.lines];
@@ -525,26 +725,73 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
             </div>
           </CardHeader>
           <CardContent className="p-0 flex-1 flex flex-col overflow-hidden">
-            <div ref={containerRef} className="flex-1 overflow-y-auto bg-black/5 dark:bg-black/30 font-mono text-xs p-2 space-y-1.5">
+            <div className="flex-1 relative overflow-hidden">
+            <div
+              ref={containerRef}
+              onScroll={onTranscriptScroll}
+              className="absolute inset-0 overflow-y-auto bg-black/5 dark:bg-black/30 font-mono text-xs p-2 space-y-1.5"
+            >
               {term.lines.length === 0 && (
                 <div className="text-muted-foreground/50">
                   <span className="text-green-500">$</span> <span className="opacity-60">OpenFOAM Commands: {caseName}</span>
                 </div>
               )}
-              {term.lines.map((entry, i) => (
-                <div key={i}>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-green-500 select-none">$</span>
-                    <span className="text-foreground">{entry.command}</span>
-                    <span className="text-muted-foreground/40 ml-auto text-[10px] flex-shrink-0">{entry.timestamp}</span>
-                    {entry.output && <span className={`text-[10px] flex-shrink-0 ${entry.success ? 'text-green-500' : 'text-red-400'}`}>{entry.success ? 'OK' : 'ERR'}</span>}
+              {term.lines.map((entry, i) => {
+                const streaming = i === term.lines.length - 1 && term.running;
+                // The block itself is NEUTRAL and the lines carry the colour
+                // (see lineClass). The left border is the only thing that
+                // reflects the exit status — a summary of the command, rather
+                // than a claim about any line in particular.
+                //
+                // It is also left UNCAPPED while it streams: a second scroll
+                // area scrolling on its own inside the first is what makes
+                // following output unpleasant. The 300 px cap goes back on once
+                // the command has finished and the block is something you read
+                // rather than watch.
+                const border = streaming ? 'border-amber-500/40'
+                  : entry.success ? 'border-green-500/30' : 'border-red-500/40';
+                const cap = streaming ? '' : 'max-h-[300px] overflow-y-auto';
+                return (
+                  <div key={i}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-green-500 select-none">$</span>
+                      <span className="text-foreground">{entry.command}</span>
+                      <span className="text-muted-foreground/40 ml-auto text-[10px] flex-shrink-0">{entry.timestamp}</span>
+                      {streaming ? (
+                        <span className="text-[10px] flex-shrink-0 text-amber-500 flex items-center gap-1">
+                          <Loader2 className="w-2.5 h-2.5 animate-spin" /> running
+                        </span>
+                      ) : entry.exitCode !== undefined ? (
+                        <span className={`text-[10px] flex-shrink-0 font-mono ${entry.success ? 'text-green-500' : 'text-red-400'}`}>
+                          {entry.success ? 'OK' : `exit ${entry.exitCode}`}
+                        </span>
+                      ) : null}
+                    </div>
+                    {(entry.output || streaming) && (
+                      <pre className={`mt-0.5 ml-3 whitespace-pre-wrap break-words text-[11px] border-l-2 pl-2 text-foreground/80 ${border} ${cap}`}>
+                        <OutputBlock text={entry.output} />
+                        {streaming && (
+                          <span className="inline-block w-1.5 h-3 align-middle bg-amber-500/70 animate-pulse" />
+                        )}
+                      </pre>
+                    )}
                   </div>
-                  {entry.output && (
-                    <pre className={`mt-0.5 ml-3 whitespace-pre-wrap break-words text-[11px] max-h-[300px] overflow-y-auto border-l-2 pl-2 ${entry.success ? 'border-green-500/30 text-foreground/70' : 'border-red-500/30 text-red-300'}`}>{entry.output}</pre>
-                  )}
-                </div>
-              ))}
+                );
+              })}
               <div ref={endRef} />
+            </div>
+
+            {/* Shown only while something is running AND the user has scrolled
+                away from the end — anywhere else it is a button that does
+                nothing, sitting on top of the output. */}
+            {!stuck && term.running && (
+              <button
+                onClick={jumpToEnd}
+                className="absolute bottom-2 right-3 z-10 rounded-full border bg-card/95 px-2 py-1 text-[10px] shadow-sm hover:bg-accent"
+              >
+                ↓ follow output
+              </button>
+            )}
             </div>
             <div className="border-t bg-card">
               <div className="flex items-center gap-2 p-1.5">
