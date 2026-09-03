@@ -109,6 +109,9 @@ These are standing instructions, not one-offs:
   and say what is ready to push. **Push and a new version are the ONE thing the
   user still commands explicitly** — that is the whole point of committing
   freely: the history moves on its own, what leaves this machine does not.
+  When a release IS asked for, the doc commits that close it out (this file,
+  the release notes) go with it; that is settled and the user asked on
+  2026-09-03 not to be consulted about it again. Do not re-open it.
 - **Wait for an explicit go-ahead before cutting a new version.** Version bump,
   tag and release are the user's call, never automatic. The version bump is the
   exception to the rule above: do not bump `package.json` on your own initiative
