@@ -38,6 +38,36 @@ if (lock.version !== version || lock.packages[""].version !== version) {
   );
 }
 
+// There are TWO lock files, and this check only knew about one of them until
+// 2026-09-03. electron/ has its own, with the same two top-level fields, and
+// electron-builder reads THAT one for the app manifest — so a bump that misses
+// it ships an .exe whose Windows properties disagree with the release.
+const electronLock = read("electron/package-lock.json");
+if (electronLock.version !== version || electronLock.packages[""].version !== version) {
+  problems.push(
+    `electron/package-lock.json is ${electronLock.version} / ${electronLock.packages[""].version}, ` +
+      `expected ${version} (top-level fields only)`
+  );
+}
+
+// The README spells the two download filenames out by hand — it is the one
+// place that cannot derive them — so it is the one place that goes stale. It
+// did not go stale before this check existed only because nobody had shipped
+// two releases in a row.
+const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+for (const suffix of ["portable.exe", "folder.zip"]) {
+  const name = `OpenFOAMStudio-v${version}-${suffix}`;
+  if (!readme.includes(name)) {
+    problems.push(`README.md does not mention ${name} — its Install table still names an older build`);
+  }
+}
+const staleInReadme = [...readme.matchAll(/OpenFOAMStudio-v(d+.d+.d+)-/g)]
+  .map((m) => m[1])
+  .filter((v) => v !== version);
+if (staleInReadme.length) {
+  problems.push(`README.md still names version ${[...new Set(staleInReadme)].join(", ")} in a download filename`);
+}
+
 // ── the tag ──
 let tag = process.argv[2];
 if (!tag) {

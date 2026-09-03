@@ -14,7 +14,7 @@
 #                           --config electron/electron-builder.yml
 #
 # `--projectDir electron` makes electron-builder read electron/package.json
-# (name: openfoam-studio, version 2.1.0, main: main.js) as the app manifest,
+# (name: openfoam-studio, version 2.2.0, main: main.js) as the app manifest,
 # which is exactly what ends up inside resources/app.asar.
 #
 # Note: the original 6.1.4 build was produced on Linux, where electron-builder
