@@ -2,32 +2,28 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-03.
+Last updated: 2026-09-03, after cutting v2.2.0.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v2.1.0 is released, and the project is open source under the MIT License.**
-The tag is published, both artifacts are attached to the release, and GitHub
-reports the repository license as MIT.
+**v2.2.0 is released.** Everything is committed and pushed to `main`, the tag is
+published, both artifacts are attached, GitHub reports v2.2.0 as the latest
+release, and the repository license is MIT. The working tree is clean and
+`main` is level with `origin/main`; nothing is half-finished waiting for you.
 
-**But `main` is now AHEAD of what is published.** The 2026-09-03 session (§2m)
-committed six changes that have NOT been pushed and are NOT in any release, and
-it rebuilt the artifacts in `Working/` from them. So the two files sitting there
-are v2.1.0 by NAME and newer than v2.1.0 by CONTENT — the released ones are the
-copies attached to the GitHub release, and that is where to get them if the
-difference ever matters. Nothing is half-finished; the whole of §2m is done,
-built and verified. What it is waiting for is the user's word to push, and a
-version bump if it is to go out as a release.
+**The `v2.2.0` tag builds exactly the artifacts that are attached.** It was put
+on the build commit, not moved onto it afterwards — `git diff v2.2.0 HEAD` was
+empty at the moment of tagging. Keep doing it in that order and the check stays
+a one-liner.
 
 | | |
 |---|---|
-| release commit | `1939f13` — what the attached artifacts were built from |
-| local `main` | ahead of `origin/main` by the six commits of §2m, unpushed |
-| tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d` |
-| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.1.0 — both artifacts attached |
-| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.1.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
+| release commit | `2824fe5` — tagged `v2.2.0`, what the attached artifacts were built from |
+| tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d`, `v2.2.0` at `2824fe5` |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.2.0 — both artifacts attached |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.2.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
@@ -48,9 +44,8 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing in the code. Three things sit outside it: §2m is
-committed but unpushed and unreleased, the trade mark request to OpenCFD is
-unanswered (§2l), and the repository's social preview image has yet to be
+**What is open:** nothing in the code. Two things sit outside it: the trade mark
+request to OpenCFD is unanswered (§2l), and the repository's social preview image has yet to be
 uploaded — the user is doing that one, and it can only be done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
@@ -852,10 +847,10 @@ developer USING OpenFOAM technology.
 
 ---
 
-## 2m. The 2026-09-03 round
+## 2m. The 2026-09-03 round — shipped in v2.2.0
 
-Five things the user asked for, in one session. All committed, all in the
-rebuilt artifacts, none pushed.
+Five things the user asked for, in one session, released the same day as
+v2.2.0.
 
 - **The mesh toolbar resets on every reload.** The vertex numbers were read from
   `system/blockMeshDict` once and then kept in the scene, and the toggle reused
@@ -1082,13 +1077,22 @@ the canonical filenames to the tags as they were actually published.
   87 MB is the number. A build whose log ends
   `SUCCESS: server.js at .next\standalone\electron\resources\standalone\server.js`
   — a NESTED path — has already been swallowed.
-- **A version bump is now three fields**, because the artifact names derive
-  themselves: `version` in `package.json` and in `electron/package.json`, and
-  the two top-level fields of `package-lock.json` — lines 3 and 9 only; the
-  same string further down belongs to dependencies, and a blanket replace
-  corrupts the lock. **One** thing is still written by hand: the README's two
-  download filenames in the Install table. Everything else derives itself, and
-  `npm run release:check` refuses the release if any of it disagrees.
+- **A version bump is three fields plus three strings**, because the artifact
+  names derive themselves: `version` in `package.json` and in
+  `electron/package.json`, and the two top-level fields of `package-lock.json` —
+  lines 3 and 9 only; the same string further down belongs to dependencies, and
+  a blanket replace corrupts the lock. Written by hand: the README's two
+  download filenames in the Install table AND its `Expand-Archive` line, plus
+  the version placeholder in `.github/ISSUE_TEMPLATE/bug_report.yml` and the
+  manifest example in the comment at the top of `electron-builder.yml`.
+  Everything else derives itself, and `npm run release:check` refuses the
+  release if any of it disagrees — it reads the README for a stale filename
+  now, which it did not do before 2026-09-03.
+  `electron/package-lock.json` carries the same two fields and is NOT on the
+  list: it is gitignored and electron-builder regenerates it from
+  `electron/package.json` on every build, so it corrects itself. release:check
+  reports a stale one as a nuisance rather than a blocker, and tolerates its
+  absence on a fresh clone.
   The source folder used to carry the version too — it was
   `Working/OpenFOAMStudio_v2.1-source` for about an hour — and it does not any
   more, on purpose: it is a checkout, not an artifact, git already knows the
