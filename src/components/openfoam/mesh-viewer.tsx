@@ -170,6 +170,162 @@ function makeLabelSprite(text: string, colorCss: string, bgCss: string): THREE.S
   return sprite;
 }
 
+// ── The orientation triad in the corner ─────────────────────────
+
+/** Side of the square the triad is drawn in, and its inset, both in CSS px. */
+const GIZMO_SIZE = 96;
+const GIZMO_MARGIN = 10;
+
+/** X red, Y green, Z blue — the OpenFOAM/ParaView convention. */
+const AXIS_COLORS: [number, number, number] = [0xef4444, 0x22c55e, 0x3b82f6];
+const AXIS_NAMES = ['X', 'Y', 'Z'];
+
+/** A single letter, drawn in its axis colour, for the tip of an arrow. */
+function makeAxisLabelSprite(text: string, color: number): THREE.Sprite {
+  const s = LABEL_TEXTURE_SCALE;
+  const size = 22 * s;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.font = `700 ${Math.round(15 * s)}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+    ctx.fillText(text, size / 2, size / 2 + s);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, depthTest: false, transparent: true,
+  }));
+  // The gizmo camera is ORTHOGRAPHIC, so a sprite's scale is plain world units
+  // and this is a fixed size on screen — no attenuation to invert.
+  sprite.scale.setScalar(0.46);
+  sprite.renderOrder = 2;
+  return sprite;
+}
+
+interface AxisGizmo {
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  root: THREE.Group;
+  /** The disc behind the arrows; recoloured when the theme changes. */
+  disc: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
+  dispose: () => void;
+}
+
+/**
+ * Build the triad: three solid arrows and their letters, in their own scene.
+ *
+ * Solid geometry rather than an AxesHelper because a line is one pixel wide
+ * whatever the material says — at 96 px the helper reads as three faint
+ * scratches. MeshBasicMaterial because this scene has no lights and wants
+ * none: the triad is a symbol, not part of the model.
+ */
+function createAxisGizmo(): AxisGizmo {
+  const scene = new THREE.Scene();
+  // Frustum fixed at ±1.75 with the arrows 1 long: the triad keeps the same
+  // size on screen at any zoom, which is the whole point of a corner gizmo.
+  const camera = new THREE.OrthographicCamera(-1.75, 1.75, 1.75, -1.75, 0.1, 20);
+
+  const root = new THREE.Group();
+  scene.add(root);
+
+  // A translucent disc, so the arrows and letters stay readable over a patch
+  // that happens to be the same colour. Kept facing the camera in drawFrame.
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1.62, 48),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.6, depthWrite: false }),
+  );
+  disc.renderOrder = 0;
+  root.add(disc);
+
+  const SHAFT = 0.72, HEAD = 0.3;
+  AXIS_COLORS.forEach((color, i) => {
+    const material = new THREE.MeshBasicMaterial({ color });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, SHAFT, 12), material);
+    shaft.position.y = SHAFT / 2;
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.13, HEAD, 14), material);
+    head.position.y = SHAFT + HEAD / 2;
+    const label = makeAxisLabelSprite(AXIS_NAMES[i], color);
+    label.position.y = SHAFT + HEAD + 0.3;
+
+    // Everything is modelled along +Y, then the whole arrow is turned onto its
+    // own axis — one rotation per axis instead of three sets of geometry.
+    const arm = new THREE.Group();
+    arm.add(shaft, head, label);
+    if (i === 0) arm.rotation.z = -Math.PI / 2;   // +Y → +X
+    if (i === 2) arm.rotation.x = Math.PI / 2;    // +Y → +Z
+    root.add(arm);
+  });
+
+  return {
+    scene, camera, root, disc,
+    dispose: () => {
+      root.traverse(o => {
+        const m = o as THREE.Mesh & { material?: THREE.Material | THREE.Material[] };
+        m.geometry?.dispose();
+        const mat = m.material as (THREE.Material & { map?: THREE.Texture }) | undefined;
+        mat?.map?.dispose();
+        mat?.dispose();
+      });
+    },
+  };
+}
+
+// Scratch vectors: drawFrame runs on every frame of a drag, so it allocates
+// nothing.
+const _dir = new THREE.Vector3();
+const _size = new THREE.Vector2();
+const _origin = new THREE.Vector3();
+
+/**
+ * Draw one frame: the model, then the triad over its bottom-left corner.
+ *
+ * Every render in this component goes through here — the on-demand path, the
+ * immediate path and the rAF loop that runs during a gesture — because a
+ * viewport left set on the renderer would clip the NEXT frame drawn by anyone
+ * who forgot about it.
+ */
+function drawFrame(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.PerspectiveCamera,
+  gizmo: AxisGizmo | null,
+  target: THREE.Vector3 | null,
+): void {
+  renderer.render(scene, camera);
+  if (!gizmo || !gizmo.root.visible) return;
+
+  // The triad shows which way the model is turned, so it takes the camera's
+  // DIRECTION from the point it is orbiting, and its roll: TrackballControls
+  // rolls the camera, and a triad that ignored that would lie about it.
+  _dir.subVectors(camera.position, target ?? _origin);
+  if (_dir.lengthSq() === 0) return;
+  gizmo.camera.position.copy(_dir.normalize()).multiplyScalar(5);
+  gizmo.camera.up.copy(camera.up);
+  gizmo.camera.lookAt(_origin);
+  gizmo.disc.quaternion.copy(gizmo.camera.quaternion);
+
+  renderer.getSize(_size);
+  const side = Math.min(GIZMO_SIZE, _size.x * 0.35, _size.y * 0.35);
+  if (side < 24) return; // too small a viewer to be worth the corner
+
+  // Scissor as well as viewport: without it clearDepth wipes the depth of the
+  // whole frame instead of only the corner's.
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  renderer.setViewport(GIZMO_MARGIN, GIZMO_MARGIN, side, side);
+  renderer.setScissor(GIZMO_MARGIN, GIZMO_MARGIN, side, side);
+  renderer.clearDepth();
+  renderer.render(gizmo.scene, gizmo.camera);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, _size.x, _size.y);
+  renderer.autoClear = true;
+}
+
 /**
  * Rasterise any CSS colour the browser understands down to plain 0-255 RGB.
  *
@@ -231,7 +387,7 @@ export default function MeshViewer({ caseName, active = true }: {
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<TrackballControls | null>(null);
   const groupRef = useRef<THREE.Group | null>(null);
-  const axesRef = useRef<THREE.AxesHelper | null>(null);
+  const gizmoRef = useRef<AxisGizmo | null>(null);
   const labelsRef = useRef<THREE.Group | null>(null);
   const frameRef = useRef<number | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
@@ -264,8 +420,9 @@ export default function MeshViewer({ caseName, active = true }: {
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = null;
       const r = rendererRef.current, s = sceneRef.current, c = cameraRef.current;
-      controlsRef.current?.update();
-      if (r && s && c) r.render(s, c);
+      const ctr = controlsRef.current;
+      ctr?.update();
+      if (r && s && c) drawFrame(r, s, c, gizmoRef.current, ctr?.target ?? null);
     });
   }, []);
 
@@ -280,8 +437,9 @@ export default function MeshViewer({ caseName, active = true }: {
    */
   const renderNow = useCallback(() => {
     const r = rendererRef.current, s = sceneRef.current, c = cameraRef.current;
-    controlsRef.current?.update();
-    if (r && s && c) r.render(s, c);
+    const ctr = controlsRef.current;
+    ctr?.update();
+    if (r && s && c) drawFrame(r, s, c, gizmoRef.current, ctr?.target ?? null);
   }, []);
 
   /**
@@ -316,6 +474,9 @@ export default function MeshViewer({ caseName, active = true }: {
     if (!scene) return;
     const [r, g, b] = readThemeColors().background;
     scene.background = new THREE.Color(r / 255, g / 255, b / 255);
+    // The triad's backing disc takes the same colour, so it stays a soft plate
+    // under the arrows in either theme rather than a grey blob.
+    gizmoRef.current?.disc.material.color.setRGB(r / 255, g / 255, b / 255);
     renderNow();
   }, [renderNow]);
   useEffect(() => { themeRef.current = applyThemeColors; }, [applyThemeColors]);
@@ -388,7 +549,7 @@ export default function MeshViewer({ caseName, active = true }: {
       if (!interacting && performance.now() > tailUntil) { spinId = null; return; }
       spinId = requestAnimationFrame(spin);
       controls.update();
-      renderer.render(scene, camera);
+      drawFrame(renderer, scene, camera, gizmo, controls.target);
     };
     const kickSpin = () => { if (spinId === null) spinId = requestAnimationFrame(spin); };
     const onControlStart = () => { interacting = true; kickSpin(); };
@@ -405,19 +566,19 @@ export default function MeshViewer({ caseName, active = true }: {
     labels.visible = false;
     scene.add(labels);
 
-    // X red, Y green, Z blue — the OpenFOAM/ParaView convention. Anchored at
-    // the origin, which is where the case's coordinate system starts, not at
-    // the bounding-box corner. Sized once a mesh is loaded.
-    const axes = new THREE.AxesHelper(1);
-    axes.visible = false;
-    scene.add(axes);
+    // The orientation triad. It lives in its OWN scene and is drawn into the
+    // bottom-left corner after the model — not anchored in the case's own
+    // coordinates, where it had to be rescaled to every model and still ended
+    // up either lost inside the geometry or larger than it.
+    const gizmo = createAxisGizmo();
+    gizmo.root.visible = false;
 
     rendererRef.current = renderer;
     sceneRef.current = scene;
     cameraRef.current = camera;
     controlsRef.current = controls;
     groupRef.current = group;
-    axesRef.current = axes;
+    gizmoRef.current = gizmo;
     labelsRef.current = labels;
 
     themeRef.current?.();
@@ -461,7 +622,8 @@ export default function MeshViewer({ caseName, active = true }: {
           else mat?.dispose();
         });
       }
-      axes.dispose();
+      gizmo.dispose();
+      gizmoRef.current = null;
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       rendererRef.current = null;
@@ -486,9 +648,6 @@ export default function MeshViewer({ caseName, active = true }: {
     const center = box.getCenter(new THREE.Vector3());
     const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
     const dist = radius / Math.sin((cam.fov * Math.PI) / 360) * 1.6;
-
-    // Axes long enough to read against the model.
-    axesRef.current?.scale.setScalar(radius * 1.4);
 
     cam.near = Math.max(dist / 1000, 1e-6);
     cam.far = dist * 100;
@@ -737,7 +896,7 @@ export default function MeshViewer({ caseName, active = true }: {
   }, [wireframe, renderNow]);
 
   useEffect(() => {
-    if (axesRef.current) axesRef.current.visible = showAxes && hasMesh;
+    if (gizmoRef.current) gizmoRef.current.root.visible = showAxes && hasMesh;
     renderNow();
   }, [showAxes, hasMesh, renderNow]);
 
@@ -835,7 +994,7 @@ export default function MeshViewer({ caseName, active = true }: {
                     <Grid3x3 className="w-3 h-3 mr-1" /> Wireframe
                   </Button>
                   <Button size="sm" variant={showAxes ? 'default' : 'outline'} className="h-7 text-xs"
-                    onClick={() => setShowAxes(a => !a)} title="X red · Y green · Z blue, from the origin">
+                    onClick={() => setShowAxes(a => !a)} title="Orientation triad in the corner — X red, Y green, Z blue">
                     <Move3d className="w-3 h-3 mr-1" /> Axes
                   </Button>
                   <Button size="sm" variant={showLabels ? 'default' : 'outline'} className="h-7 text-xs"
