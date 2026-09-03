@@ -2,28 +2,28 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-03, after cutting v2.2.0.
+Last updated: 2026-09-03, after cutting v2.2.1.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v2.2.0 is released.** Everything is committed and pushed to `main`, the tag is
+**v2.2.1 is released.** Everything is committed and pushed to `main`, the tag is
 published, both artifacts are attached, GitHub reports v2.2.0 as the latest
 release, and the repository license is MIT. The working tree is clean and
 `main` is level with `origin/main`; nothing is half-finished waiting for you.
 
-**The `v2.2.0` tag builds exactly the artifacts that are attached.** It was put
-on the build commit, not moved onto it afterwards — `git diff v2.2.0 HEAD` was
+**The `v2.2.1` tag builds exactly the artifacts that are attached.** It was put
+on the build commit, not moved onto it afterwards — `git diff v2.2.1 HEAD` was
 empty at the moment of tagging. Keep doing it in that order and the check stays
 a one-liner.
 
 | | |
 |---|---|
-| release commit | `2824fe5` — tagged `v2.2.0`, what the attached artifacts were built from |
-| tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d`, `v2.2.0` at `2824fe5` |
-| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.2.0 — both artifacts attached |
-| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.2.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
+| release commit | `d0baf7f` — tagged `v2.2.1`, what the attached artifacts were built from |
+| tags | `v2.0.0` at `f51c76a`, `v2.1.0` at `6ece51d`, `v2.2.0` at `2824fe5`, `v2.2.1` at `d0baf7f` |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.2.1 — both artifacts attached |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.2.1-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
@@ -935,6 +935,57 @@ v2.2.0.
   true of createPatch, refineMesh, splitMeshRegions, collapseEdges,
   renumberMesh and autoPatch. Overwriting is the default now; `-noOverwrite` is
   the opt-out, and that is what the reference lists.
+
+## 2n. The boundary-condition check — shipped in v2.2.1
+
+Reported on the `combustor` case: **Validate BC invented thirteen errors per
+field on a case that meshes and solves.** The fields address six of their nine
+patches as `"splitter.*"`, and the scanner read a key as `[\w.]+` — so it saw
+the name `splitter.`, matched nothing, flagged the entry, and flagged the six
+patches it covers as missing.
+
+**The survey is the fix**, and it is kept in the comment above
+`stripFoamComments` in `wsl.ts`. What a boundaryField key can be:
+
+| | |
+|---|---|
+| `"splitter.*"` | a quoted regular expression, anchored to the WHOLE patch name — `"wall"` must not match `outerWalls` |
+| `splitter.*` | the same unquoted. OpenFOAM reads it literally and it matches nothing; resolved as a pattern here, because "no such patch" would be true and useless |
+| `wall` / `walls` | a patch group. snappyHexMesh writes `inGroups` over SIX LINES and the old single-line regex never matched it; and a patch belongs to the group of its own type even when the boundary file lists none |
+| `#include`, `#includeEtc` | directives standing where a key stands, previously parsed as a patch called "#include". Reported as not checked |
+| `$internalField` | a macro used as a whole entry |
+| `//`, `/* */` | comments — a commented-out block was read as real, and a brace inside one threw the brace counting for the rest of the file |
+| `value uniform 0;` | a keyword with no block, where the old scanner desynchronised and misread everything after it |
+
+Coverage follows **the order OpenFOAM itself uses**: exact name, then group,
+then pattern, with the LAST pattern winning. That is why `splitterRear` keeps
+the `fixedValue` of its own entry while its five neighbours take `noSlip` from
+the pattern — the panel shows what the solver will do, not the first match
+found.
+
+Two more found while testing on the real case, both worth knowing:
+
+- **A binary field cannot be scanned as text at all.** `format binary;` puts
+  half a megabyte of raw bytes — braces and quotes included — between one patch
+  entry and the next, and `0/thickness` lost every patch after the first blob.
+  Those files go to `foamDictionary`, the OpenFOAM parser itself, in ONE WSL
+  call for the whole case: `-keywords` for the key list, then one `-value` per
+  key. Asking for the sub-dictionary itself would bring the 691 KB of data with
+  it.
+- **A multi-region case has one mesh per region.** The fallback search
+  concatenated every region boundary file, so each region patches made every
+  other region look as though its patches were missing. It now reports the case
+  as multi-region and skips the patch check instead of producing nonsense.
+
+Verified BOTH WAYS, which is the part that matters: `combustor` went from 13
+false errors per field to **108 checks across 12 fields with zero errors**
+(5.4 s, confirmed again on the packaged build), while a deliberately broken
+field still reports a non-existent patch name, a pattern matching nothing, and
+three patches left with no condition. The check did not simply get quieter.
+
+The panel also stopped printing every note in red: "via the pattern",
+on a patch a pattern covers correctly, is information — colouring it like an
+error made a healthy case look broken at a glance.
 
 ## 3. `claude_test`
 
