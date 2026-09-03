@@ -14,7 +14,45 @@ import {
   Terminal as TerminalIcon, Play, Send, Search, ChevronDown, ChevronRight,
   Grid3x3, Layers, Zap, Trash2, Loader2, Tag
 } from 'lucide-react';
-import { COMMAND_CATEGORIES, getCommandsForVersion, parseMajorVersion, type OpenFOAMCommand } from '@/lib/openfoam-data';
+import { getCommandsForVersion, parseMajorVersion } from '@/lib/openfoam-data';
+
+/**
+ * One entry of the command list, as /api/commands?action=catalog returns it.
+ *
+ * Declared here rather than imported from src/lib/foam-commands.ts: that module
+ * reads the filesystem and shells out to WSL, and must not be pulled into the
+ * client bundle even for its types.
+ */
+interface CatalogCommand {
+  name: string;
+  category: string;
+  description: string;
+  kind: 'application' | 'script' | 'solverModule';
+  /** What clicking the row puts in the terminal — not always the name: a
+   *  solver module is run as `foamRun -solver <name>`. */
+  insert: string;
+  superseded?: boolean;
+}
+
+/**
+ * The order categories are shown in: the order you meet them in a case, from
+ * building a mesh to looking at the result. Anything the installation reports
+ * that is not named here is appended alphabetically, so a new category in a
+ * future version appears rather than disappearing.
+ */
+const CATEGORY_ORDER = [
+  'Execution', 'Solver Modules',
+  'Mesh Generation', 'Mesh Conversion', 'Mesh Manipulation', 'Mesh Advanced', 'Mesh Utilities',
+  'Pre-processing', 'Post-processing', 'Parallel Processing',
+  'Surface Utilities', 'Thermophysical', 'Case Management', 'Miscellaneous',
+  'Legacy Solvers', 'Superseded', 'Deprecated',
+];
+
+function orderCategories(present: string[]): string[] {
+  const known = CATEGORY_ORDER.filter(c => present.includes(c));
+  const rest = present.filter(c => !CATEGORY_ORDER.includes(c)).sort();
+  return [...known, ...rest];
+}
 
 interface CommandOutput {
   success: boolean;
@@ -103,6 +141,53 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
     };
   }, []);
 
+  // ── The command list, read from the installation ──────────────────────
+  //
+  // The sidebar used to render a hand-written table filtered by a hand-written
+  // minVersion. Measured against the two installations on this machine, 56 of
+  // its 103 entries did not exist there and 108 installed executables were
+  // missing from it — so the list now comes from $FOAM_APPBIN, the shell
+  // utilities beside it and foamToC, with the descriptions and categories the
+  // installation carries in its own sources. See src/lib/foam-commands.ts.
+  //
+  // The static table survives as the fallback for the ~2 s the first build
+  // takes, and for a machine where WSL cannot be reached at all.
+  const [catalog, setCatalog] = useState<CatalogCommand[] | null>(null);
+  const [catalogVersion, setCatalogVersion] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async (attempt: number) => {
+      try {
+        const res = await fetch('/api/commands?action=catalog');
+        const data = await res.json();
+        if (cancelled) return;
+        if (data?.ready && Array.isArray(data.commands) && data.commands.length) {
+          setCatalog(data.commands as CatalogCommand[]);
+          setCatalogVersion(typeof data.version === 'string' ? data.version : '');
+          return;
+        }
+        // Still building. It is one WSL call, so this is seconds, not minutes —
+        // but give up rather than poll forever if WSL never answers.
+        if (attempt < 15) timer = setTimeout(() => void poll(attempt + 1), 2000);
+      } catch {
+        if (!cancelled && attempt < 3) timer = setTimeout(() => void poll(attempt + 1), 3000);
+      }
+    };
+    void poll(0);
+
+    // Switching the selected OpenFOAM version changes the whole list.
+    const onVersionChanged = () => { setCatalog(null); void poll(0); };
+    window.addEventListener('foam-version-changed', onVersionChanged);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('foam-version-changed', onVersionChanged);
+    };
+  }, []);
+
   // ── Allrun / Allclean existence ──
   const [hasAllrun, setHasAllrun] = useState(false);
   const [hasAllclean, setHasAllclean] = useState(false);
@@ -134,12 +219,18 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
   }, [term.lines]);
 
   // ── Sidebar logic ──
-  // Filter the master list by active OpenFOAM version first, then by the
-  // user's search/category selection.
-  const versionedCommands = useMemo(
-    () => getCommandsForVersion(foamMajorVersion),
-    [foamMajorVersion]
-  );
+  // The installation's own list when it has answered; the static table,
+  // filtered by major version, until then.
+  const versionedCommands = useMemo<CatalogCommand[]>(() => {
+    if (catalog) return catalog;
+    return getCommandsForVersion(foamMajorVersion).map(c => ({
+      name: c.name,
+      category: c.category,
+      description: c.description,
+      kind: 'application' as const,
+      insert: c.name,
+    }));
+  }, [catalog, foamMajorVersion]);
 
   const filteredCommands = useMemo(() => {
     let cmds = versionedCommands;
@@ -157,18 +248,22 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
 
   // Categories actually present in the versioned subset (so the dropdown
   // doesn't show empty categories like 'Units & Dimensions' on v13).
-  const visibleCategories = useMemo(() => {
-    const present = new Set(versionedCommands.map(c => c.category));
-    return COMMAND_CATEGORIES.filter(c => present.has(c));
-  }, [versionedCommands]);
+  const visibleCategories = useMemo(
+    () => orderCategories([...new Set(versionedCommands.map(c => c.category))]),
+    [versionedCommands]
+  );
 
   const commandsByCategory = useMemo(() => {
-    const map: Record<string, OpenFOAMCommand[]> = {};
+    const map: Record<string, CatalogCommand[]> = {};
     for (const cmd of filteredCommands) {
       if (!map[cmd.category]) map[cmd.category] = [];
       map[cmd.category].push(cmd);
     }
-    return map;
+    // Rebuilt in display order: Object.entries walks insertion order, which is
+    // whatever order the commands happened to arrive in.
+    const ordered: Record<string, CatalogCommand[]> = {};
+    for (const cat of orderCategories(Object.keys(map))) ordered[cat] = map[cat];
+    return ordered;
   }, [filteredCommands]);
 
   const toggleCategory = (cat: string) => {
@@ -323,11 +418,13 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
             </Badge>
           </CardTitle>
           <p className="text-[10px] text-muted-foreground mt-0.5">
-            {foamMajorVersion !== null
-              ? `List filtered for OpenFOAM v${foamMajorVersion} (${versionedCommands.length} commands)`
-              : versionLoading
-                ? 'Detecting version…'
-                : 'Version not detected — showing all commands'}
+            {catalog
+              ? `${versionedCommands.length} commands read from the OpenFOAM ${catalogVersion || foamMajorVersion || ''} installation`
+              : foamMajorVersion !== null
+                ? `Built-in list for OpenFOAM v${foamMajorVersion} (${versionedCommands.length}) — reading the installation…`
+                : versionLoading
+                  ? 'Detecting version…'
+                  : 'Version not detected — showing the built-in list'}
           </p>
           <div className="flex gap-1 mt-2">
             <div className="relative flex-1">
@@ -355,8 +452,18 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
                   {expandedCategories.has(cat) && (
                     <div className="ml-3 space-y-0.5">
                       {cmds.map(cmd => (
-                        <button key={cmd.name} className="w-full text-left px-2 py-1 rounded text-xs hover:bg-accent transition-colors" onClick={() => insertCommand(cmd.name)}>
-                          <div className="font-mono font-medium">{cmd.name}</div>
+                        <button
+                          key={cmd.name}
+                          className="w-full text-left px-2 py-1 rounded text-xs hover:bg-accent transition-colors"
+                          onClick={() => insertCommand(cmd.insert)}
+                          title={cmd.description}
+                        >
+                          <div className="font-mono font-medium flex items-center gap-1">
+                            <span className={cmd.superseded ? 'line-through opacity-70' : undefined}>{cmd.name}</span>
+                            {cmd.kind === 'solverModule' && (
+                              <span className="text-[9px] font-sans font-normal text-muted-foreground">module</span>
+                            )}
+                          </div>
                           <div className="text-muted-foreground text-[10px] truncate mt-0.5">{cmd.description}</div>
                         </button>
                       ))}
