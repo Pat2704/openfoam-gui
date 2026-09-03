@@ -143,6 +143,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'foam_help',
+    description:
+      'What a command or type actually IS on this installation, and where the answer came from. ' +
+      'Looks in three places in order: the installation index, then the command\'s own -help run in ' +
+      'WSL, then the web - the last only if the first two found nothing (or if web:true forces it). ' +
+      'Every finding is labelled with its source. USE THIS instead of recalling what an option does: ' +
+      'your memory of OpenFOAM is dominated by older versions and by the ESI fork, and this reads the ' +
+      'binaries on the user\'s disk. Whatever you take from it, tell the user where it came from.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'A command or type name, e.g. snappyHexMesh' },
+        question: { type: 'string', description: 'What you want to know, for the web query if it comes to that' },
+        web: { type: 'boolean', description: 'Search the web even if the installation answered' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'search_tutorials',
     description:
       'Find the closest real examples in the tutorials shipped with this installation. Useful for ' +

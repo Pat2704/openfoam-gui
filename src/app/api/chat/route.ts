@@ -7,6 +7,7 @@ import {
   ensureFoamIndex, getFoamIndexIfReady, renderSlices, topicsFor, typesMentioned,
 } from '@/lib/foam-index';
 import { findExamples, renderExamples } from '@/lib/foam-examples';
+import { commandsMentioned, resolveHelp, renderFindings } from '@/lib/foam-help';
 import {
   ensureCorpus, getCorpusIfReady, renderExcerpts, selectExcerpts,
 } from '@/lib/foam-retrieval';
@@ -39,6 +40,9 @@ When you propose a change to a file (existing or new), you must ALWAYS provide t
 The user can apply the changes with one click. NEVER send only the modified piece.
 You can propose changes to multiple files in the same response (multiple apply blocks).
 You can create new files using the same apply format with a new path.
+
+WHERE YOUR ANSWER COMES FROM (HARD RULE):
+Some messages carry a block headed "[Looked up for this question]". It holds findings gathered in a fixed order — the installation itself, then the command's own -help output, then the web, which is consulted only when the first two had nothing. EVERY statement you make about a command, an option or a type must say which of these it rests on: "your OpenFOAM 14 lists it as…", 'snappyHexMesh -help on your install says…', "from openfoam.org (link)". If you are answering from your own training instead, say so in that sentence — your recollection of OpenFOAM is dominated by older versions and by the ESI fork, so an unattributed claim is the one most likely to be wrong. Findings marked WEB are NOT ground truth for this installation, and a page from doc.openfoam.com documents a DIFFERENT fork: say so when you use one.
 
 GROUND TRUTH FROM THE INSTALLATION (HARD RULE):
 Some messages carry a block headed "[Ground truth from the installed OpenFOAM …]". Those lists are read from the user's own installation with foamToC, so for what they cover they are COMPLETE and AUTHORITATIVE — more reliable than your own recollection, which is dominated by older versions and by the ESI variant.
@@ -274,6 +278,32 @@ export async function POST(req: NextRequest) {
       }
     } else {
       void ensureFoamIndex();
+    }
+
+    // What the installation says about the COMMANDS the question names — and,
+    // only when it says nothing at all, what the web says.
+    //
+    // This is the detail the index does not carry. foamToC answers "does
+    // snappyHexMesh exist here"; it does not answer "what does -noOverwrite
+    // do", and that was being answered from memory. The resolver goes
+    // index → the command's own -help → the web, and every finding it returns
+    // says which of the three it came from. Outside the foamIndex branch
+    // above on purpose: the command catalogue can be ready before the index
+    // is, and a question about a command should not go unanswered because a
+    // different build is still running.
+    try {
+      const named = commandsMentioned(message);
+      if (named.length) {
+        const findings = await resolveHelp({ names: named });
+        const block = renderFindings(findings);
+        if (block) {
+          sections.push(block);
+          console.log(`[chat] help for ${named.join(', ')}: ${findings.map(f => f.tier).join(' + ') || 'nothing'} (${block.length} chars)`);
+        }
+      }
+    } catch (e) {
+      // A failed lookup must never cost the user their message.
+      console.error('[chat] help lookup failed:', e instanceof Error ? e.message : e);
     }
 
     sections.push(message);

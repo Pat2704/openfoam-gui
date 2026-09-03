@@ -13,6 +13,7 @@ import {
   type NameProblem,
 } from '@/lib/foam-index';
 import { findExamples } from '@/lib/foam-examples';
+import { resolveHelp, renderFindings } from '@/lib/foam-help';
 import {
   corpusStats, ensureCorpus, isCorpusBuilding, renderExcerpts, selectExcerpts,
 } from '@/lib/foam-retrieval';
@@ -84,6 +85,27 @@ export async function GET(req: NextRequest) {
       const names = typesMentioned(index, q, 2);
       const examples = await findExamples(names);
       return NextResponse.json({ ready: true, names, examples });
+    }
+
+    if (action === 'help') {
+      // The three-tier lookup, as the copilots receive it: the installation,
+      // then the command own -help, then the web. Exposed so the chain can be
+      // checked without going through a model — the tiers are the part worth
+      // testing, and a chat reply is a poor place to read them from.
+      const name = searchParams.get('name') || '';
+      if (!name) return NextResponse.json({ error: 'name required' }, { status: 400 });
+      const findings = await resolveHelp({
+        names: [name],
+        context: searchParams.get('q') || '',
+        forceWeb: searchParams.get('web') === '1',
+        allowWeb: searchParams.get('web') !== '0',
+      });
+      return NextResponse.json({
+        name,
+        tiers: findings.map(f => f.tier),
+        findings,
+        block: renderFindings(findings),
+      });
     }
 
     if (action === 'app') {

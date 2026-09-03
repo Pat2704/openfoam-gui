@@ -32,6 +32,7 @@ import {
   ensureFoamIndex, getFoamIndexIfReady, validateDictText, checkDictSyntax, suggest,
 } from '@/lib/foam-index';
 import { getCorpusIfReady, renderExcerpts, selectExcerpts } from '@/lib/foam-retrieval';
+import { resolveHelp, renderFindings } from '@/lib/foam-help';
 
 /** In-memory activity log, newest last. Survives as long as the server does. */
 export interface AgentEvent {
@@ -285,6 +286,25 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
       return { text: `${kind} in OpenFOAM ${index.version} (${list.length}):\n${list.join(' ')}` };
     }
 
+    case 'foam_help': {
+      // The three-tier lookup: what the installation knows, then the command's
+      // own -help, then the web if neither had anything. The findings come
+      // back labelled, and the agent's system prompt requires it to pass the
+      // label on — an unattributed web answer is indistinguishable from ground
+      // truth, which is the failure this tool exists to stop.
+      const name = str('name');
+      if (!name) return { error: 'give the name of a command or type to look up' };
+      const findings = await resolveHelp({
+        names: [name],
+        context: str('question'),
+        forceWeb: args.web === true,
+      });
+      if (!findings.length) {
+        return { text: `Nothing found for "${name}" — not in the installation, no -help, and the web was not consulted.` };
+      }
+      return { text: renderFindings(findings) };
+    }
+
     case 'search_tutorials': {
       if (!getCorpusIfReady()) return { error: 'the tutorial corpus is still being indexed — try again shortly' };
       const block = renderExcerpts(selectExcerpts(str('query')));
@@ -326,6 +346,7 @@ function summarise(tool: string, args: Record<string, unknown>, result: ToolResu
     case 'validate_case_files': return `checked ${c}`;
     case 'search_tutorials': return `searched: ${typeof args.query === 'string' ? args.query.slice(0, 60) : ''}`;
     case 'foam_lookup': return `looked up ${typeof args.name === 'string' && args.name ? args.name : (typeof args.kind === 'string' ? args.kind : '')}`;
+    case 'foam_help': return `read the documentation for ${typeof args.name === 'string' ? args.name : ''}${args.web === true ? ' (web included)' : ''}`;
     default: return c || tool;
   }
 }
