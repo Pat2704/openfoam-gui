@@ -46,7 +46,7 @@ export const OPENFOAM_COMMANDS: OpenFOAMCommand[] = [
   // MESH GENERATION
   // ═══════════════════════════════════════════════════════
   { name: 'blockMesh', category: 'Mesh Generation', description: 'Generates the block mesh from the blockMeshDict file in system/', syntax: 'blockMesh', commonOptions: '-case <dir>' },
-  { name: 'snappyHexMesh', category: 'Mesh Generation', description: 'Generates a mesh conforming to STL geometries with adaptive refinement', syntax: 'snappyHexMesh -overwrite', commonOptions: '-overwrite, -parallel' },
+  { name: 'snappyHexMesh', category: 'Mesh Generation', description: 'Generates a mesh conforming to STL geometries with adaptive refinement', syntax: 'snappyHexMesh', commonOptions: '-parallel, -dict <file>, -checkGeometry, -noOverwrite' },
   { name: 'cartesianMesh', category: 'Mesh Generation', description: 'Cartesian meshing (cfMesh)', syntax: 'cartesianMesh', commonOptions: '' },
   { name: 'pMesh', category: 'Mesh Generation', description: 'Polyhedral meshing (cfMesh)', syntax: 'pMesh', commonOptions: '' },
   { name: 'tetMesh', category: 'Mesh Generation', description: 'Tetrahedral meshing (cfMesh)', syntax: 'tetMesh', commonOptions: '' },
@@ -69,19 +69,19 @@ export const OPENFOAM_COMMANDS: OpenFOAMCommand[] = [
   // MESH UTILITIES
   // ═══════════════════════════════════════════════════════
   { name: 'checkMesh', category: 'Mesh Utilities', description: 'Checks mesh quality (aspect ratio, non-orthogonality, skewness)', syntax: 'checkMesh', commonOptions: '-case <dir>, -allTopology, -noZero' },
-  { name: 'refineMesh', category: 'Mesh Utilities', description: 'Refines the mesh globally or in specific regions', syntax: 'refineMesh', commonOptions: '-overwrite, -all' },
+  { name: 'refineMesh', category: 'Mesh Utilities', description: 'Refines the mesh globally or in specific regions', syntax: 'refineMesh', commonOptions: '-all, -noOverwrite' },
   { name: 'mirrorMesh', category: 'Mesh Utilities', description: 'Creates a mirrored domain', syntax: 'mirrorMesh', commonOptions: '' },
   { name: 'mergeMeshes', category: 'Mesh Utilities', description: 'Merges two or more meshes', syntax: 'mergeMeshes <case1> <case2> <outputCase>', commonOptions: '' },
-  { name: 'splitMeshRegions', category: 'Mesh Utilities', description: 'Splits the mesh into regions (for multi-region cases)', syntax: 'splitMeshRegions', commonOptions: '-cellZones, -overwrite' },
+  { name: 'splitMeshRegions', category: 'Mesh Utilities', description: 'Splits the mesh into regions (for multi-region cases)', syntax: 'splitMeshRegions', commonOptions: '-cellZones, -noOverwrite' },
   { name: 'stitchMesh', category: 'Mesh Utilities', description: 'Stitches adjacent patches', syntax: 'stitchMesh <masterPatch> <slavePatch>', commonOptions: '-tolerance <val>' },
   { name: 'transformPoints', category: 'Mesh Utilities', description: 'Translates, rotates or scales the mesh', syntax: 'transformPoints "rotate=(...) (..., ...) ..."', commonOptions: '-scale <factor>' },
   { name: 'makeAxialMesh', category: 'Mesh Utilities', description: 'Converts a 3D mesh into an axisymmetric mesh', syntax: 'makeAxialMesh', commonOptions: '-axis <point> <point>' },
-  { name: 'collapseEdges', category: 'Mesh Utilities', description: 'Collapses short mesh edges', syntax: 'collapseEdges', commonOptions: '-overwrite' },
+  { name: 'collapseEdges', category: 'Mesh Utilities', description: 'Collapses short mesh edges', syntax: 'collapseEdges', commonOptions: '-noOverwrite' },
   { name: 'modifyMesh', category: 'Mesh Utilities', description: 'Modifies the mesh (removes/hides cells)', syntax: 'modifyMesh', commonOptions: '-patch <name> -set <cellSet>' },
-  { name: 'smoothMesh', category: 'Mesh Utilities', description: 'Smooths the mesh with a Laplacian', syntax: 'smoothMesh', commonOptions: '-overwrite' },
+  { name: 'smoothMesh', category: 'Mesh Utilities', description: 'Smooths the mesh with a Laplacian', syntax: 'smoothMesh', commonOptions: '-noOverwrite' },
   { name: 'extrudeMesh', category: 'Mesh Utilities', description: 'Extrudes a 2D mesh into 3D', syntax: 'extrudeMesh', commonOptions: '' },
   { name: 'extrudeToRegionMesh', category: 'Mesh Utilities', description: 'Extrudes a patch into a new region', syntax: 'extrudeToRegionMesh', commonOptions: '' },
-  { name: 'renumberMesh', category: 'Mesh Utilities', description: 'Renumbers cells to improve the sparse matrix', syntax: 'renumberMesh', commonOptions: '-overwrite' },
+  { name: 'renumberMesh', category: 'Mesh Utilities', description: 'Renumbers cells to improve the sparse matrix', syntax: 'renumberMesh', commonOptions: '-noOverwrite' },
   { name: 'writeCellCentres', category: 'Mesh Utilities', description: 'Writes cell centres as fields', syntax: 'writeCellCentres', commonOptions: '' },
 
   // ═══════════════════════════════════════════════════════
@@ -91,8 +91,8 @@ export const OPENFOAM_COMMANDS: OpenFOAMCommand[] = [
   { name: 'setExprFields', category: 'Pre-processing', description: 'Sets fields with mathematical expressions', syntax: 'setExprFields', commonOptions: '' },
   { name: 'initTopoSet', category: 'Pre-processing', description: 'Initializes topological sets (cellSet, faceSet, pointSet)', syntax: 'initTopoSet', commonOptions: '' },
   { name: 'topoSet', category: 'Pre-processing', description: 'Creates and modifies topological sets', syntax: 'topoSet', commonOptions: '' },
-  { name: 'createPatch', category: 'Pre-processing', description: 'Creates/modifies patches', syntax: 'createPatch -overwrite', commonOptions: '-overwrite' },
-  { name: 'autoPatch', category: 'Pre-processing', description: 'Groups faces into patches automatically by angle', syntax: 'autoPatch <angle>', commonOptions: '-overwrite' },
+  { name: 'createPatch', category: 'Pre-processing', description: 'Creates/modifies patches', syntax: 'createPatch', commonOptions: '-noOverwrite, -dict <file>' },
+  { name: 'autoPatch', category: 'Pre-processing', description: 'Groups faces into patches automatically by angle', syntax: 'autoPatch <angle>', commonOptions: '-noOverwrite' },
   { name: 'surfaceFeatureExtract', category: 'Pre-processing', description: 'Extracts feature edges from STL for snappyHexMesh', syntax: 'surfaceFeatureExtract', commonOptions: '' },
   { name: 'surfaceCheck', category: 'Pre-processing', description: 'Checks STL surface', syntax: 'surfaceCheck <file.stl>', commonOptions: '' },
   { name: 'decomposePar', category: 'Pre-processing', description: 'Decomposes the case for parallel computation (decomposeParDict)', syntax: 'decomposePar', commonOptions: '-force' },

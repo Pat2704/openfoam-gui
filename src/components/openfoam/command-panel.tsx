@@ -285,7 +285,10 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
     { label: 'foamRun', cmd: 'foamRun', icon: <Play className="w-3 h-3" /> },
     { label: 'foamRun > log &', cmd: 'foamRun > log.foamRun 2>&1 &', icon: <Play className="w-3 h-3" /> },
     { label: 'blockMesh', cmd: 'blockMesh', icon: <Grid3x3 className="w-3 h-3" /> },
-    { label: 'snappyHexMesh', cmd: 'snappyHexMesh -overwrite', icon: <Grid3x3 className="w-3 h-3" /> },
+    // Plain snappyHexMesh: -overwrite is a deprecated no-op on both 13 and 14
+    // ("Deprecated option, this is now default behaviour" in its own -help),
+    // and overwriting IS the default now — -noOverwrite is the opt-out.
+    { label: 'snappyHexMesh', cmd: 'snappyHexMesh', icon: <Grid3x3 className="w-3 h-3" /> },
     { label: 'checkMesh', cmd: 'checkMesh', icon: <Zap className="w-3 h-3" /> },
     { label: 'decomposePar', cmd: 'decomposePar', icon: <Layers className="w-3 h-3" /> },
     { label: 'reconstructPar', cmd: 'reconstructPar', icon: <Layers className="w-3 h-3" /> },
