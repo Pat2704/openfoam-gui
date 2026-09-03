@@ -122,7 +122,12 @@ export default function BCValidationPanel({ caseName }: { caseName: string }) {
                     <span className="font-mono font-medium w-28 truncate flex-shrink-0" title={p.patch}>{p.patch}</span>
                     <span className="font-mono text-muted-foreground flex-1 truncate" title={p.type}>{p.type}</span>
                     {p.note && (
-                      <span className="text-[10px] text-red-400 flex-shrink-0">{p.note}</span>
+                      // A note is not always a complaint: a patch covered by a
+                      // pattern or a group carries one too, and painting that
+                      // red made a healthy case look broken.
+                      <span className={`text-[10px] flex-shrink-0 ${p.valid ? "text-muted-foreground" : "text-red-400"}`}>
+                        {p.note}
+                      </span>
                     )}
                   </div>
                 ))}

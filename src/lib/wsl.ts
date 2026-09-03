@@ -2012,101 +2012,370 @@ export interface BCValidationResult {
   warnings: string[];
 }
 
+/**
+ * Everything a boundaryField key can be, and what it matches.
+ *
+ * The check used to compare each key against the list of patch names, with a
+ * scanner that read a key as `[\w.]+`. That is wrong for most of the ways
+ * OpenFOAM lets you name a boundary, and it failed on a real case: a key
+ * written `"splitter.*"` — six of the nine patches of a combustor — was read as
+ * the name `splitter.`, matched nothing, and was reported as an error, while
+ * the six patches it covers were reported as missing. Thirteen false errors on
+ * a case that runs.
+ *
+ * The survey, and what each one needs:
+ *
+ *   "splitter.*"        A QUOTED REGULAR EXPRESSION. This is the normal way to
+ *   ".*"                write one, and quotes are what tell OpenFOAM's
+ *   "(inlet|outlet)"    dictionary that the key is a pattern. The scanner has
+ *                       to read the quotes, and the pattern is anchored to the
+ *                       WHOLE patch name — "wall" does not match "outerWalls".
+ *
+ *   splitter.*          Unquoted, with metacharacters. OpenFOAM treats this as
+ *                       a literal key and it silently matches nothing; people
+ *                       write it anyway. Matched as a pattern here, because
+ *                       reporting "no such patch" would be true and useless.
+ *
+ *   wall / walls        A PATCH GROUP. Every wall patch is automatically in the
+ *                       group "wall", and snappyHexMesh writes explicit
+ *                       inGroups lists — over six lines, which is what the old
+ *                       single-line regex for it missed.
+ *
+ *   #include "…"        PREPROCESSOR DIRECTIVES. They stand where a key would
+ *   #includeEtc         stand and bring in entries this code never sees. Read
+ *   #includeIfPresent   as directives and reported as "not checked" instead of
+ *   #remove             being parsed as a patch called "#include".
+ *
+ *   $internalField      A MACRO used as a whole entry. Same treatment.
+ *   ${…}
+ *
+ *   // …  /* … *\/      COMMENTS, including the banner every OpenFOAM file
+ *                       opens with. Stripped before anything else: a commented
+ *                       block was being read as real, and a brace inside a
+ *                       comment threw the brace counting off for the rest of
+ *                       the file.
+ *
+ *   value uniform 0;    A plain keyword sitting in boundaryField, with no
+ *                       block after it. Skipped to its semicolon — the old
+ *                       scanner desynchronised here and misread everything
+ *                       that followed.
+ *
+ * Multi-region cases are handled in the caller: they have one mesh per region,
+ * and checking a field against all of them at once reports every other
+ * region's patches as missing.
+ */
+
+/** OpenFOAM comments, out before any structural parsing. Quoted strings are
+ *  left alone, so a `//` inside "…" is not mistaken for a comment. */
+function stripFoamComments(text: string): string {
+  let out = '';
+  let i = 0;
+  let inString = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === '"' && text[i - 1] !== '\\') inString = false;
+      i++;
+      continue;
+    }
+    if (c === '"') { inString = true; out += c; i++; continue; }
+    if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 2;
+      out += ' ';
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '/') {
+      const end = text.indexOf('\n', i);
+      i = end === -1 ? text.length : end;   // the newline itself is kept
+      out += ' ';
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+interface MeshPatch {
+  name: string;
+  /** `type` from the boundary file: patch, wall, empty, symmetry, … */
+  type: string;
+  /** Groups this patch belongs to, its type included. */
+  groups: string[];
+}
+
+/**
+ * `inGroups List<word> 2(walls wall);`
+ *
+ * snappyHexMesh writes the same thing over six lines, with the count, the
+ * parentheses and each word on their own — which is why this looks for the
+ * parenthesised list anywhere between the keyword and its semicolon rather
+ * than expecting `2(` to be adjacent. The old single-line pattern found
+ * nothing on any snappy-generated mesh.
+ */
+function parseInGroups(body: string): string[] {
+  const m = body.match(/\binGroups\s+List<word>([\s\S]*?);/);
+  if (!m) return [];
+  const list = m[1].match(/\(([\s\S]*?)\)/);
+  if (!list) return [];
+  return list[1].split(/\s+/).map(s => s.trim()).filter(Boolean);
+}
+
+/** The patches of `constant/polyMesh/boundary`, with their groups. */
+function parsePolyMeshBoundary(text: string): MeshPatch[] {
+  const clean = stripFoamComments(text);
+  const patches: MeshPatch[] = [];
+  const re = /([A-Za-z_][A-Za-z0-9_.\-]*)\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(clean)) !== null) {
+    const name = m[1];
+    const open = m.index + m[0].length - 1;
+    const body = extractBraceBlock(clean, open);
+    if (body === null) continue;
+    re.lastIndex = open + body.length + 2;
+    if (name === 'FoamFile') continue;
+
+    const type = (body.match(/\btype\s+([A-Za-z][A-Za-z0-9_]*)\s*;/) || [])[1] || '';
+    const groups = parseInGroups(body);
+    // A wall patch is in the group "wall" whether or not inGroups says so —
+    // OpenFOAM's own patch classes put their type in the group list. Adding it
+    // here is what makes a `wall { }` entry resolve on a blockMesh case, which
+    // writes no inGroups at all.
+    if (type && !groups.includes(type)) groups.push(type);
+    patches.push({ name, type, groups });
+  }
+  return patches;
+}
+
+type EntryKind = 'name' | 'regex';
+
+interface BoundaryEntry {
+  key: string;
+  kind: EntryKind;
+  /** The `type` inside the block, or null when it has none. */
+  type: string | null;
+}
+
+/** One pass over a boundaryField block. See the survey above for what it has
+ *  to survive. */
+function parseBoundaryFieldEntries(block: string): { entries: BoundaryEntry[]; directives: string[] } {
+  const clean = stripFoamComments(block);
+  const entries: BoundaryEntry[] = [];
+  const directives: string[] = [];
+  let i = 0;
+
+  const skipSpace = () => { while (i < clean.length && /\s/.test(clean[i])) i++; };
+  const skipToSemicolonOrEol = (): string => {
+    const start = i;
+    while (i < clean.length && clean[i] !== ';' && clean[i] !== '\n') i++;
+    const text = clean.slice(start, i).trim();
+    if (i < clean.length) i++;
+    return text;
+  };
+
+  while (i < clean.length) {
+    skipSpace();
+    if (i >= clean.length) break;
+    const ch = clean[i];
+
+    // A preprocessor directive or a macro standing where a key would stand.
+    if (ch === '#' || ch === '$') {
+      const text = skipToSemicolonOrEol();
+      if (text) directives.push(text.split(/\s+/).slice(0, 2).join(' '));
+      continue;
+    }
+
+    let key = '';
+    let kind: EntryKind;
+    if (ch === '"') {
+      const end = clean.indexOf('"', i + 1);
+      if (end === -1) break;              // unterminated: nothing further is trustworthy
+      key = clean.slice(i + 1, end);
+      kind = 'regex';
+      i = end + 1;
+    } else {
+      const start = i;
+      while (i < clean.length && !/[\s{};]/.test(clean[i])) i++;
+      if (i === start) { i++; continue; }
+      key = clean.slice(start, i);
+      // Unquoted metacharacters: OpenFOAM reads the key literally and it
+      // matches nothing, but it is plainly meant as a pattern, so it is
+      // resolved as one and the panel says which patches it covers.
+      kind = /[*?|()[\]+^$]/.test(key) ? 'regex' : 'name';
+    }
+
+    skipSpace();
+    if (i >= clean.length) break;
+    if (clean[i] !== '{') {
+      // `key value;` — a keyword, not a boundary. Skip the whole statement so
+      // the scanner stays aligned with the block.
+      skipToSemicolonOrEol();
+      continue;
+    }
+
+    const body = extractBraceBlock(clean, i);
+    if (body === null) break;
+    i += body.length + 2;
+    const type = (body.match(/\btype\s+([^;\s]+)\s*;/) || [])[1] || null;
+    entries.push({ key, kind, type: type ? type.replace(/;$/, '') : null });
+  }
+
+  return { entries, directives };
+}
+
+interface MatchedEntry {
+  index: number;
+  how: 'name' | 'group' | 'regex';
+}
+
+/**
+ * The entry OpenFOAM would use for this patch.
+ *
+ * Its order: the patch's own name, then a group it belongs to, then a regular
+ * expression — and among regular expressions the LAST one written wins, which
+ * is why that search runs backwards. It matters in the case this was written
+ * for: `splitterRear` has an entry of its own AND is matched by
+ * `"splitter.*"`, and the exact one is what the solver uses.
+ */
+function resolveEntryForPatch(patch: MeshPatch, entries: BoundaryEntry[]): MatchedEntry | null {
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].kind === 'name' && entries[i].key === patch.name) return { index: i, how: 'name' };
+  }
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].kind === 'name' && patch.groups.includes(entries[i].key)) return { index: i, how: 'group' };
+  }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.kind !== 'regex') continue;
+    // Anchored on both ends: OpenFOAM matches a pattern against the whole patch
+    // name, so "wall" does not cover "outerWalls".
+    let re: RegExp;
+    try { re = new RegExp(`^(?:${e.key})$`); } catch { continue; }
+    if (re.test(patch.name)) return { index: i, how: 'regex' };
+  }
+  return null;
+}
+
+/**
+ * The entries of a field written in BINARY, read by OpenFOAM rather than by us.
+ *
+ * `format binary;` writes each patch's values as raw bytes inside
+ * `nonuniform List<scalar> 62720(…)` — half a megabyte of arbitrary bytes,
+ * braces and quotes included, sitting between one patch entry and the next. No
+ * text scanner survives that, and this one did not: on a snappyHexMesh case the
+ * 0/thickness and 0/thicknessFraction fields lost every patch after the first
+ * blob and reported six of nine as missing, on a case that runs.
+ *
+ * So for those files the question goes to `foamDictionary`, which is OpenFOAM's
+ * own parser and reads binary natively. Only the KEYWORDS are asked for, and
+ * then one type per keyword: asking for the sub-dictionary itself would bring
+ * the 691 KB of data back with it.
+ *
+ * All of it in one WSL call for the whole case — see the note in foam-index.ts
+ * on why that matters. The `cd` to a Linux directory is the usual requirement:
+ * an OpenFOAM binary aborts when the working directory is a Windows mount whose
+ * path contains a space.
+ */
+function binaryFieldEntries(casePath: string, fields: string[]): Map<string, BoundaryEntry[]> {
+  const out = new Map<string, BoundaryEntry[]>();
+  if (!fields.length) return out;
+
+  const MARK = '@@BCFIELD@@';
+  const blocks = fields.map(f => {
+    const q = shellQuote(`${casePath}/0/${f}`);
+    return `
+echo "${MARK}${f}"
+KEYS=$(foamDictionary -entry boundaryField -keywords ${q} 2>/dev/null)
+for k in $KEYS; do
+  T=$(foamDictionary -entry "boundaryField/$k/type" -value ${q} 2>/dev/null | tr -d ' \\n')
+  echo "$k|$T"
+done`;
+  }).join('\n');
+
+  const script = `#!/bin/bash
+${foamSource()}
+cd /tmp || cd /
+${blocks}
+`;
+
+  let raw = '';
+  try {
+    raw = runInWslScript(Buffer.from(script).toString('base64'), 60000);
+  } catch {
+    return out;   // the caller falls back to the text scan and its warning
+  }
+
+  let current: string | null = null;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith(MARK)) {
+      current = trimmed.slice(MARK.length).trim();
+      out.set(current, []);
+      continue;
+    }
+    if (!current) continue;
+    const bar = trimmed.indexOf('|');
+    if (bar <= 0) continue;
+    // foamDictionary prints a pattern keyword with its quotes; the shell has
+    // usually stripped them by the time it reaches us, so the kind is decided
+    // the same way it is for the text scan — by whether the key carries
+    // metacharacters.
+    const key = trimmed.slice(0, bar).replace(/^"|"$/g, '');
+    const type = trimmed.slice(bar + 1).trim();
+    out.get(current)!.push({
+      key,
+      kind: /[*?|()[\]+^$]/.test(key) ? 'regex' : 'name',
+      type: type || null,
+    });
+  }
+  return out;
+}
+
 export function validateBoundaryConditions(caseName: string): BCValidationResult {
   const casePath = getCasePath(caseName);
   const result: BCValidationResult = { success: false, fields: [], meshPatches: [], warnings: [] };
 
   try {
-    // 1. Get mesh patches from boundary file
+    // ── 1. The mesh's own patches ──
     let boundaryFile = '';
     try {
       boundaryFile = runInWsl(`cat -- ${shellQuote(`${casePath}/constant/polyMesh/boundary`)} 2>/dev/null`).trim();
-    } catch { /* try alternate location */ }
+    } catch { /* fall through to the search below */ }
 
     if (!boundaryFile) {
+      // A multi-region case has one boundary file per region, and concatenating
+      // them would mix patch names that belong to different meshes — every
+      // patch of region A would then look "missing" from region B's fields.
+      // Read them one at a time and say so rather than merging.
+      let found: string[] = [];
       try {
-        boundaryFile = runInWsl(`find ${shellQuote(`${casePath}/constant`)} -name boundary -exec cat {} \\; 2>/dev/null | head -200`).trim();
-      } catch { /* */ }
+        found = runInWsl(
+          `find ${shellQuote(`${casePath}/constant`)} -path '*polyMesh/boundary' -type f 2>/dev/null`
+        ).trim().split('\n').map(s => s.trim()).filter(Boolean);
+      } catch { /* no mesh at all */ }
+
+      if (found.length === 1) {
+        try { boundaryFile = runInWsl(`cat -- ${shellQuote(found[0])} 2>/dev/null`).trim(); } catch { /* */ }
+      } else if (found.length > 1) {
+        result.warnings.push(
+          `This case has ${found.length} meshes (a multi-region case). Patch checking is skipped: ` +
+          `the regions have different patches, and checking a field against all of them at once ` +
+          `would report every other region's patches as missing.`
+        );
+      }
     }
 
-    const patchNames: string[] = [];
-    const patchTypes: string[] = [];
-    const patchGroups: Map<string, string[]> = new Map();
-    const allGroups: Set<string> = new Set();
-    if (boundaryFile) {
-      const blockRegex = /^\s*(\S+)\s*\{([\s\S]*?)\n\s*\}/gm;
-      let m;
-      while ((m = blockRegex.exec(boundaryFile)) !== null) {
-        const name = m[1];
-        const body = m[2];
-        if (['FoamFile', 'boundary', 'locationInMesh', 'searchableSurface'].includes(name)) continue;
-        patchNames.push(name);
-        const typeMatch = body.match(/type\s+(\S+)\s*;/);
-        if (typeMatch) {
-          const pType = typeMatch[1].replace(/;$/, '');
-          if (!patchTypes.includes(pType)) patchTypes.push(pType);
-        }
-        const groupsMatch = body.match(/inGroups\s+List<word>\s+\d+\(([^)]+)\)/);
-        if (groupsMatch) {
-          const groups = groupsMatch[1].trim().split(/\s+/).filter(Boolean);
-          patchGroups.set(name, groups);
-          groups.forEach(g => allGroups.add(g));
-        }
-      }
-    }
-    result.meshPatches = patchNames;
+    const meshPatches = boundaryFile ? parsePolyMeshBoundary(boundaryFile) : [];
+    result.meshPatches = meshPatches.map(p => p.name);
 
-    function getPatchesCoveredByBC(bcName: string): { matched: string[]; matchType: string } | null {
-      if (patchNames.includes(bcName)) {
-        return { matched: [bcName], matchType: 'direct' };
-      }
-      if (patchTypes.includes(bcName)) {
-        const matched: string[] = [];
-        for (const p of patchNames) {
-          const body = boundaryFile.match(new RegExp(`^\\s*${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([\\s\\S]*?)\\n\\s*\\}`, 'm'));
-          if (body && body[1].match(new RegExp(`type\\s+${bcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`))) {
-            matched.push(p);
-          }
-        }
-        return { matched, matchType: 'type' };
-      }
-      if (allGroups.has(bcName)) {
-        const matched: string[] = [];
-        for (const [p, groups] of patchGroups) {
-          if (groups.includes(bcName)) matched.push(p);
-        }
-        return { matched, matchType: 'group' };
-      }
-      const hasRegexChars = /[\[\]\+\(\)\|\^]/.test(bcName);
-      const hasGlobChars = /[*?]/.test(bcName);
-      if (hasRegexChars || hasGlobChars) {
-        try {
-          let regexStr: string;
-          if (hasGlobChars && !hasRegexChars) {
-            regexStr = bcName
-              .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-              .replace(/\*/g, '.*')
-              .replace(/\?/g, '.');
-          } else {
-            regexStr = bcName;
-          }
-          const regex = new RegExp(`^${regexStr}$`);
-          const matched = patchNames.filter(p => regex.test(p));
-          if (matched.length > 0) {
-            return { matched, matchType: hasGlobChars && !hasRegexChars ? 'wildcard' : 'regex' };
-          }
-        } catch { /* invalid regex, fall through */ }
-      }
-      return null;
-    }
-
-    const zeroDir = runInWsl(`find ${shellQuote(`${casePath}/0`)} -mindepth 1 -maxdepth 1 -type f -printf '%f\\n' 2>/dev/null`).trim();
-    const fieldFiles = zeroDir.split('\n').filter(f => {
-      const name = f.trim();
-      if (!name) return false;
-      if (name === '.' || name === '..') return false;
-      return true;
-    });
+    // ── 2. The fields ──
+    const zeroDir = runInWsl(
+      `find ${shellQuote(`${casePath}/0`)} -mindepth 1 -maxdepth 1 -type f -printf '%f\\n' 2>/dev/null`
+    ).trim();
+    const fieldFiles = zeroDir.split('\n').map(f => f.trim()).filter(f => f && f !== '.' && f !== '..');
 
     if (fieldFiles.length === 0) {
       result.warnings.push('Directory 0/ empty or nonexistent');
@@ -2114,105 +2383,132 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
       return result;
     }
 
+    // A binary field is unreadable as text; ask OpenFOAM for those. The header
+    // is ASCII in both formats, so this is decided by reading it, not guessed.
+    const contents = new Map<string, string>();
+    const binaryFields: string[] = [];
     for (const fieldFile of fieldFiles) {
       let content = '';
       try {
         content = runInWsl(`cat -- ${shellQuote(`${casePath}/0/${fieldFile}`)} 2>/dev/null`).trim();
       } catch { continue; }
+      if (!content) continue;
+      contents.set(fieldFile, content);
+      if (/\bformat\s+binary\s*;/.test(content.slice(0, 2000))) binaryFields.push(fieldFile);
+    }
+    const binaryEntries = binaryFieldEntries(casePath, binaryFields);
 
+    for (const fieldFile of fieldFiles) {
+      const content = contents.get(fieldFile);
       if (!content) continue;
 
-      const patches: { patch: string; type: string; valid: boolean; note?: string }[] = [];
+      // Comments come out FIRST. The banner at the top of every OpenFOAM file
+      // is a block comment, a commented-out patch block would otherwise be read
+      // as a real one, and a `//` line containing a brace would throw the brace
+      // counting off for the rest of the file.
+      const clean = stripFoamComments(content);
+      const binaryList = binaryEntries.get(fieldFile);
 
-      const bfIdx = content.indexOf('boundaryField');
+      const bfIdx = clean.indexOf('boundaryField');
       if (bfIdx === -1) {
         result.warnings.push(`${fieldFile}: no boundaryField found`);
         continue;
       }
-
       let pos = bfIdx + 'boundaryField'.length;
-      while (pos < content.length && /\s/.test(content[pos])) pos++;
-      if (pos >= content.length || content[pos] !== '{') {
+      while (pos < clean.length && /\s/.test(clean[pos])) pos++;
+      if (pos >= clean.length || clean[pos] !== '{') {
         result.warnings.push(`${fieldFile}: boundaryField without opening brace`);
         continue;
       }
-
-      const bfBlock = extractBraceBlock(content, pos);
-      if (!bfBlock) {
+      // Brace counting over a binary blob returns nonsense or nothing; when
+      // foamDictionary has already answered for this field, that is fine.
+      const bfBlock = extractBraceBlock(clean, pos);
+      if (bfBlock === null && !(binaryList && binaryList.length)) {
         result.warnings.push(`${fieldFile}: unable to extract boundaryField`);
         continue;
       }
 
-      let searchPos = 0;
-      while (searchPos < bfBlock.length) {
-        while (searchPos < bfBlock.length && /\s/.test(bfBlock[searchPos])) searchPos++;
-        if (searchPos >= bfBlock.length) break;
-
-        let nameStart = searchPos;
-        while (searchPos < bfBlock.length && /[\w.]/.test(bfBlock[searchPos])) searchPos++;
-        if (searchPos === nameStart) { searchPos++; continue; }
-        const patchName = bfBlock.substring(nameStart, searchPos);
-
-        while (searchPos < bfBlock.length && /\s/.test(bfBlock[searchPos])) searchPos++;
-        if (searchPos >= bfBlock.length || bfBlock[searchPos] !== '{') continue;
-
-        const patchBlock = extractBraceBlock(bfBlock, searchPos);
-        if (!patchBlock) { searchPos++; continue; }
-
-        searchPos += patchBlock.length + 2;
-
-        const typeMatch = patchBlock.match(/type\s+(\S+)\s*;/);
-        if (!typeMatch) continue;
-
-        const bcType = typeMatch[1].replace(/;$/, '');
-        let valid = true;
-        let note: string | undefined;
-
-        if (patchNames.length > 0 && !patchNames.includes(patchName)) {
-          const coverage = getPatchesCoveredByBC(patchName);
-          if (coverage) {
-            const matchTypeLabels: Record<string, string> = {
-              direct: 'Direct',
-              type: 'Type',
-              group: 'Group',
-              wildcard: 'Pattern',
-              regex: 'Regex',
-            };
-            const label = matchTypeLabels[coverage.matchType] || 'Match';
-            note = `${label} "${patchName}" — matches: ${coverage.matched.join(', ')}`;
-          } else {
-            valid = false;
-            note = 'Patch not found in mesh';
-          }
-        }
-
-        patches.push({ patch: patchName, type: bcType, valid, note });
+      const { entries, directives } = binaryList && binaryList.length
+        ? { entries: binaryList, directives: [] as string[] }
+        : parseBoundaryFieldEntries(bfBlock || '');
+      if (directives.length) {
+        result.warnings.push(
+          `${fieldFile}: ${directives.length} entr${directives.length === 1 ? 'y is' : 'ies are'} ` +
+          `built by the preprocessor (${directives.slice(0, 3).join(', ')}` +
+          `${directives.length > 3 ? ', …' : ''}) — whatever they bring in was not checked here.`
+        );
       }
 
-      if (patchNames.length > 0) {
-        const coveredPatches = new Set<string>();
-        for (const p of patches) {
-          if (!p.valid) continue;
-          const coverage = getPatchesCoveredByBC(p.patch);
-          if (coverage) {
-            coverage.matched.forEach(mp => coveredPatches.add(mp));
-          }
+      const patches: { patch: string; type: string; valid: boolean; note?: string }[] = [];
+
+      // No mesh to check against: report what the file says and nothing more.
+      if (meshPatches.length === 0) {
+        for (const e of entries) {
+          patches.push({ patch: e.key, type: e.type || '(no type)', valid: true });
         }
-        for (const mp of patchNames) {
-          if (!coveredPatches.has(mp)) {
-            patches.push({ patch: mp, type: 'MISSING', valid: false, note: 'BC not defined for this field' });
-          }
-        }
+        if (patches.length) result.fields.push({ name: fieldFile, patches });
+        continue;
       }
 
-      if (patches.length > 0) {
-        result.fields.push({ name: fieldFile, patches });
+      // ── 3. Which entry covers which patch ──
+      //
+      // OpenFOAM resolves a patch against boundaryField in this order: the
+      // patch's own name, then a group it belongs to, then a regular
+      // expression — and among regular expressions the LAST one written wins.
+      // Following the same order is what makes the answer here the answer the
+      // solver will give.
+      const coverage = new Map<string, MatchedEntry>();
+      for (const patch of meshPatches) {
+        const match = resolveEntryForPatch(patch, entries);
+        if (match) coverage.set(patch.name, match);
       }
+
+      const usedEntries = new Set<number>();
+      for (const patch of meshPatches) {
+        const match = coverage.get(patch.name);
+        if (!match) {
+          patches.push({
+            patch: patch.name,
+            type: 'MISSING',
+            valid: false,
+            note: 'no entry in boundaryField matches this patch',
+          });
+          continue;
+        }
+        usedEntries.add(match.index);
+        const e = entries[match.index];
+        patches.push({
+          patch: patch.name,
+          type: e.type || '(no type)',
+          valid: true,
+          note: match.how === 'name' ? undefined
+            : match.how === 'group' ? `via the group "${e.key}"`
+            : `via the pattern "${e.key}"`,
+        });
+      }
+
+      // An entry that covers nothing is the other half of the check: a typo in
+      // a patch name, or a pattern that no longer matches anything after the
+      // mesh was rebuilt, is silently ignored by OpenFOAM — the field simply
+      // has no condition there and the run fails later, somewhere else.
+      entries.forEach((e, i) => {
+        if (usedEntries.has(i)) return;
+        patches.push({
+          patch: e.kind === 'regex' ? `"${e.key}"` : e.key,
+          type: e.type || '(no type)',
+          valid: false,
+          note: e.kind === 'regex'
+            ? 'this pattern matches none of the mesh patches'
+            : 'not a patch or group of this mesh',
+        });
+      });
+
+      if (patches.length > 0) result.fields.push({ name: fieldFile, patches });
     }
 
     result.success = true;
-  } catch (e: any) {
-    result.warnings.push(e.message);
+  } catch (e: unknown) {
+    result.warnings.push(e instanceof Error ? e.message : String(e));
   }
 
   return result;
