@@ -533,10 +533,47 @@ export default function MeshViewer({ caseName, active = true }: {
   }, [renderNow]);
 
   // ── Load the mesh ─────────────────────────────────────────────────────────
+  /**
+   * Drop the vertex sprites and their textures.
+   *
+   * The labels describe system/blockMeshDict, not the mesh, so they go stale
+   * the moment either changes — and a sprite that is merely hidden is still
+   * there to be shown again, which is exactly how a stale number survived.
+   */
+  const clearVertexLabels = useCallback(() => {
+    const labels = labelsRef.current;
+    if (!labels) return;
+    for (const child of [...labels.children]) {
+      const sp = child as THREE.Sprite;
+      sp.material.map?.dispose();
+      sp.material.dispose();
+      labels.remove(child);
+    }
+    labels.visible = false;
+  }, []);
+
   const loadMesh = useCallback(async () => {
     if (!caseName) return;
     setLoading(true);
     setError(null);
+
+    // A reload starts from the state a first load starts from: every toggle
+    // off, and nothing carried over from the mesh being replaced.
+    //
+    // The vertex labels are why this exists. They are read from
+    // system/blockMeshDict once and then kept in the scene, and toggleLabels
+    // reuses whatever is already there instead of re-reading the file — so
+    // after editing the dictionary and re-meshing, the numbers on screen still
+    // described the OLD vertices and no amount of pressing Reload changed
+    // them. Clearing them here makes the next press of Vertices read the file
+    // again. Wireframe and the axes are reset with them so the whole toolbar
+    // means what it shows after a reload, which is what the user asked for.
+    clearVertexLabels();
+    setLabelCount(0);
+    setShowLabels(false);
+    setWireframe(false);
+    setShowAxes(false);
+
     try {
       const res = await fetch(`/api/mesh?case=${encodeURIComponent(caseName)}`);
       if (!res.ok) {
@@ -611,7 +648,7 @@ export default function MeshViewer({ caseName, active = true }: {
     } finally {
       setLoading(false);
     }
-  }, [caseName]);
+  }, [caseName, clearVertexLabels]);
 
   // ── blockMeshDict vertex numbering ────────────────────────────────────────
   const loadVertexLabels = useCallback(async () => {
@@ -634,13 +671,7 @@ export default function MeshViewer({ caseName, active = true }: {
         );
       }
 
-      // Clear previous labels.
-      for (const child of [...labels.children]) {
-        const sp = child as THREE.Sprite;
-        sp.material.map?.dispose();
-        sp.material.dispose();
-        labels.remove(child);
-      }
+      clearVertexLabels();
 
       // Read the label colours from the theme too, so numbers stay legible.
       const { foregroundCss, backgroundCss } = readThemeColors();
@@ -668,7 +699,7 @@ export default function MeshViewer({ caseName, active = true }: {
     } finally {
       setLabelsLoading(false);
     }
-  }, [caseName, updateLabelScale, renderNow]);
+  }, [caseName, updateLabelScale, renderNow, clearVertexLabels]);
 
   const toggleLabels = useCallback(() => {
     const labels = labelsRef.current;
@@ -748,7 +779,7 @@ export default function MeshViewer({ caseName, active = true }: {
     }
   }, [active, renderNow, updateLabelScale]);
 
-  // Switching case invalidates what is on screen.
+  // Switching case invalidates what is on screen, exactly as a reload does.
   useEffect(() => {
     setPatches([]);
     setTriangles(0);
@@ -756,8 +787,10 @@ export default function MeshViewer({ caseName, active = true }: {
     setError(null);
     setLabelCount(0);
     setShowLabels(false);
-    if (labelsRef.current) labelsRef.current.visible = false;
-  }, [caseName]);
+    setWireframe(false);
+    setShowAxes(false);
+    clearVertexLabels();
+  }, [caseName, clearVertexLabels]);
 
   if (!caseName) {
     return (
