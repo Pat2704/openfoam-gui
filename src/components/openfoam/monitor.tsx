@@ -612,7 +612,9 @@ export default function Monitor({ caseName, active = true }: {
   return (
     <div className="space-y-3" style={{ minHeight: '600px' }}>
       {/* ═══ Status bar ═══ */}
-      <Card className={`p-3 ${isRunning ? 'border-green-500/50 bg-green-950/20' : 'border-muted'}`}>
+      {/* Same green as the Dashboard's environment strip, and correct in both
+          themes — this was the other place still using a dark-only value. */}
+      <Card className={`p-3 ${isRunning ? 'border-success/40 bg-success-soft' : 'border-muted'}`}>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-3 flex-wrap">
             <div className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground'}`} />
@@ -667,14 +669,22 @@ export default function Monitor({ caseName, active = true }: {
       </Card>
 
       {/* ═══ Live timestep progress ═══ */}
-      <Card className="p-3 border-blue-500/20">
+      <Card className="p-3 border-info/25">
           <div className="flex items-center justify-between mb-2">
             <CardTitle className="text-sm flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-blue-500" /> Generated timesteps
+              <Clock className="w-4 h-4 text-info" /> Generated timesteps
               <Badge variant="secondary" className="text-[9px]">{timeSteps.length}</Badge>
-              <span className="flex items-center gap-1 text-[9px] font-normal text-green-500">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
-              </span>
+              {/* LIVE means live. This badge was rendered unconditionally, with
+                  its dot pulsing, whether or not anything was running — so it
+                  said "LIVE" at an idle case and the one piece of motion on the
+                  screen carried no information. It now appears only while a
+                  solver of this case is actually writing timesteps, which is the
+                  moment it is worth looking at. */}
+              {isRunning && (
+                <span className="flex items-center gap-1 text-[9px] font-medium text-success">
+                  <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse motion-reduce:animate-none" /> LIVE
+                </span>
+              )}
             </CardTitle>
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-muted-foreground">
@@ -695,7 +705,13 @@ export default function Monitor({ caseName, active = true }: {
                 return (
                   <Badge key={`ts-${i}-${ts}`}
                     variant={isLast ? 'default' : 'outline'}
-                    className={`text-[10px] font-mono flex-shrink-0 ${isFirst ? 'border-blue-300 text-blue-600' : ''} ${isLast ? 'bg-green-600' : ''}`}>
+                    /* Same meaning as before — blue marks the first time
+                       written, green the latest — from the tokens, so both are
+                       legible in dark mode. `border-blue-300` is a light-mode
+                       border that all but vanished on the dark ground, which is
+                       why the row read as one lone green square with nothing
+                       before it. */
+                    className={`text-[10px] font-mono flex-shrink-0 ${isFirst ? 'border-info/40 text-info' : ''} ${isLast ? 'bg-success text-white border-success' : ''}`}>
                     {ts}
                   </Badge>
                 );

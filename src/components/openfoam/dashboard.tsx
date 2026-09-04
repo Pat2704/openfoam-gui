@@ -404,11 +404,16 @@ export default function Dashboard({
   return (
     <div className="space-y-3">
       {/* ══ WSL Status Bar (compact) ══ */}
-      <Card className={status?.running ? 'border-green-500/50 bg-green-950/20' : 'border-red-500/50 bg-red-950/20'}>
+      {/* Same green when healthy, same red when not — but from tokens, which
+          have a value per theme. `bg-green-950/20` is a DARK-mode green applied
+          in both, so in light mode this strip was a dark green at 20% over
+          white: a washed-out sage that read as "slightly unwell" rather than
+          "connected". */}
+      <Card className={status?.running ? 'border-success/40 bg-success-soft' : 'border-danger/40 bg-danger-soft'}>
         <CardContent className="p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              {status?.running ? <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" /> : <XCircle className="w-5 h-5 text-red-500 flex-shrink-0" />}
+              {status?.running ? <CheckCircle2 className="w-5 h-5 text-success flex-shrink-0" /> : <XCircle className="w-5 h-5 text-danger flex-shrink-0" />}
               <div className="min-w-0">
                 <span className="font-mono text-sm font-semibold">{status?.name || 'N/A'}</span>
                 {status?.running && (
@@ -539,29 +544,42 @@ export default function Dashboard({
 
                     {/* Badges: file counts */}
                     <div className="hidden sm:flex items-center gap-1.5 flex-shrink-0">
+                      {/* Three directories, three colours — that distinction is
+                          the point and it stays. What changes is that each hue
+                          now comes from a token with a light AND a dark value,
+                          and each badge carries a faint wash of its own colour
+                          so the row reads at a glance instead of as three
+                          outlines. They were `border-orange-300` / `blue-300` /
+                          `green-300`, light-mode borders shown in both themes:
+                          barely visible on the dark ground. */}
                       {c.fileCount['0'] > 0 && (
-                        <Badge variant="outline" className="text-[9px] h-5 px-1.5 text-orange-600 border-orange-300">
+                        <Badge variant="outline" title={`${c.fileCount['0']} files in 0/`}
+                          className="h-5 px-1.5 text-[9px] font-medium text-warning border-warning/35 bg-warning-soft">
                           0/ {c.fileCount['0']}
                         </Badge>
                       )}
                       {c.fileCount.system > 0 && (
-                        <Badge variant="outline" className="text-[9px] h-5 px-1.5 text-blue-600 border-blue-300">
+                        <Badge variant="outline" title={`${c.fileCount.system} files in system/`}
+                          className="h-5 px-1.5 text-[9px] font-medium text-info border-info/35 bg-info-soft">
                           sys {c.fileCount.system}
                         </Badge>
                       )}
                       {c.fileCount.constant > 0 && (
-                        <Badge variant="outline" className="text-[9px] h-5 px-1.5 text-green-600 border-green-300">
+                        <Badge variant="outline" title={`${c.fileCount.constant} files in constant/`}
+                          className="h-5 px-1.5 text-[9px] font-medium text-success border-success/35 bg-success-soft">
                           con {c.fileCount.constant}
                         </Badge>
                       )}
                       {c.timeStepCount > 0 && (
-                        <Badge variant="secondary" className="text-[9px] h-5 px-1.5">
+                        <Badge variant="secondary" title={`${c.timeStepCount} time directories written`}
+                          className="h-5 px-1.5 text-[9px] font-medium">
                           <Clock className="w-2.5 h-2.5 mr-0.5" /> {c.timeStepCount}ts
                           {c.lastTimeStep && <span className="ml-0.5 opacity-60">→{c.lastTimeStep}</span>}
                         </Badge>
                       )}
                       {c.hasLog && (
-                        <Badge variant="secondary" className="text-[9px] h-5 px-1.5 bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                        <Badge variant="secondary" title="This case has solver logs"
+                          className="h-5 px-1.5 text-[9px] font-medium text-accent2 border-accent2/35 bg-accent2-soft">
                           <FileText className="w-2.5 h-2.5 mr-0.5" /> log
                         </Badge>
                       )}
@@ -785,10 +803,13 @@ export default function Dashboard({
         </DialogContent>
       </Dialog>
 
-      {/* Not Running */}
+      {/* Not Running.
+          Amber either way, but from tokens: `bg-amber-950/20` is a dark-mode
+          value that was being shown in light mode too, where a dark amber at
+          20% over white is a dirty beige rather than a caution. */}
       {!status?.running && (
-        <Alert className="border-amber-500/50 bg-amber-950/20">
-          <AlertTriangle className="h-4 w-4 text-amber-500" />
+        <Alert className="border-warning/40 bg-warning-soft">
+          <AlertTriangle className="h-4 w-4 text-warning" />
           <AlertDescription>
             WSL &quot;{status?.name}&quot; unavailable.
             <code className="ml-1 px-1.5 py-0.5 bg-muted rounded text-xs font-mono cursor-pointer" onClick={() => setShowSettings(true)}>

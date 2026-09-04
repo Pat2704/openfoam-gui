@@ -68,15 +68,22 @@ function orderCategories(present: string[]): string[] {
  * is a shape OpenFOAM's own output takes, in the order it is worth noticing.
  */
 function lineClass(line: string): string {
-  if (/^\s*-->\s*FOAM FATAL/.test(line)) return 'text-red-400 font-semibold';
-  if (/^\s*-->\s*FOAM Warning/.test(line)) return 'text-amber-500';
-  if (/^\s*FOAM exiting/.test(line)) return 'text-red-400/80';
+  // The same colours as before — red for fatal, amber for a warning, cyan for
+  // the clock, green for the end — but drawn from the app's tokens, so the
+  // terminal's red is the same red as a failed check in the mesh report sitting
+  // directly above it, and each has a value tuned for BOTH themes. They were
+  // fixed palette steps chosen for the dark terminal, and `text-red-400` on the
+  // light background is a washed pink that reads as decoration rather than as
+  // the line that says why the run died.
+  if (/^\s*-->\s*FOAM FATAL/.test(line)) return 'text-danger font-semibold';
+  if (/^\s*-->\s*FOAM Warning/.test(line)) return 'text-warning';
+  if (/^\s*FOAM exiting/.test(line)) return 'text-danger/80';
   // The solver's own clock: the line you look for when scrolling a long log.
-  if (/^Time = /.test(line)) return 'text-cyan-500 font-semibold';
+  if (/^Time = /.test(line)) return 'text-accent2 font-semibold';
   if (/^(Courant Number|deltaT|ExecutionTime)/.test(line)) return 'text-muted-foreground';
   // Convergence, and the end of a run.
   if (/(solution singularity|Final residual = |converged in)/.test(line)) return 'text-foreground/60';
-  if (/^\s*End\s*$/.test(line)) return 'text-green-500';
+  if (/^\s*End\s*$/.test(line)) return 'text-success font-semibold';
   // The banner every OpenFOAM binary prints before doing anything.
   if (/^(Build\s*:|Exec\s*:|Date\s*:|Time\s*:|Host\s*:|PID\s*:|Case\s*:|nProcs\s*:|I\/O\s*:|fileModificationChecking|allowSystemOperations|Create time|\/\*|\\\*|\| |=====)/.test(line)) {
     return 'text-muted-foreground/50';
@@ -636,9 +643,12 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 h-full min-h-0">
       {/* ═══ Left: Command Browser ═══ */}
-      <Card className="flex flex-col lg:col-span-1">
+      {/* Capped when the layout stacks below lg: a 233-entry command list would
+          otherwise take the whole window and squeeze the terminal — the surface
+          the user is actually working in — down to its prompt line. */}
+      <Card className="flex flex-col lg:col-span-1 min-h-0 max-h-[42%] lg:max-h-none">
         <CardHeader className="pb-2 pt-3 px-3">
           <CardTitle className="text-sm flex items-center gap-1">
             <TerminalIcon className="w-4 h-4" /> OpenFOAM Commands
@@ -713,7 +723,7 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
       </Card>
 
       {/* ═══ Right: Terminal + Quick Commands ═══ */}
-      <div className="lg:col-span-2 flex flex-col gap-3">
+      <div className="lg:col-span-2 flex flex-col gap-3 min-h-0">
 
         {/* ═══ Terminal ═══ */}
         <Card className="flex flex-col relative" style={{ height: `${termHeight}px` }}>
@@ -751,7 +761,7 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
               <CardTitle className="text-xs flex items-center gap-1.5">
                 <TerminalIcon className="w-3.5 h-3.5 text-green-500" /> Terminal
                 <Badge variant="secondary" className="text-[9px] font-mono">{caseName}</Badge>
-                {term.running && <Badge variant="default" className="bg-amber-600 text-[9px] animate-pulse">RUNNING</Badge>}
+                {term.running && <Badge variant="default" className="bg-warning text-warning-foreground text-[9px] animate-pulse motion-reduce:animate-none">RUNNING</Badge>}
               </CardTitle>
               {term.lines.length > 0 && (
                 <Button size="sm" variant="ghost" className="h-5 text-[10px] px-1.5" onClick={() => setTerm(prev => ({ ...prev, lines: [] }))}>
@@ -807,7 +817,7 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
                       <pre className={`mt-0.5 ml-3 whitespace-pre-wrap break-words text-[11px] border-l-2 pl-2 text-foreground/80 ${border} ${cap}`}>
                         <OutputBlock text={entry.output} />
                         {streaming && (
-                          <span className="inline-block w-1.5 h-3 align-middle bg-amber-500/70 animate-pulse" />
+                          <span className="inline-block w-1.5 h-3 align-middle bg-warning/80 animate-pulse motion-reduce:animate-none" />
                         )}
                       </pre>
                     )}

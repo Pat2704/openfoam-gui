@@ -37,6 +37,35 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
+  /* ── The colours this app already uses, given names ──────────────────────
+     Nothing here changes what anything looks like. These are the hues the
+     interface was ALREADY painted with — the orange of the mark, the green of
+     a healthy environment, the blue of an informational chip, the amber of a
+     caution, the red of a destructive action — written down so that they are
+     the same green everywhere instead of five different greens, and so that
+     each one is defined once per theme.
+
+     That last part is the bug they fix. The status card was `bg-green-950/20`,
+     a DARK-mode value, applied in both themes; several chips were `bg-amber-50`
+     or `bg-red-50`, light-mode values, applied in both. Each was legible in one
+     theme and wrong in the other. A token has a value per theme, so it cannot
+     be. */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-accent2: var(--accent2);
+  --color-accent2-soft: var(--accent2-soft);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -76,6 +105,32 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* The mark's orange, and the five working colours — LIGHT theme.
+     Matched to what the interface already showed, only made deliberate:
+     `brand` is the orange-red of the logo, `accent2` the teal that the
+     terminal actions were already using. */
+  /* The lightness values are set by CONTRAST, not by eye. These colours are
+     mostly used as 9-11px badge text on their own `-soft` ground, which is
+     small text, so each needs about 4.5:1 there. Measured with a canvas
+     round-trip (the only reliable way — `getComputedStyle` hands back `lab()`
+     for an oklch value and a naive parser reads nonsense out of it). The first
+     pass sat at 2.6-4.1 and amber was the worst of them at 2.99 on white; these
+     clear the bar while staying recognisably the same six colours. */
+  --brand: oklch(0.56 0.19 40);
+  --brand-foreground: oklch(0.99 0.01 60);
+  --brand-soft: oklch(0.96 0.04 50);
+
+  --success: oklch(0.5 0.14 150);
+  --success-soft: oklch(0.95 0.045 152);
+  --warning: oklch(0.52 0.13 62);
+  --warning-soft: oklch(0.96 0.06 78);
+  --danger: oklch(0.53 0.21 27);
+  --danger-soft: oklch(0.96 0.04 27);
+  --info: oklch(0.52 0.17 250);
+  --info-soft: oklch(0.95 0.04 250);
+  --accent2: oklch(0.52 0.11 205);
+  --accent2-soft: oklch(0.95 0.04 200);
 }
 
 .dark {
@@ -110,6 +165,25 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Same six colours, DARK theme. Lifted and slightly desaturated so they read
+     as the same colour rather than glowing, and the `-soft` grounds are real
+     dark tints rather than an opacity of the light value — which is what made
+     `bg-amber-50` a white chip and `bg-green-950/20` a smear here. */
+  --brand: oklch(0.72 0.16 42);
+  --brand-foreground: oklch(0.2 0.02 40);
+  --brand-soft: oklch(0.32 0.07 42);
+
+  --success: oklch(0.74 0.15 152);
+  --success-soft: oklch(0.3 0.06 152);
+  --warning: oklch(0.8 0.14 76);
+  --warning-soft: oklch(0.32 0.06 76);
+  --danger: oklch(0.7 0.18 25);
+  --danger-soft: oklch(0.31 0.075 25);
+  --info: oklch(0.72 0.14 250);
+  --info-soft: oklch(0.3 0.06 250);
+  --accent2: oklch(0.75 0.11 200);
+  --accent2-soft: oklch(0.3 0.05 200);
 }
 
 @layer base {
@@ -121,42 +195,59 @@
   }
 }
 
-/* ══ Custom Scrollbars ══ */
+/* ══ Custom Scrollbars ══
+   These now matter a great deal more than they did: src/components/ui/
+   scroll-area.tsx no longer hides the native scrollbar behind a JavaScript-drawn
+   one, so this IS the scrollbar the user sees in every panel. Slightly wider
+   than before, with the track inset by a transparent border so the thumb reads
+   as a floating pill rather than as a bar wedged against the panel edge. */
 @layer base {
-  /* Thin, macOS-style scrollbars for Webkit browsers */
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.7 0 0 / 25%);
+    background: oklch(0.55 0.01 260 / 28%);
     border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.7 0 0 / 40%);
+    background: oklch(0.5 0.02 260 / 48%);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background: oklch(0.45 0.03 260 / 62%);
+    background-clip: padding-box;
   }
   ::-webkit-scrollbar-corner {
     background: transparent;
- }
+  }
 
   /* Firefox */
   * {
     scrollbar-width: thin;
-    scrollbar-color: oklch(0.7 0 0 / 25%) transparent;
+    scrollbar-color: oklch(0.55 0.01 260 / 28%) transparent;
   }
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: oklch(0.7 0 0 / 30%);
+  background: oklch(0.85 0.01 260 / 22%);
+  background-clip: padding-box;
 }
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.7 0 0 / 45%);
+  background: oklch(0.9 0.01 260 / 38%);
+  background-clip: padding-box;
+}
+.dark ::-webkit-scrollbar-thumb:active {
+  background: oklch(0.95 0.01 260 / 52%);
+  background-clip: padding-box;
 }
 .dark * {
-  scrollbar-color: oklch(0.7 0 0 / 30%) transparent;
+  scrollbar-color: oklch(0.85 0.01 260 / 22%) transparent;
 }
 
 /* ══ Tab Content Transitions ══ */
@@ -181,9 +272,38 @@
   background: oklch(0.6 0.15 250 / 40%);
 }
 
-/* ══ Focus Ring Polish ══ */
+/* ══ Focus Ring Polish ══
+   One ring, in the app's own orange, so "where am I" is answered identically on
+   a button, a tree row and a text field — and answered in the application's
+   colour rather than a generic blue that appears nowhere else. Keyboard only:
+   :focus-visible never fires on a mouse click. */
 :focus-visible {
-  outline: 2px solid oklch(0.6 0.15 250 / 50%);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* ══ Motion ══
+   Short, and only where it explains a change. Nothing runs on its own: an
+   engineer watching a solve should not have the interface moving at them. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ══ Numbers ══
+   A residual, a cell count, an elapsed timer and a PID are data. Tabular
+   figures stop them from shifting width as their digits change, which is what
+   made a live counter look like it was wobbling. */
+.font-mono,
+code,
+kbd,
+pre {
+  font-variant-numeric: tabular-nums;
 }

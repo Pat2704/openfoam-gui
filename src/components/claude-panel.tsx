@@ -691,7 +691,7 @@ export default function ClaudePanel() {
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-[#D97757] text-white shadow-lg hover:shadow-xl hover:shadow-[#D97757]/25 flex items-center justify-center cursor-grab active:cursor-grabbing transition-shadow duration-150"
+          className="fixed w-14 h-14 rounded-full bg-[#D97757] text-white shadow-lg hover:shadow-xl hover:shadow-[#D97757]/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter] duration-150 hover:brightness-105"
           style={{ left: 0, top: 0, zIndex: LAUNCHER_Z, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
           title="Claude — agent for your cases (draggable)"
         >
@@ -713,20 +713,20 @@ export default function ClaudePanel() {
             onMouseDown={onWinDragStart}
           >
             <div className="flex items-center gap-2 min-w-0">
-              <GripHorizontal className="w-4 h-4 text-muted-foreground/40 flex-shrink-0" />
+              <GripHorizontal className="w-4 h-4 text-muted-foreground/60 flex-shrink-0" />
               <ClaudeMark className="w-5 h-5 flex-shrink-0" color="#D97757" />
               <div className="min-w-0">
                 <div className="text-sm font-semibold leading-tight">Claude</div>
                 <div className="text-[10px] text-muted-foreground leading-tight flex items-center gap-1.5">
                   {caseName ? (
                     <span className="inline-flex items-center gap-1 truncate max-w-[160px]">
-                      <FolderOpen className="w-2.5 h-2.5" />{caseName}
+                      <FolderOpen className="w-2.5 h-2.5 flex-shrink-0" />{caseName}
                     </span>
                   ) : (
                     <span>Agent for your OpenFOAM cases</span>
                   )}
                   {status?.auth?.subscriptionType && (
-                    <span className="uppercase tracking-wide text-[8px] px-1 rounded bg-[#D97757]/15 text-[#B4573C] dark:text-[#E8A188]">
+                    <span className="uppercase tracking-wide text-[10px] px-1.5 py-px rounded bg-[#D97757]/15 text-[#B4573C] dark:text-[#E8A188] flex-shrink-0">
                       {status.auth.subscriptionType}
                     </span>
                   )}
@@ -737,7 +737,7 @@ export default function ClaudePanel() {
               {/* Account — always here, signed in or not. */}
               <div className="relative">
                 <button
-                  className={`p-1.5 rounded-md transition-colors ${menu === 'account' ? 'bg-black/5 dark:bg-white/10 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10'}`}
+                  className={`relative w-7 h-7 inline-flex items-center justify-center rounded-md transition-colors duration-150 active:bg-black/10 dark:active:bg-white/15 ${menu === 'account' ? 'bg-black/5 dark:bg-white/10 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10'}`}
                   onClick={() => setMenu(menu === 'account' ? null : 'account')}
                   title={status?.auth?.loggedIn ? `Signed in as ${status.auth.email || 'your Claude account'}` : 'Claude account'}
                 >
@@ -760,14 +760,14 @@ export default function ClaudePanel() {
                     </div>
                     {status?.auth?.loggedIn ? (
                       <button
-                        className="w-full text-left px-3 py-2 text-[11px] hover:bg-accent transition-colors inline-flex items-center gap-1.5"
+                        className="w-full text-left px-3 py-2 text-[11px] hover:bg-accent active:bg-accent/70 transition-colors duration-150 inline-flex items-center gap-1.5"
                         onClick={() => { setMenu(null); void signOut(); }}
                       >
                         <LogOut className="w-3 h-3" /> Sign out
                       </button>
                     ) : (
                       <button
-                        className="w-full text-left px-3 py-2 text-[11px] hover:bg-accent transition-colors inline-flex items-center gap-1.5 font-medium text-[#D97757]"
+                        className="w-full text-left px-3 py-2 text-[11px] hover:bg-accent active:bg-accent/70 transition-colors duration-150 inline-flex items-center gap-1.5 font-medium text-[#D97757] disabled:opacity-50 disabled:pointer-events-none"
                         onClick={() => { setMenu(null); void signIn(); }}
                         disabled={loggingIn}
                       >
@@ -776,23 +776,23 @@ export default function ClaudePanel() {
                           : <><LogIn className="w-3 h-3" /> Sign in with your Claude account</>}
                       </button>
                     )}
-                    <div className="px-3 py-1.5 border-t text-[9px] text-muted-foreground/70">
+                    <div className="px-3 py-1.5 border-t text-[10px] text-muted-foreground">
                       {status?.installed ? `Claude Code ${status.version} · ${status.source}` : 'Claude Code not found on this machine'}
                     </div>
                   </div>
                 )}
               </div>
               <button
-                className="p-1.5 rounded-md hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors"
+                className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15 text-muted-foreground hover:text-foreground transition-colors duration-150"
                 onClick={clear} title="New conversation"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
               <button
-                className="p-1.5 rounded-md hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors"
+                className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15 text-muted-foreground hover:text-foreground transition-colors duration-150"
                 onClick={() => setOpen(false)} title="Close"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -807,11 +807,11 @@ export default function ClaudePanel() {
 
             {statusError && (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
-                <AlertCircle className="w-8 h-8 mb-3 text-red-500" />
+                <AlertCircle className="w-8 h-8 mb-3 text-danger" />
                 <p className="text-sm font-medium">Something went wrong in the app</p>
                 <p className="text-xs text-muted-foreground mt-2 break-words">{statusError}</p>
                 <Button
-                  size="sm" variant="outline" className="mt-3 h-7 text-xs"
+                  size="sm" variant="outline" className="mt-3 h-8 text-xs"
                   onClick={() => refreshStatus(true)} disabled={checking}
                 >
                   Try again
@@ -832,7 +832,7 @@ export default function ClaudePanel() {
                 <code className="mt-2 block w-full rounded border bg-muted/50 px-2 py-1.5 text-[11px] font-mono text-left">
                   npm install -g @anthropic-ai/claude-code
                 </code>
-                <p className="text-[10px] text-muted-foreground mt-2 leading-relaxed">
+                <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
                   Already have it somewhere else? Give the full path to <code>claude.exe</code> (or
                   <code> claude.cmd</code>) and the panel will use it.
                 </p>
@@ -842,28 +842,28 @@ export default function ClaudePanel() {
                     onChange={e => setPathDraft(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') void savePath(); }}
                     placeholder="C:\\…\\claude.exe"
-                    className="flex-1 min-w-0 text-[11px] font-mono px-2 py-1.5 rounded-lg border bg-background"
+                    className="flex-1 min-w-0 h-8 text-[11px] font-mono px-2 rounded-lg border bg-background transition-colors duration-150 hover:border-foreground/25"
                   />
-                  <Button size="sm" variant="outline" className="h-8 text-[11px]" onClick={savePath} disabled={checking}>
+                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={savePath} disabled={checking}>
                     Use this
                   </Button>
                 </div>
                 <Button
-                  size="sm" variant="outline" className="mt-3 h-7 text-xs"
+                  size="sm" variant="outline" className="mt-3 h-8 text-xs"
                   onClick={() => refreshStatus(true)} disabled={checking}
                 >
                   {checking ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> Searching…</> : 'Look again'}
                 </Button>
                 {status.probe && status.probe.length > 0 && (
                   <div className="mt-4 w-full text-left">
-                    <div className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
                       What was tried
                     </div>
                     <div className="rounded-lg border divide-y max-h-40 overflow-y-auto">
                       {status.probe.map((p, i) => (
                         <div key={i} className="px-2 py-1.5">
-                          <div className="text-[10px] font-mono truncate">{p.path || p.source}</div>
-                          <div className="text-[10px] text-red-600 dark:text-red-400 break-words">{p.error}</div>
+                          <div className="text-[11px] font-mono truncate">{p.path || p.source}</div>
+                          <div className="text-[11px] text-danger break-words">{p.error}</div>
                         </div>
                       ))}
                     </div>
@@ -882,15 +882,15 @@ export default function ClaudePanel() {
                 </p>
                 <Button
                   size="sm"
-                  className="mt-3 h-8 text-xs bg-[#D97757] hover:bg-[#C56647] text-white"
+                  className="mt-3 h-8 text-xs bg-[#D97757] hover:bg-[#C56647] active:bg-[#B4573C] text-white"
                   onClick={signIn}
                   disabled={loggingIn}
                 >
                   {loggingIn ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Waiting for the browser…</> : 'Sign in'}
                 </Button>
                 {loginError && (
-                  <div className="mt-3 w-full flex items-start gap-1.5 rounded-lg border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/30 px-2.5 py-2 text-[11px] text-red-700 dark:text-red-300 text-left">
-                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  <div className="mt-3 w-full flex items-start gap-1.5 rounded-lg border border-danger/40 bg-danger-soft px-2.5 py-2 text-[11px] text-danger text-left">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
                     <span>{loginError}</span>
                   </div>
                 )}
@@ -898,7 +898,7 @@ export default function ClaudePanel() {
                   <div className="mt-3 w-full space-y-2">
                     <a
                       href={loginUrl} target="_blank" rel="noopener noreferrer"
-                      className="text-[10px] text-[#D97757] hover:underline inline-flex items-center gap-1"
+                      className="text-[11px] text-[#D97757] hover:underline inline-flex items-center gap-1"
                     >
                       <ExternalLink className="w-3 h-3" /> Open the sign-in page manually
                     </a>
@@ -908,15 +908,15 @@ export default function ClaudePanel() {
                         onChange={e => setLoginCode(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') submitCode(); }}
                         placeholder="Paste the code from the page, if it asks for one"
-                        className="flex-1 text-[11px] px-2 py-1.5 rounded-lg border bg-background"
+                        className="flex-1 min-w-0 h-8 text-[11px] px-2 rounded-lg border bg-background transition-colors duration-150 hover:border-foreground/25"
                       />
-                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={submitCode}>
+                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={submitCode}>
                         Send
                       </Button>
                     </div>
                   </div>
                 )}
-                <p className="text-[10px] text-muted-foreground/70 mt-3">
+                <p className="text-[10px] text-muted-foreground mt-3">
                   Claude Code {status.version} · {status.source}
                 </p>
               </div>
@@ -939,7 +939,7 @@ export default function ClaudePanel() {
                     <button
                       key={i}
                       onClick={() => setInput(q)}
-                      className="block w-full text-left text-xs px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                      className="block w-full text-left text-xs px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/5 hover:border-[#D97757]/40 active:bg-black/[0.06] dark:active:bg-white/10 text-muted-foreground hover:text-foreground transition-colors duration-150"
                     >
                       {q}
                     </button>
@@ -956,7 +956,11 @@ export default function ClaudePanel() {
           {/* Composer — model and reasoning live in here, as in Claude Desktop */}
           {ready && (
             <div className="px-3 pb-3 pt-1">
-              <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#26251F] shadow-sm">
+              {/* The composer reads as ONE field, so the app's shared focus ring
+                  goes on the box rather than on the textarea inside it — same
+                  2px brand outline at the same offset, just around the thing the
+                  user is actually typing into. */}
+              <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#26251F] shadow-sm transition-colors duration-150 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand">
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -967,25 +971,25 @@ export default function ClaudePanel() {
                   placeholder={caseName ? `Ask Claude to work on ${caseName}…` : 'Ask Claude…'}
                   rows={1}
                   disabled={running}
-                  className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm min-h-[38px] max-h-[120px] focus:outline-none placeholder:text-muted-foreground/60"
+                  className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm min-h-[38px] max-h-[120px] focus:outline-none placeholder:text-muted-foreground/70 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
                 <div className="flex items-center gap-1 px-2 pb-2" onClick={e => e.stopPropagation()}>
                   {/* Model */}
                   <div className="relative">
                     <button
                       onClick={() => setMenu(menu === 'model' ? null : 'model')}
-                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors"
+                      className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors duration-150 ${menu === 'model' ? 'bg-black/5 dark:bg-white/10 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10'}`}
                     >
                       {currentModel.label}
                       <ChevronDown className="w-3 h-3" />
                     </button>
                     {menu === 'model' && (
-                      <div className="absolute bottom-full left-0 mb-1 w-56 rounded-xl border bg-popover shadow-xl overflow-hidden z-50">
+                      <div className="absolute bottom-full left-0 mb-1 w-60 rounded-xl border bg-popover shadow-xl overflow-hidden z-50">
                         {MODELS.map(m => (
                           <button
                             key={m.id}
                             onClick={() => chooseModel(m.id)}
-                            className={`block w-full text-left px-3 py-2 hover:bg-accent transition-colors ${model === m.id ? 'bg-accent' : ''}`}
+                            className={`block w-full text-left px-3 py-2 transition-colors duration-150 hover:bg-accent active:bg-accent/70 ${model === m.id ? 'bg-accent' : ''}`}
                           >
                             <div className="text-xs font-medium flex items-center gap-1.5">
                               {m.label}
@@ -1003,7 +1007,7 @@ export default function ClaudePanel() {
                     <button
                       onClick={() => setMenu(menu === 'effort' ? null : 'effort')}
                       disabled={!currentModel.effort}
-                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                      className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors duration-150 disabled:opacity-40 disabled:pointer-events-none ${menu === 'effort' ? 'bg-black/5 dark:bg-white/10 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10'}`}
                       title={currentModel.effort ? 'How hard Claude thinks before acting' : 'This model has no reasoning control'}
                     >
                       <Sparkles className="w-3 h-3" />
@@ -1012,14 +1016,14 @@ export default function ClaudePanel() {
                     </button>
                     {menu === 'effort' && (
                       <div className="absolute bottom-full left-0 mb-1 w-60 rounded-xl border bg-popover shadow-xl overflow-hidden z-50">
-                        <div className="px-3 py-1.5 text-[9px] uppercase tracking-wide text-muted-foreground border-b">
+                        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground border-b">
                           Reasoning
                         </div>
                         {EFFORTS.map(e => (
                           <button
                             key={e.id}
                             onClick={() => chooseEffort(e.id)}
-                            className={`block w-full text-left px-3 py-2 hover:bg-accent transition-colors ${effort === e.id ? 'bg-accent' : ''}`}
+                            className={`block w-full text-left px-3 py-2 transition-colors duration-150 hover:bg-accent active:bg-accent/70 ${effort === e.id ? 'bg-accent' : ''}`}
                           >
                             <div className="text-xs font-medium flex items-center gap-1.5">
                               {e.label}
@@ -1037,10 +1041,10 @@ export default function ClaudePanel() {
                       destroyed, so its state must be readable at a glance. */}
                   <button
                     onClick={toggleUnrestricted}
-                    className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors ${
+                    className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors duration-150 ${
                       unrestricted
-                        ? 'bg-[#D97757]/15 text-[#B4573C] dark:text-[#E8A188] font-medium'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10'
+                        ? 'bg-[#D97757]/15 ring-1 ring-[#D97757]/45 text-[#B4573C] dark:text-[#E8A188] font-medium hover:bg-[#D97757]/25'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15'
                     }`}
                     title={unrestricted
                       ? 'Unrestricted: any command runs, including destructive ones. Click to restore the limits.'
@@ -1055,7 +1059,7 @@ export default function ClaudePanel() {
                   {running ? (
                     <button
                       onClick={stop}
-                      className="w-8 h-8 rounded-lg flex items-center justify-center bg-black/10 dark:bg-white/15 hover:bg-black/20 dark:hover:bg-white/25 transition-colors"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center bg-black/10 dark:bg-white/15 hover:bg-black/20 dark:hover:bg-white/25 active:bg-black/25 dark:active:bg-white/30 transition-colors duration-150"
                       title="Stop"
                     >
                       <Square className="w-3 h-3 fill-current" />
@@ -1064,7 +1068,7 @@ export default function ClaudePanel() {
                     <button
                       onClick={sendMessage}
                       disabled={!input.trim()}
-                      className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#D97757] text-white hover:bg-[#C56647] disabled:opacity-30 disabled:hover:bg-[#D97757] transition-colors"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#D97757] text-white hover:bg-[#C56647] active:bg-[#B4573C] disabled:opacity-30 disabled:pointer-events-none transition-colors duration-150"
                       title="Send"
                     >
                       <Send className="w-3.5 h-3.5" />
@@ -1073,7 +1077,7 @@ export default function ClaudePanel() {
                 </div>
               </div>
               <div className="mt-1.5 px-1">
-                <span className="text-[9px] text-muted-foreground/60">
+                <span className="text-[10px] text-muted-foreground">
                   Runs on your Claude subscription · confined to the run directory
                 </span>
               </div>
@@ -1081,11 +1085,11 @@ export default function ClaudePanel() {
           )}
 
           <div
-            className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-end justify-end p-0.5"
+            className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-end justify-end p-0.5 text-muted-foreground/60 hover:text-muted-foreground transition-colors duration-150"
             onMouseDown={onResizeStart}
             title="Drag to resize"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted-foreground/40">
+            <svg width="10" height="10" viewBox="0 0 10 10">
               <path d="M9 1v8H1M9 5v4H5M9 8h-1" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
             </svg>
           </div>
@@ -1131,14 +1135,14 @@ function TurnView({ turn, running }: { turn: Turn; running: boolean }) {
       )}
 
       {turn.error && (
-        <div className="flex items-start gap-1.5 rounded-lg border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/30 px-2.5 py-2 text-[11px] text-red-700 dark:text-red-300">
-          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+        <div className="flex items-start gap-1.5 rounded-lg border border-danger/40 bg-danger-soft px-2.5 py-2 text-[11px] text-danger">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
           <span>{turn.error}</span>
         </div>
       )}
 
       {turn.meta && turn.meta.durationMs > 0 && (
-        <div className="text-[9px] text-muted-foreground/50">
+        <div className="text-[10px] text-muted-foreground">
           {(turn.meta.durationMs / 1000).toFixed(1)}s
         </div>
       )}
@@ -1153,7 +1157,7 @@ function ThinkingCard({ text, live }: { text: string; live: boolean }) {
     <div className="text-[11px]">
       <button
         onClick={() => setOpenBox(o => !o)}
-        className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors italic"
+        className="inline-flex items-center gap-1 rounded-sm text-muted-foreground hover:text-foreground transition-colors duration-150 italic"
       >
         {openBox ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         {live ? 'Thinking…' : 'Thought about it'}
@@ -1178,17 +1182,19 @@ function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
     : '';
 
   return (
-    <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/[0.03] overflow-hidden">
+    <div className={`rounded-lg border overflow-hidden bg-white/60 dark:bg-white/[0.03] ${
+      block.status === 'error' ? 'border-danger/40' : 'border-black/10 dark:border-white/10'
+    }`}>
       <button
         onClick={() => setOpenBox(o => !o)}
-        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-left hover:bg-black/[0.03] dark:hover:bg-white/5 transition-colors"
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-left hover:bg-black/[0.03] dark:hover:bg-white/5 active:bg-black/[0.06] dark:active:bg-white/10 transition-colors duration-150"
       >
         {block.status === 'running'
           ? <Loader2 className="w-3 h-3 animate-spin text-[#D97757] flex-shrink-0" />
           : block.status === 'error'
-            ? <AlertCircle className="w-3 h-3 text-red-500 flex-shrink-0" />
+            ? <AlertCircle className="w-3 h-3 text-danger flex-shrink-0" />
             : <Wrench className="w-3 h-3 text-muted-foreground flex-shrink-0" />}
-        <span className="font-medium">{verb}</span>
+        <span className="font-medium flex-shrink-0">{verb}</span>
         <span className="font-mono text-muted-foreground truncate">{detail}</span>
         <span className="flex-1" />
         {openBox ? <ChevronDown className="w-3 h-3 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 text-muted-foreground" />}
@@ -1196,11 +1202,11 @@ function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
       {openBox && (
         <div className="border-t border-black/5 dark:border-white/10">
           {written && (
-            <pre className="p-2.5 text-[10px] font-mono whitespace-pre-wrap max-h-52 overflow-y-auto bg-black/[0.03] dark:bg-black/20">
+            <pre className="p-2.5 text-[11px] font-mono whitespace-pre-wrap max-h-52 overflow-y-auto bg-black/[0.03] dark:bg-black/20">
               {written}
             </pre>
           )}
-          <pre className="p-2.5 text-[10px] font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">
+          <pre className="p-2.5 text-[11px] font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">
             {block.result || (block.status === 'running' ? '…' : '(no output)')}
           </pre>
         </div>
@@ -1231,10 +1237,10 @@ function Markdown({ text }: { text: string }) {
           const code = newline >= 0 ? inner.slice(newline + 1) : inner;
           return (
             <div key={index} className="my-2 rounded-lg border border-black/10 dark:border-white/10 overflow-hidden">
-              <div className="flex items-center justify-between px-2.5 py-1 text-[10px] text-muted-foreground bg-black/[0.04] dark:bg-white/5 font-mono">
-                <span>{lang || 'text'}</span>
+              <div className="flex items-center justify-between gap-2 px-2.5 py-1 text-[10px] text-muted-foreground bg-black/[0.04] dark:bg-white/5 font-mono">
+                <span className="truncate">{lang || 'text'}</span>
                 <button
-                  className="hover:text-foreground transition-colors"
+                  className="rounded-sm hover:text-foreground transition-colors duration-150"
                   onClick={async () => {
                     // Awaited, so the tick means the text is actually on the
                     // clipboard. The write can reject (no permission, no
@@ -1254,7 +1260,7 @@ function Markdown({ text }: { text: string }) {
                   title="Copy"
                   aria-label="Copy this code block"
                 >
-                  {copied === index ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3" />}
+                  {copied === index ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
                 </button>
               </div>
               <pre className="p-2.5 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap">{code}</pre>

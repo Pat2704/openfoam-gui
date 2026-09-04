@@ -759,21 +759,22 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           const status = appliedFiles[blockKey]?.status || 'idle';
 
           elements.push(
-            <div key={blockIdx} className="my-2 rounded-md overflow-hidden border-2 border-green-300 dark:border-green-700 bg-green-50/50 dark:bg-green-950/20">
-              <div className="px-3 py-1.5 bg-green-100 dark:bg-green-900/30 border-b border-green-300 dark:border-green-700 flex items-center justify-between">
-                <span className="text-[11px] font-mono font-medium text-green-800 dark:text-green-300">
-                  \ud83d\udcdd {filePath}
+            <div key={blockIdx} className="my-2 rounded-md overflow-hidden border border-success/40 bg-success-soft/30">
+              <div className="px-3 py-1.5 bg-success-soft border-b border-success/40 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-mono font-medium text-success inline-flex items-center gap-1.5 min-w-0">
+                  <FileCode className="w-3 h-3 flex-shrink-0" />
+                  <span className="truncate">{filePath}</span>
                 </span>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-shrink-0">
                   {status === 'idle' && (
                     replyTruncated ? (
-                      <span className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">
+                      <span className="text-[11px] text-warning font-medium">
                         Reply cut off — not applicable
                       </span>
                     ) : (
                       <Button
                         size="sm"
-                        className="h-6 text-[10px] px-2 bg-green-600 hover:bg-green-700 text-white"
+                        className="h-6 text-[11px] px-2 bg-success text-background hover:bg-success/90"
                         onClick={() => applyFileChange(filePath, code, blockKey)}
                       >
                         <Check className="w-3 h-3 mr-0.5" /> Apply change
@@ -781,25 +782,25 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     )
                   )}
                   {status === 'applying' && (
-                    <span className="text-[10px] text-green-700 dark:text-green-400 flex items-center gap-1">
-                      <Loader2 className="w-3 h-3 animate-spin" /> Applying...
+                    <span className="text-[11px] text-success flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Applying…
                     </span>
                   )}
                   {status === 'ok' && (
-                    <span className="text-[10px] text-green-700 dark:text-green-400 flex items-center gap-1 font-medium">
-                      <Check className="w-3 h-3" /> Applied!
+                    <span className="text-[11px] text-success flex items-center gap-1 font-medium">
+                      <Check className="w-3 h-3" /> Applied
                     </span>
                   )}
                   {status === 'error' && (
-                    <span className="text-[10px] text-red-600 flex items-center gap-1 font-medium">
-                      Error \u2014 retry
+                    <span className="text-[11px] text-danger flex items-center gap-1 font-medium">
+                      Error — retry
                     </span>
                   )}
                 </div>
               </div>
               {syntaxProblems[blockKey]?.length ? (
-                <div className="px-3 py-2 border-b border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-[11px]">
-                  <div className="font-medium text-red-800 dark:text-red-300 mb-1">
+                <div className="px-3 py-2 border-b border-danger/40 bg-danger-soft text-[11px]">
+                  <div className="font-medium text-danger mb-1">
                     OpenFOAM cannot parse this file:
                   </div>
                   <ul className="space-y-0.5">
@@ -812,17 +813,17 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 </div>
               ) : null}
               {nameProblems[blockKey]?.length ? (
-                <div className="px-3 py-2 border-b border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 text-[11px]">
-                  <div className="font-medium text-amber-800 dark:text-amber-300 mb-1">
+                <div className="px-3 py-2 border-b border-warning/40 bg-warning-soft text-[11px]">
+                  <div className="font-medium text-warning mb-1">
                     Not in this OpenFOAM installation:
                   </div>
                   <ul className="space-y-0.5">
                     {nameProblems[blockKey].slice(0, 4).map((p, i) => (
                       <li key={i} className="font-mono">
-                        <span className="text-red-600 dark:text-red-400">{p.name}</span>
-                        <span className="text-muted-foreground"> · {p.where}</span>
+                        <span className="text-danger">{p.name}</span>
+                        <span className="text-foreground/65"> · {p.where}</span>
                         {p.suggestions.length > 0 && (
-                          <span className="text-muted-foreground"> → {p.suggestions.join(', ')}</span>
+                          <span className="text-foreground/65"> → {p.suggestions.join(', ')}</span>
                         )}
                       </li>
                     ))}
@@ -841,10 +842,10 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           const isCopied = copiedBlock === cbKey;
           elements.push(
             <div key={blockIdx} className="my-2 rounded-md overflow-hidden border bg-black/5 dark:bg-black/30">
-              <div className="px-3 py-1 text-[10px] text-muted-foreground bg-muted/50 border-b font-mono flex items-center justify-between">
-                <span>{lang || 'code'}</span>
+              <div className="px-3 py-1 text-[10px] text-muted-foreground bg-muted/50 border-b font-mono flex items-center justify-between gap-2">
+                <span className="truncate">{lang || 'code'}</span>
                 <button
-                  className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                  className="flex items-center gap-1 rounded-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
                   onClick={() => {
                     navigator.clipboard.writeText(code);
                     setCopiedBlock(cbKey);
@@ -852,7 +853,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                   }}
                   title="Copy"
                 >
-                  {isCopied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                  {isCopied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
                 </button>
               </div>
               <pre className="p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap">{code}</pre>
@@ -984,8 +985,8 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
 
     if (replyTruncated) {
       elements.unshift(
-        <div key="truncated" className="mb-2 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-[11px]">
-          <span className="text-amber-600">⚠️</span>
+        <div key="truncated" className="mb-2 flex items-start gap-2 rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-[11px]">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px text-warning" />
           <span>
             This reply hit the model&apos;s output limit and is <strong>incomplete</strong>. Any file
             below is cut off, so it cannot be applied. Ask for one file at a time, or for a smaller change.
@@ -1004,7 +1005,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           <div key="apply-all" className="mt-2 flex justify-end">
             <Button
               size="sm"
-              className="h-7 text-[11px] px-3 bg-green-600 hover:bg-green-700 text-white"
+              className="h-7 text-[11px] px-3 bg-success text-background hover:bg-success/90"
               onClick={() => applyAllChanges(text, msgIndex)}
               disabled={applyingAll}
             >
@@ -1031,12 +1032,12 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/25 flex items-center justify-center group cursor-grab active:cursor-grabbing transition-shadow duration-150"
+          className="fixed w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter] duration-150 hover:brightness-105"
           style={{ left: 0, top: 0, zIndex: LAUNCHER_Z, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
           title="FOAMy - OpenFOAM Assistant (draggable)"
         >
           <MessageCircle className="w-6 h-6" />
-          <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-background" />
+          <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-success rounded-full border-2 border-background" />
         </button>
       )}
 
@@ -1055,27 +1056,27 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
             onMouseDown={onWinDragStart}
           >
             <div className="flex items-center gap-2 min-w-0">
-              <GripHorizontal className="w-4 h-4 text-muted-foreground/40 flex-shrink-0" />
+              <GripHorizontal className="w-4 h-4 text-muted-foreground/60 flex-shrink-0" />
               <div className="w-7 h-7 rounded-full bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center flex-shrink-0">
                 <Bot className="w-3.5 h-3.5 text-white" />
               </div>
               <div className="min-w-0">
                 <div className="text-sm font-bold leading-tight">FOAMy</div>
-                <div className="text-[9px] text-muted-foreground flex items-center gap-1.5 leading-tight">
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1.5 leading-tight">
                   {caseName ? (
                     <span className="truncate max-w-[100px]">{caseName}</span>
                   ) : (
                     <span>OpenFOAM Assistant</span>
                   )}
                   {modelId && (
-                    <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded bg-blue-100 dark:bg-blue-950/40 text-[8px] font-mono text-blue-700 dark:text-blue-300 flex-shrink-0 truncate max-w-[80px]" title={`${llmProvider.toUpperCase()} / ${modelId}`}>
-                      <CircleDot className={`w-2 h-2 flex-shrink-0 ${savedConfig ? 'text-green-500' : 'text-amber-400'}`} />
+                    <span className="inline-flex items-center gap-1 px-1.5 py-px rounded bg-info-soft text-[10px] font-mono text-info flex-shrink-0 truncate max-w-[92px]" title={`${llmProvider.toUpperCase()} / ${modelId}`}>
+                      <CircleDot className={`w-2.5 h-2.5 flex-shrink-0 ${savedConfig ? 'text-success' : 'text-warning'}`} />
                       {modelId}
                     </span>
                   )}
                   {sessionTokens > 0 && (
-                    <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded bg-muted text-[8px] font-mono flex-shrink-0" title="Tokens used in this session">
-                      <Zap className="w-2 h-2 text-amber-500" />{sessionTokens.toLocaleString('en-US')}
+                    <span className="inline-flex items-center gap-1 px-1.5 py-px rounded bg-muted text-[10px] font-mono flex-shrink-0" title="Tokens used in this session">
+                      <Zap className="w-2.5 h-2.5 text-warning" />{sessionTokens.toLocaleString('en-US')}
                     </span>
                   )}
                 </div>
@@ -1083,22 +1084,22 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
             </div>
             <div className="flex items-center gap-0.5 flex-shrink-0" onMouseDown={e => e.stopPropagation()}>
               <button
-                className={`p-1.5 rounded-md transition-colors ${showSettings ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
+                className={`w-7 h-7 inline-flex items-center justify-center rounded-md transition-colors duration-150 active:bg-accent/70 ${showSettings ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
                 onClick={() => setShowSettings(s => !s)} title="LLM Settings"
               >
                 <Settings className="w-3.5 h-3.5" />
               </button>
               <button
-                className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+                className="w-7 h-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent active:bg-accent/70 transition-colors duration-150"
                 onClick={clearChat} title="Clear chat"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
               <button
-                className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+                className="w-7 h-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent active:bg-accent/70 transition-colors duration-150"
                 onClick={() => setOpen(false)} title="Close"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -1112,11 +1113,15 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     <Plug className="w-3.5 h-3.5 text-muted-foreground" />
                     <span className="text-[11px] font-semibold text-foreground">LLM Configuration</span>
                   </div>
+                  {/* `idle` is genuinely nothing to report — it used to fall
+                      through to the error styling and paint an empty red pill. */}
                   <div className={
-                    'flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded-full ' +
+                    'flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full ' +
                     (connectionStatus === 'ok'
-                      ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                      : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400')
+                      ? 'bg-success-soft text-success'
+                      : connectionStatus === 'error'
+                        ? 'bg-danger-soft text-danger'
+                        : 'hidden')
                   }>
                     {connectionStatus === 'ok' && <><Wifi className="w-2.5 h-2.5" /> Connected</>}
                     {connectionStatus === 'error' && <><WifiOff className="w-2.5 h-2.5" /> Error</>}
@@ -1133,10 +1138,10 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                       <button
                         key={p.id}
                         onClick={() => handleProviderChange(p.id)}
-                        className={`text-[11px] px-2 py-1.5 rounded-lg border transition-all font-medium text-center ${
+                        className={`text-[11px] px-2 py-1.5 rounded-lg border transition-colors duration-150 font-medium text-center ${
                           llmProvider === p.id
                             ? 'bg-primary text-primary-foreground border-primary shadow-sm shadow-primary/25'
-                            : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground hover:border-border'
+                            : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground active:bg-accent/70'
                         }`}
                       >
                         {p.label}
@@ -1155,15 +1160,15 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                         value={llmKey}
                         onChange={e => { setLlmKey(e.target.value); setSavedConfig(false); }}
                         placeholder="sk-... / gsk_... / sk-ant-..."
-                        className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg border border-border bg-background pr-7 focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50"
+                        className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg border border-border bg-background pr-7 transition-colors duration-150 hover:border-foreground/25"
                       />
                       {llmKey && (
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-green-500" title="Key set" />
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-success" title="Key set" />
                       )}
                     </div>
                     {llmKey && (
                       <button
-                        className="px-2 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-red-500 hover:border-red-300 hover:bg-red-50 dark:hover:bg-red-950/20 text-[11px] transition-all"
+                        className="px-2 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-danger hover:border-danger/40 hover:bg-danger-soft text-[11px] transition-colors duration-150"
                         onClick={() => {
                           setLlmKey('');
                           // Persist the removal through the same store the rest
@@ -1195,10 +1200,10 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     value={baseUrl}
                     onChange={e => { setBaseUrl(e.target.value); setSavedConfig(false); }}
                     placeholder={currentPreset?.defaultBaseUrl || 'https://api.example.com/v1'}
-                    className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50"
+                    className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg border border-border bg-background transition-colors duration-150 hover:border-foreground/25"
                   />
                   {llmProvider && !baseUrl.trim() && currentPreset?.defaultBaseUrl && (
-                    <p className="text-[9px] text-muted-foreground/50 mt-1 pl-0.5">
+                    <p className="text-[10px] text-muted-foreground mt-1 pl-0.5">
                       <span className="font-medium">Default:</span> <code className="font-mono">{currentPreset.defaultBaseUrl}</code>
                     </p>
                   )}
@@ -1210,7 +1215,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                   <select
                     value={apiFormat}
                     onChange={e => { setApiFormat(e.target.value); setSavedConfig(false); }}
-                    className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50"
+                    className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-border bg-background text-foreground transition-colors duration-150 hover:border-foreground/25"
                   >
                     <option value="">Auto (from selected provider)</option>
                     {API_FORMATS.map(f => (
@@ -1218,7 +1223,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     ))}
                   </select>
                   {llmProvider && !apiFormat && currentPreset?.defaultApiFormat && (
-                    <p className="text-[9px] text-muted-foreground/50 mt-1 pl-0.5">
+                    <p className="text-[10px] text-muted-foreground mt-1 pl-0.5">
                       <span className="font-medium">Default:</span> {API_FORMATS.find(f => f.value === currentPreset.defaultApiFormat)?.label}
                     </p>
                   )}
@@ -1232,7 +1237,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                       <button
                         onClick={e => { e.stopPropagation(); handleFetchModels(); }}
                         disabled={fetchingModels}
-                        className="text-[10px] text-primary hover:text-primary/80 flex items-center gap-1 font-medium disabled:opacity-50 transition-colors"
+                        className="text-[10px] text-brand hover:text-brand/80 flex items-center gap-1 font-medium disabled:opacity-50 disabled:pointer-events-none transition-colors duration-150"
                       >
                         <RefreshCw className={`w-3 h-3 ${fetchingModels ? 'animate-spin' : ''}`} />
                         {fetchingModels ? 'Fetching...' : 'Fetch available models'}
@@ -1246,11 +1251,11 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                       onChange={e => { setModelId(e.target.value); setShowModelDropdown(true); setSavedConfig(false); }}
                       onFocus={() => { if (fetchedModels.length > 0) setShowModelDropdown(true); }}
                       placeholder={currentPreset?.defaultModel || 'e.g. gpt-4o, claude-sonnet-4-20250514, llama-3.3-70b-versatile'}
-                      className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg border border-border bg-background pr-7 focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50"
+                      className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg border border-border bg-background pr-7 transition-colors duration-150 hover:border-foreground/25"
                     />
                     {fetchedModels.length > 0 && (
                       <button
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
                         onClick={e => { e.stopPropagation(); setShowModelDropdown(d => !d); }}
                       >
                         <ChevronDown className="w-3.5 h-3.5" />
@@ -1265,7 +1270,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                         {/* Opaque background (no backdrop-blur on a sticky
                             element) — see electron/main.js for why. */}
                         <div className="sticky top-0 bg-popover px-2 py-1 border-b border-border/50">
-                          <span className="text-[9px] text-muted-foreground font-medium">{fetchedModels.filter(m => !modelId || m.toLowerCase().includes(modelId.toLowerCase())).length} models</span>
+                          <span className="text-[10px] text-muted-foreground font-medium">{fetchedModels.filter(m => !modelId || m.toLowerCase().includes(modelId.toLowerCase())).length} models</span>
                         </div>
                         {fetchedModels
                           .filter(m => !modelId || m.toLowerCase().includes(modelId.toLowerCase()))
@@ -1273,7 +1278,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                           .map(m => (
                             <button
                               key={m}
-                              className={`block w-full text-left text-[11px] font-mono px-2.5 py-1.5 transition-colors truncate hover:bg-accent ${modelId === m ? 'bg-accent text-accent-foreground' : 'text-foreground'}`}
+                              className={`block w-full text-left text-[11px] font-mono px-2.5 py-1.5 transition-colors duration-150 truncate hover:bg-accent ${modelId === m ? 'bg-accent text-accent-foreground' : 'text-foreground'}`}
                               onClick={() => {
                                 setModelId(m);
                                 setShowModelDropdown(false);
@@ -1290,7 +1295,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     )}
                   </div>
                   {fetchedModels.length > 0 && (
-                    <p className="text-[9px] text-muted-foreground/50 mt-1 pl-0.5">
+                    <p className="text-[10px] text-muted-foreground mt-1 pl-0.5">
                       {fetchedModels.length} models available — type to filter
                     </p>
                   )}
@@ -1313,9 +1318,13 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 </div>
 
                 {!llmProvider && (
-                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/30">
-                    <AlertCircle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
-                    <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-relaxed">Select a provider, enter the API key and model to start using FOAMy.</p>
+                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-warning-soft border border-warning/40">
+                    <AlertCircle className="w-3.5 h-3.5 text-warning mt-px flex-shrink-0" />
+                    {/* The sentence is body copy, so it takes the foreground —
+                        `text-warning` on `warning-soft` measures 2.6:1 in the
+                        light theme. The amber identity is carried by the icon,
+                        the ground and the border instead. */}
+                    <p className="text-[11px] text-foreground/80 leading-relaxed">Select a provider, enter the API key and model to start using FOAMy.</p>
                   </div>
                 )}
               </div>
@@ -1324,8 +1333,8 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
 
           {/* Last error banner */}
           {lastError && !showSettings && (
-            <div className="px-3 py-1.5 bg-red-50 dark:bg-red-950/20 border-b border-red-200 dark:border-red-800/30">
-              <p className="text-[10px] text-red-600 dark:text-red-400 flex items-center gap-1">
+            <div className="px-3 py-1.5 bg-danger-soft border-b border-danger/40">
+              <p className="text-[11px] text-danger flex items-center gap-1.5">
                 <AlertCircle className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate">{lastError}</span>
               </p>
@@ -1335,10 +1344,10 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           {/* Context bar */}
           <div className="px-3 py-2 border-b bg-muted/30 flex items-center gap-2 flex-wrap">
             {activeFile ? (
-              <Badge variant="secondary" className="text-[11px] gap-1 py-0.5 px-2">
-                <FileCode className="w-3.5 h-3.5 text-blue-500" />
+              <Badge variant="secondary" className="text-[11px] gap-1.5 py-0.5 px-2">
+                <FileCode className="w-3.5 h-3.5 text-info" />
                 <span className="font-mono max-w-[140px] truncate">{activeFile.path}</span>
-                <span className="text-green-500 text-[9px] font-medium">AUTO</span>
+                <span className="text-success text-[10px] font-medium tracking-wide">AUTO</span>
               </Badge>
             ) : (
               <span className="text-[11px] text-muted-foreground italic">No file open in editor</span>
@@ -1352,17 +1361,19 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 if (!next) setCaseFilesContext(null);
               }}
               disabled={!caseName || loadingContext}
-              className={`text-[11px] px-2 py-0.5 rounded-md border flex items-center gap-1.5 transition-colors font-medium ${
+              className={`text-[11px] px-2 py-1 rounded-md border flex items-center gap-1.5 transition-colors duration-150 font-medium ${
                 !caseName
-                  ? 'border-muted-foreground/20 text-muted-foreground/40 cursor-not-allowed'
+                  ? 'border-border text-muted-foreground opacity-50 cursor-not-allowed'
                   : autoContext
-                    ? 'bg-orange-100 dark:bg-orange-950/40 border-orange-400 dark:border-orange-600 text-orange-700 dark:text-orange-300'
-                    : 'border-orange-300 dark:border-orange-700 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-950/20'
+                    ? 'bg-brand-soft border-brand/50 text-brand hover:bg-brand-soft/80'
+                    : 'border-brand/35 text-brand hover:bg-brand-soft/60 active:bg-brand-soft'
               }`}
               title={autoContext ? 'FOAMy sees all case files' : 'Click to let FOAMy read all case files'}
             >
-              <FolderSearch className="w-3.5 h-3.5" />
-              {loadingContext ? 'Reading...' : autoContext ? 'Case context ON' : 'Case context'}
+              {loadingContext
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <FolderSearch className="w-3.5 h-3.5" />}
+              {loadingContext ? 'Reading…' : autoContext ? 'Case context ON' : 'Case context'}
             </button>
           </div>
 
@@ -1374,13 +1385,13 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 <p className="text-sm text-center">Hi! I&apos;m <strong>FOAMy</strong></p>
                 <p className="text-xs mt-1 text-center px-4">Ask me anything about OpenFOAM, CFD, case configuration, mesh, boundary conditions...</p>
                 {caseName && (
-                  <Badge variant="secondary" className="mt-2 text-[10px] gap-1">
+                  <Badge variant="secondary" className="mt-2 text-[11px] gap-1.5">
                     <FolderOpen className="w-3 h-3" /> {caseName}
                   </Badge>
                 )}
                 {activeFile && (
-                  <div className="mt-2 text-[10px] text-center text-muted-foreground">
-                    <FileCode className="w-3 h-3 inline mr-1 text-blue-400" />
+                  <div className="mt-2 text-[11px] text-center text-muted-foreground">
+                    <FileCode className="w-3 h-3 inline mr-1 text-info" />
                     I see the file <span className="font-mono font-medium">{activeFile.path}</span> open in editor
                   </div>
                 )}
@@ -1392,7 +1403,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     'How do I interpret residuals in the log?',
                   ].map((q, i) => (
                     <button key={i} onClick={() => { setInput(q); }}
-                      className="block w-full text-left px-3 py-1.5 rounded-lg border hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground">
+                      className="block w-full text-left px-3 py-2 rounded-lg border hover:bg-muted/50 hover:border-brand/40 active:bg-muted transition-colors duration-150 text-muted-foreground hover:text-foreground">
                       {q}
                     </button>
                   ))}
@@ -1414,7 +1425,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                     {renderContent(msg.content, i, msg.truncated === true)}
                   </div>
                   {msg.timestamp && (
-                    <span className="text-[9px] text-muted-foreground/60 mt-0.5 px-1">{msg.timestamp}</span>
+                    <span className="text-[10px] text-muted-foreground mt-1 px-1">{msg.timestamp}</span>
                   )}
                 </div>
                 {msg.role === 'user' && (
@@ -1446,7 +1457,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={activeFile ? `Ask FOAMy... (${activeFile.path})` : 'Ask FOAMy...'}
-                className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm min-h-[38px] max-h-[100px] focus:outline-none focus:ring-1 focus:ring-primary"
+                className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm min-h-[38px] max-h-[100px] transition-colors duration-150 hover:border-foreground/25 disabled:opacity-60 disabled:cursor-not-allowed"
                 rows={1}
                 disabled={loading}
               />
@@ -1454,7 +1465,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 size="sm"
                 onClick={sendMessage}
                 disabled={!input.trim() || loading}
-                className="h-[38px] w-[38px] p-0 rounded-lg bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 flex-shrink-0"
+                className="h-[38px] w-[38px] p-0 rounded-lg bg-gradient-to-r from-orange-500 to-red-600 text-white hover:from-orange-600 hover:to-red-700 flex-shrink-0"
               >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
@@ -1462,12 +1473,15 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
             {(activeFile || (autoContext && caseFilesContext)) && (
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                 {activeFile && (
-                  <span className="text-[9px] text-muted-foreground">
-                    \ud83d\udcc4 <span className="font-mono">{activeFile.path}</span> (auto)
+                  <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                    <FileCode className="w-3 h-3 flex-shrink-0 text-info" />
+                    <span className="font-mono">{activeFile.path}</span> (auto)
                   </span>
                 )}
                 {autoContext && caseFilesContext && (
-                  <span className="text-[9px] text-orange-500">\ud83d\udcc1 Full case context active</span>
+                  <span className="text-[10px] text-brand inline-flex items-center gap-1">
+                    <FolderOpen className="w-3 h-3 flex-shrink-0" /> Full case context active
+                  </span>
                 )}
               </div>
             )}
@@ -1475,11 +1489,11 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
 
           {/* Resize handle */}
           <div
-            className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-end justify-end p-0.5"
+            className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-end justify-end p-0.5 text-muted-foreground/60 hover:text-muted-foreground transition-colors duration-150"
             onMouseDown={onResizeStart}
             title="Drag to resize"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted-foreground/40">
+            <svg width="10" height="10" viewBox="0 0 10 10">
               <path d="M9 1v8H1M9 5v4H5M9 8h-1" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
             </svg>
           </div>

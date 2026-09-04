@@ -640,17 +640,24 @@ export default function FileEditor({ caseName }: { caseName: string }) {
   };
 
   return (
-    <div className="flex gap-3 h-full" style={{ minHeight: '600px' }}>
+    <div className="flex gap-3 h-full min-h-0">
       {/* ═══ File Tree Sidebar ═══ */}
       <Card className="w-72 flex-shrink-0 flex flex-col">
         <div className="px-2 pt-2 pb-0 flex items-center gap-1">
+          {/* Still red, because it deletes results — but outlined rather than
+              filled. As a solid red block it was the loudest thing in the file
+              tree, so the first thing the eye landed on when opening a case was
+              a destructive action rather than the case's files. The colour
+              carries the warning; it does not need the fill as well. It becomes
+              solid on hover, at the moment the pointer is actually on it. */}
           <Button
-            size="sm" variant="destructive" className="h-6 text-[10px] px-2"
+            size="sm" variant="outline"
+            className="h-6 text-[10px] px-2 border-danger/40 text-danger hover:bg-danger hover:text-white hover:border-danger"
             disabled={deletingTimesteps}
             onClick={handleDeleteTimesteps}
-            title="Delete all timestep folders except 0/"
+            title="Delete every timestep folder except 0/"
           >
-            <Timer className="w-3 h-3 mr-0.5" />{deletingTimesteps ? '...' : 'Clean TS'}
+            <Timer className="w-3 h-3 mr-0.5" />{deletingTimesteps ? 'Deleting…' : 'Clean TS'}
           </Button>
           <Button
             size="sm" variant={multiSelectMode ? 'default' : 'ghost'}
