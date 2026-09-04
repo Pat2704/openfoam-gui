@@ -5,6 +5,7 @@ import * as os from 'os';
 import { randomBytes } from 'crypto';
 import {
   boundedInteger,
+  isPhysicalFieldFile,
   shellQuote,
   WslInputError,
   validateCaseName,
@@ -2574,10 +2575,24 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
     const zeroDir = runInWsl(
       `find ${shellQuote(`${casePath}/0`)} -mindepth 1 -maxdepth 1 -type f -printf '%f\\n' 2>/dev/null`
     ).trim();
-    const fieldFiles = zeroDir.split('\n').map(f => f.trim()).filter(f => f && f !== '.' && f !== '..');
+    const allZeroFiles = zeroDir.split('\n').map(f => f.trim()).filter(f => f && f !== '.' && f !== '..');
+    // Only the physical fields — see isPhysicalFieldFile for what the mesher
+    // leaves in here that is not one.
+    const fieldFiles = allZeroFiles.filter(isPhysicalFieldFile);
+
+    if (allZeroFiles.length === 0) {
+      result.warnings.push('Directory 0/ empty or nonexistent');
+      result.success = true;
+      return result;
+    }
 
     if (fieldFiles.length === 0) {
-      result.warnings.push('Directory 0/ empty or nonexistent');
+      // The directory has content, but none of it is a field to check. Say which
+      // it was, so "nothing to validate" does not look like a failure to read.
+      result.warnings.push(
+        `0/ contains no physical fields to check — only mesh bookkeeping written by the mesher `
+        + `(${allZeroFiles.slice(0, 6).join(', ')}${allZeroFiles.length > 6 ? ', …' : ''}).`
+      );
       result.success = true;
       return result;
     }

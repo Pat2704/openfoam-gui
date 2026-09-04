@@ -113,3 +113,49 @@ export function looksLikePath(token: string): boolean {
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
+
+/**
+ * Files that live in 0/ but are not physical fields.
+ *
+ * The boundary-condition check used to validate EVERY regular file in 0/, and
+ * the meshing tools put their own bookkeeping there. On a real snappyHexMesh
+ * case (`combustor`) that meant five of the twelve entries were not physics at
+ * all: `cellLevel` and `pointLevel` are the refinement level of each cell and
+ * point, and `nSurfaceLayers`, `thickness` and `thicknessFraction` are what the
+ * layer-addition stage wrote about the boundary layers it managed to insert.
+ *
+ * They LOOK like fields — `cellLevel` is a `volScalarField` with a
+ * `boundaryField` — so neither the class nor the presence of boundary entries
+ * can tell them apart; only the name can. (Their `dimensions []` is empty, which
+ * corroborates it but is not something to rely on: several genuine fields are
+ * dimensionless too.)
+ *
+ * Reporting them was worse than useless: they are written by the mesher with
+ * `calculated` or `zeroGradient` on every patch, so they either padded the
+ * report with rows the user cannot act on, or — when the mesher had not touched
+ * a patch — raised complaints about a field nobody configured.
+ */
+const NON_PHYSICAL_ZERO_FILES = new Set([
+  // snappyHexMesh — refinement
+  'cellLevel', 'pointLevel', 'surfaceIndex',
+  // snappyHexMesh — layer addition
+  'nSurfaceLayers', 'thickness', 'thicknessFraction',
+  // decomposePar -cellDist, and mesh motion
+  'cellDist', 'meshPhi',
+]);
+
+/**
+ * Is this 0/ entry a field whose boundary conditions are worth checking?
+ *
+ * Also drops the editor and tutorial debris that collects in a case directory —
+ * `U.orig` is in a great many of the shipped tutorials, and validating a backup
+ * copy of a field reports the same problems twice.
+ */
+export function isPhysicalFieldFile(name: string): boolean {
+  if (!name || name.startsWith('.')) return false;
+  if (NON_PHYSICAL_ZERO_FILES.has(name)) return false;
+  // Backups and editor leftovers.
+  if (/(^|\.)(orig|bak|old|save|swp|tmp)$/i.test(name)) return false;
+  if (name.endsWith('~')) return false;
+  return true;
+}

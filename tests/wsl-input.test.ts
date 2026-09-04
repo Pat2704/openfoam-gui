@@ -16,6 +16,7 @@ import {
   WslInputError,
   argumentStaysInside,
   boundedInteger,
+  isPhysicalFieldFile,
   looksLikePath,
   shellQuote,
   validateCaseName,
@@ -284,6 +285,50 @@ describe('looksLikePath', () => {
     for (const t of ['-parallel', '-latestTime', 'fluid', '-np', '4', 'latestTime', '-consistent']) {
       assert.equal(looksLikePath(t), false, t);
     }
+  });
+});
+
+describe('isPhysicalFieldFile', () => {
+  // Which entries of 0/ the boundary-condition check should look at. Grounded
+  // in a real snappyHexMesh case (`combustor`), whose 0/ held twelve files of
+  // which five were written by the mesher rather than by the user.
+  test('accepts the physical fields', () => {
+    for (const f of ['U', 'p', 'p_rgh', 'T', 'k', 'epsilon', 'omega', 'nut', 'nuTilda', 'alphat', 'alpha.water']) {
+      assert.equal(isPhysicalFieldFile(f), true, f);
+    }
+  });
+
+  test('rejects what snappyHexMesh leaves behind', () => {
+    // Refinement levels, and the layer-addition report. Each of these is a real
+    // volScalarField WITH a boundaryField, so only the name can tell them apart.
+    for (const f of ['cellLevel', 'pointLevel', 'surfaceIndex',
+                     'nSurfaceLayers', 'thickness', 'thicknessFraction']) {
+      assert.equal(isPhysicalFieldFile(f), false, f);
+    }
+  });
+
+  test('rejects decomposition and mesh-motion bookkeeping', () => {
+    assert.equal(isPhysicalFieldFile('cellDist'), false);
+    assert.equal(isPhysicalFieldFile('meshPhi'), false);
+  });
+
+  test('rejects backups and editor leftovers', () => {
+    for (const f of ['U.orig', 'p.bak', 'controlDict.old', 'U.save', '.U.swp', 'U~', '.hidden']) {
+      assert.equal(isPhysicalFieldFile(f), false, f);
+    }
+  });
+
+  test('does not reject a real field whose name merely contains a banned word', () => {
+    // The exclusions are whole names and whole extensions, not substrings: a
+    // case may legitimately solve for something called `thicknessRatio` or
+    // `originalU`, and dropping those would hide real boundary conditions.
+    for (const f of ['thicknessRatio', 'originalU', 'cellLevelSet', 'Torig', 'levelSet']) {
+      assert.equal(isPhysicalFieldFile(f), true, f);
+    }
+  });
+
+  test('rejects the empty name', () => {
+    assert.equal(isPhysicalFieldFile(''), false);
   });
 });
 
