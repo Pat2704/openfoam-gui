@@ -2,28 +2,34 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-03, after cutting v2.3.1.
+Last updated: 2026-09-04, after cutting v3.0.0.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v2.3.1 is released.** Everything is committed and pushed to `main`, the tag is
-published, both artifacts are attached, GitHub reports v2.2.0 as the latest
-release, and the repository license is MIT. The working tree is clean and
-`main` is level with `origin/main`; nothing is half-finished waiting for you.
+**v3.0.0 is released.** Everything is committed and pushed to `main`, the tag is
+published, both artifacts are attached, and the repository license is MIT. The
+working tree is clean and `main` is level with `origin/main`; nothing is
+half-finished waiting for you.
 
-**The `v2.3.1` tag builds exactly the artifacts that are attached.** It was put
-on the build commit, not moved onto it afterwards — `git diff v2.3.1 HEAD` was
+It is a MAJOR version because the security model changed. The audit of
+2026-09-03/04 (§2q) closed an agent sandbox escape, an argument-injection hole,
+an endpoint that was unauthenticated outside Electron, and a cross-origin one;
+§2r is the interface round that followed, and §2s the boundary-condition fix
+that closed it out.
+
+**The `v3.0.0` tag builds exactly the artifacts that are attached.** It was put
+on the build commit, not moved onto it afterwards — `git diff v3.0.0 HEAD` was
 empty at the moment of tagging. Keep doing it in that order and the check stays
 a one-liner.
 
 | | |
 |---|---|
-| release commit | `02302fc` — tagged `v2.3.1`, what the attached artifacts were built from |
-| tags | …`v2.2.1` at `d0baf7f`, `v2.3.0` at `1d01a85`, `v2.3.1` at `02302fc` |
-| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v2.3.1 — both artifacts attached |
-| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v2.3.1-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
+| release commit | tagged `v3.0.0` — what the attached artifacts were built from |
+| tags | …`v2.3.0` at `1d01a85`, `v2.3.1` at `02302fc`, `v3.0.0` on the v3 build commit |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v3.0.0 — both artifacts attached |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v3.0.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
@@ -1097,12 +1103,14 @@ whether the CLI is reachable and signed in, which is what to check before
 blaming a prompt — and remember §2f: a detection result obtained from an agent
 shell may be a false positive against what the user's own launch sees.
 
-## 2q. The full audit of 2026-09-03/04 — UNCOMMITTED, awaiting review
+## 2q. The full audit of 2026-09-03/04 — committed, NOT pushed
 
 The user asked for an exhaustive audit and repair pass over the whole project.
-**Everything from it is sitting in the working tree, uncommitted**, because they
-asked to inspect it before anything is committed — which suspends, for this round
-only, the standing rule in §1 about committing every change.
+It was held back for them to inspect first, and then committed on their
+instruction as eleven commits, `b6ba5e4` … `6e83b42`, one per theme.
+**None of it has been pushed**: `main` is twelve commits ahead of `origin/main`,
+and the version is still 2.3.1 on purpose, because the bump belongs to the push
+(§1).
 
 `docs/audit-2026-09-03.md` is the full account: what was wrong, why, and how each
 was verified. Do not re-derive it from the diff. The supporting evidence is in
@@ -1148,6 +1156,90 @@ default is 100 again and not 1. What was NOT verified is the Electron
 main-process work: server lifecycle, the signal handlers, `isAppUrl` and the
 atomic config write are exercised only by launching the GUI, which a session
 cannot do. That is the first thing to try by hand.
+
+## 2r. The UI polish of 2026-09-04 — shipped in v3.0.0
+
+**Read this before touching the interface again, because the first attempt at it
+was thrown away.** A full visual overhaul was written and rejected outright: it
+replaced the app's colourful, technical character with a neutral, minimal,
+monochrome design. The user's words were "non mi piace per niente", and the whole
+thing was reverted to `6e83b42`. It is preserved in a stash
+(`git stash list`, "UI overhaul 2026-09-04 — rejected") purely in case a detail
+is ever wanted; do not restore it wholesale.
+
+**The rule that came out of that: this application is COLOURFUL on purpose, and
+that is not a defect to be cleaned up.** The orange-red of the mark, the green
+of a healthy environment, the three different colours on the case badges, the
+coloured per-action icons — they are the personality. Refine them; never
+flatten them into greys.
+
+So this round changed no colour. What it did:
+
+- **Named the colours the app already used.** `globals.css` gained `brand`,
+  `success`, `warning`, `danger`, `info` and `accent2`, each with a `-soft`
+  ground and a value for BOTH themes. Same hues as before; the point is that a
+  green is now one green, and that each has a real dark-mode value.
+- **Fixed the two places that were genuinely broken in one theme.** The
+  Dashboard's environment strip and the Monitor's status card both used
+  `bg-green-950/20` — a dark-mode value shown in light mode too, where it is a
+  washed sage that reads as "unwell". Note that most other `-50 dark:-950` pairs
+  in the app were already correct; do not "fix" them by reflex.
+- **Made the orange the app's accent where it was previously a neutral.** The
+  active tab underline and the active case chip were `primary`, a near-black
+  that appears nowhere else; they are `brand` now, matching the mark and the
+  launchers.
+
+### The scrolling fix — this is the important one
+
+The user reported that "the scrollbar lags and does not follow the scroll" in
+every section. Two causes, both measured:
+
+1. `src/components/ui/scroll-area.tsx` was Radix's ScrollArea, which hides the
+   native scrollbar and moves its own thumb from JavaScript one frame behind the
+   compositor. **It is now a plain `overflow-y-auto` div.** Same name, same
+   props, every call site unchanged.
+2. Worse, Radix sets `overflow: scroll` unconditionally. The command list's
+   viewport measured 1448px tall around 1448px of content — nothing to scroll,
+   because the panel had no bounded height and had simply grown — but it was
+   still a scroll container, so a wheel event over it was routed there, found
+   nothing to move, and only then chained to the page. `auto` means an element
+   with nothing to scroll is not a scroll container at all.
+
+The layout half of the same bug: `page.tsx` is now `h-screen overflow-hidden`
+with `main` as `flex-1 min-h-0 overflow-y-auto`, so the shell is the viewport and
+the CONTENT scrolls — the header, tabs and status bar stay put. `FILL_HEIGHT_TABS`
+in `page.tsx` names the four tabs that are two-pane workspaces and should fill
+the window; the rest scroll normally. Mesh is deliberately not one of them.
+This also let `foam-browser` stop sizing itself with `calc(100vh - 180px)`, a
+hard-coded guess at the chrome height that any header change would have broken.
+
+Measured after: document does not scroll, zero dead scroll containers, and the
+command list is a 488px pane holding 1448px of content that scrolls natively.
+
+`docs/ui-panels-log.md` records the FOAMy/Claude panel work separately.
+
+## 2s. What 0/ holds that is not a boundary condition — shipped in v3.0.0
+
+The boundary-condition check validated EVERY regular file in `0/`, and the
+meshing tools put their own bookkeeping there. On the user's own `combustor`
+case, five of the twelve entries were not physics: `cellLevel` and `pointLevel`
+are snappyHexMesh's refinement levels, and `nSurfaceLayers`, `thickness` and
+`thicknessFraction` are what its layer-addition stage reported.
+
+**They cannot be told apart by their contents.** `cellLevel` is a
+`volScalarField` with a `boundaryField`, exactly like `U` — so neither the class
+nor the presence of boundary entries distinguishes it. Their `dimensions []` is
+empty, which corroborates but is not safe to rely on, because genuine fields are
+dimensionless too. Only the name works, which is why `isPhysicalFieldFile` in
+`src/lib/wsl-input.ts` is a name list. It lives there rather than in `wsl.ts` so
+it can be unit-tested without pulling in `child_process` and the disk cache.
+
+The exclusions are whole names and whole extensions, never substrings — a case
+may legitimately solve for `thicknessRatio`, and dropping it would hide real
+boundary conditions. There is a test for exactly that.
+
+Verified against the real case: the check now returns `omega, alphat, T, k, p,
+nut, U` and no warnings, where it used to return all twelve.
 
 ## 3. `claude_test`
 

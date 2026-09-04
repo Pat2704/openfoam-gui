@@ -34,3 +34,4 @@ the directory sorts correctly, which makes this table the mapping:
 | `v2.2.1.md` | `v2.2.1` |
 | `v2.3.0.md` | `v2.3.0` |
 | `v2.3.1.md` | `v2.3.1` |
+| `v3.0.0.md` | `v3.0.0` |
