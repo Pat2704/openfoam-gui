@@ -2,16 +2,22 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-04, after republishing v3.0.0 with the composer focus-ring fix.
+Last updated: 2026-09-04, closing v3.0.0 — republished with the composer
+focus-ring fix, and §1 gained the rule about subagents.
 
 ---
 
 ## Where things stand right now (read this first)
 
 **v3.0.0 is released, and it was REPUBLISHED on 2026-09-04** — same version, same
-tag, new binaries. Everything is committed and pushed to `main`, both artifacts
-are attached, and the repository license is MIT. The working tree is clean and
-`main` is level with `origin/main`; nothing is half-finished waiting for you.
+tag, new binaries. Both artifacts are attached, the repository license is MIT,
+and the working tree is clean; nothing is half-finished waiting for you.
+
+Everything is committed and pushed: `main` is level with `origin/main`, the tag
+is where the artifacts were built, and the user closed the session on 2026-09-04
+with "fai quello che serve per chiudere definitivamente questa v3". There is no
+follow-up waiting and nothing was left half-done — the next session starts on a
+finished v3.0.0, not in the middle of it.
 
 The republish carried one fix: the Claude panel’s composer was drawing two
 overlapping focus rings instead of one (§2t). The user asked for the fix without
@@ -31,7 +37,10 @@ that closed it out.
 
 **The `v3.0.0` tag builds exactly the artifacts that are attached** — still true
 after the republish, because the tag was moved with the assets rather than left
-behind them. `git diff v3.0.0 HEAD` is empty. Whenever you replace what is
+behind them. `git diff v3.0.0 HEAD` was empty at the moment the tag moved, and
+anything committed after it is documentation, which §5 keeps out of the
+artifacts — so the check is `git diff v3.0.0 HEAD -- src electron package.json`
+once the tag is no longer the tip. Whenever you replace what is
 attached to a release, the tag moves too, or this stops being a one-liner and
 starts being an archaeology problem.
 
@@ -138,6 +147,31 @@ These are standing instructions, not one-offs:
   when the user says to push, not before.** Work accumulates on the current
   version number and the number changes as part of publishing it — so a series
   of sessions can commit freely without each one inventing a version.
+- **At most TWO subagents at a time, and every one of them keeps a running log.**
+  Asked for on 2026-09-04, after a five-agent review workflow was launched at a
+  two-file layout fix and the user stopped it mid-run: "usa un solo agente", then
+  "al massimo puoi usare 2 subagent per volta, oltre a te". Two is the ceiling on
+  agents running CONCURRENTLY, and it does not count you — you are the third and
+  you stay in the loop. No workflow fan-outs, no fleets, no panels of judges.
+  Most work here is one session doing the work itself; reach for a subagent when
+  something genuinely will not fit in one context, not to go faster.
+
+  **The log is the condition, not a nicety.** Every subagent writes to
+  `docs/agent-log/<short-task-name>.md` and updates it AFTER EACH STEP — not once
+  at the end, which is exactly the case the rule exists for. What goes in it: what
+  it was asked to do, what it has finished, what it found, what it was about to do
+  next, and every file it touched. Written so that a session that has never seen
+  the conversation can open the file and carry on from the last line.
+
+  The reason is interruption. A subagent that dies — killed, out of context, out
+  of usage — takes everything it knew with it, and its work is only recoverable if
+  it wrote it down as it went. When one comes back, READ ITS LOG FIRST and resume
+  from the last entry rather than starting the task again.
+
+  `docs/agent-log/` is gitignored: it is working state, not project state, and the
+  "commit everything" rule above would otherwise fill the history with it.
+  Anything in there that turns out to matter belongs in THIS file, in prose,
+  before the task is called finished.
 - **Never run anything destructive against the user's real cases** (`cavity`,
   `nozzleFlow2D`, `shockTube` in the WSL run dir). Test in `claude_test` (§3).
 - **No `Co-Authored-By` trailers.** The user asked on 2026-09-02 to be the only
