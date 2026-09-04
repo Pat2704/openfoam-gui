@@ -80,6 +80,10 @@ let mainWindow = null;
 let serverProcess = null;
 let serverPort = 0;
 let serverStarting = false;
+/** Set when the server cannot start or dies early, so waitForServer can stop. */
+let serverFailure = '';
+/** True once we are deliberately shutting down — see the server 'exit' handler. */
+let quitting = false;
 
 // Resolve paths (dev vs production)
 const isDev = !app.isPackaged;
@@ -236,7 +240,14 @@ function progress(pct, label) {
 
 /** Creep towards `cap` while we wait for something that has no percentage. */
 function creepTo(cap, label) {
-  progressCap = cap;
+  // A cap only ever moves FORWARD, matching the never-goes-backwards rule
+  // progress() already enforces on the value. Plain assignment meant a later,
+  // lower cap could undo an earlier one: startServer() runs at module load and
+  // usually reaches creepTo(70) before app.whenReady() fires — Chromium
+  // initialisation is the slower of the two — and the whenReady path then set
+  // the cap back to 30, so the bar sat at exactly 30% for the whole server wait
+  // and only jumped when the window loaded.
+  progressCap = Math.max(progressCap, cap);
   if (label) progressLabel = label;
   if (creepTimer) return;
   creepTimer = setInterval(() => {
@@ -274,10 +285,40 @@ function waitForServer(port, host, timeoutMs) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     let timer = null;
+    // One flag, one timer, one scheduler.
+    //
+    // The previous version scheduled a retry from THREE places — the no-status
+    // branch, 'error' and 'timeout' — and `req.destroy()` inside the 'timeout'
+    // handler makes the request emit 'error' as well. One slow response
+    // therefore started TWO polling chains, each of which could split again on
+    // its next timeout: an exponential poll storm against a server that was
+    // merely busy, which is exactly when it could least afford it. Nothing
+    // cleared `timer` either, so polling carried on for the rest of the 60 s
+    // even after the promise had resolved.
+    let settled = false;
+
+    function done(fn, arg) {
+      if (settled) return;
+      settled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      fn(arg);
+    }
+
+    function retry() {
+      if (settled || timer) return;   // idempotent: a second caller is a no-op
+      timer = setTimeout(() => { timer = null; attempt(); }, 60);
+    }
 
     function attempt() {
+      if (settled) return;
+      // The server process dying is an answer, and waiting out the full timeout
+      // for it is 60 seconds of splash screen for a failure already known. See
+      // serverFailure, set by the spawn 'error' and 'exit' handlers.
+      if (serverFailure) {
+        return done(reject, new Error(serverFailure));
+      }
       if (Date.now() - start > timeoutMs) {
-        return reject(new Error('Server did not start within ' + (timeoutMs / 1000) + 's'));
+        return done(reject, new Error('Server did not start within ' + (timeoutMs / 1000) + 's'));
       }
       // 60ms between attempts: the server usually answers within the first few
       // hundred ms, and at 300ms we spent most of the wait sleeping past a
@@ -285,16 +326,13 @@ function waitForServer(port, host, timeoutMs) {
       const req = http.get({ hostname: host, port: port, path: '/', timeout: 1500 }, (res) => {
         res.resume();
         // Any HTTP response means the server is listening.
-        if (res.statusCode) return resolve();
-        timer = setTimeout(attempt, 60);
+        if (res.statusCode) return done(resolve);
+        retry();
       });
-      req.on('error', () => { timer = setTimeout(attempt, 60); });
-      req.on('timeout', () => { req.destroy(); timer = setTimeout(attempt, 60); });
+      req.on('error', retry);
+      req.on('timeout', () => { req.destroy(); retry(); });
     }
     attempt();
-
-    // Cleanup helper (not strictly required, keeps things tidy)
-    Promise.resolve().then(() => {});
   });
 }
 
@@ -395,6 +433,12 @@ async function startServer() {
 
   serverProcess.on('error', (err) => {
     console.error('[main] Failed to spawn server:', err);
+    // Tell waitForServer, which would otherwise sit through the full 60 s
+    // showing a splash screen for a server that was never going to answer.
+    // node.exe can be present and still unstartable — quarantined by antivirus
+    // after extraction, blocked by AppLocker, or a 0-byte file from a partial
+    // unzip — and checkInstallation only tests that the path exists.
+    serverFailure = 'Failed to start the backend server: ' + err.message;
     dialog.showErrorBox(APP_TITLE, 'Failed to start the backend server:\n' + err.message);
   });
 
@@ -402,6 +446,24 @@ async function startServer() {
     console.log('[main] Server process exited. code=', code, 'signal=', signal);
     appendToLogFile('[main] server exited code=' + code + ' signal=' + signal);
     serverProcess = null;
+    if (!serverFailure) {
+      serverFailure = 'The backend server stopped before it was ready ('
+        + (signal ? 'signal ' + signal : 'exit code ' + code) + ').';
+    }
+    // A server we killed ON PURPOSE is not a crash. Without this flag the quit
+    // paths — the startup-timeout dialog does showErrorBox, killServer, quit —
+    // raced their own teardown and showed the user a second dialog saying the
+    // backend had stopped unexpectedly, on the way out of a shutdown they had
+    // already been told about.
+    if (quitting) return;
+    // Before the app has loaded, the STARTUP path owns the reporting: it is
+    // waiting on waitForServer, which now sees `serverFailure` and rejects, and
+    // its catch already shows a dialog naming the failure. Reporting here as
+    // well gave the user two error boxes in a row for one crash — one from this
+    // handler and one from loadApp — each saying something slightly different.
+    // Once the interface is up, nothing else is watching, so this is the only
+    // place that can tell them.
+    if (!appLoading) return;
     // If the server dies while the window is still open, surface it — WITH what
     // it said on the way out, and where the full log is.
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -524,7 +586,60 @@ function warmUpWsl() {
  * Kill the Next.js server and any child processes it spawned.
  * On Windows we must use taskkill /T /F to kill the whole process tree.
  */
+/**
+ * Is this URL our own app, really?
+ *
+ * PARSED, not a string prefix. `url.startsWith('http://127.0.0.1:' + serverPort)`
+ * looks exact and is not: everything up to the first `/`, `?` or `#` is the
+ * authority, so with serverPort 49152 both
+ *
+ *     http://127.0.0.1:49152@evil.example/       (userinfo — the host is evil.example)
+ *     http://127.0.0.1:49152.evil.example/       (a subdomain of evil.example)
+ *
+ * satisfy the prefix while resolving somewhere else entirely. `will-navigate`
+ * would then have loaded that page INSIDE the app window, on the app's origin,
+ * where it can reach every /api route with same-origin credentials.
+ */
+function isAppUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:'
+      && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')
+      && u.port === String(serverPort)
+      && u.username === '' && u.password === '';
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Hand a URL to the OS, but only if it is a kind of URL a link may be.
+ *
+ * shell.openExternal takes ANY scheme, and the deny branches used to pass it
+ * whatever the page asked for. `file:` opens Explorer on an arbitrary path, and
+ * on Windows the handler list for schemes registered by other installed programs
+ * is long and has a poor history. A link in a chat reply or an agent answer is
+ * untrusted text, so the two schemes a link legitimately needs are the two that
+ * are allowed.
+ */
+function openExternalSafely(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      shell.openExternal(url);
+      return;
+    }
+    appendToLogFile('[main] refused to open external URL with scheme ' + u.protocol);
+  } catch (_) {
+    appendToLogFile('[main] refused to open unparseable external URL');
+  }
+}
+
 function killServer() {
+  // From here on, the server exiting is expected — see its 'exit' handler,
+  // which would otherwise tell the user it "stopped unexpectedly" during a
+  // shutdown they asked for.
+  quitting = true;
   if (!serverProcess) return;
   const pid = serverProcess.pid;
   try {
@@ -604,8 +719,26 @@ function writeConfig(config) {
   }
   const file = configFilePath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  // 0o600: readable only by the owning user on platforms that honour it.
-  fs.writeFileSync(file, JSON.stringify(toStore, null, 2), { mode: 0o600 });
+  // Write to a temp file and rename, rather than writing over the real one.
+  //
+  // writeFileSync opens with O_TRUNC, so the file is EMPTY between the open and
+  // the write. saveFoamyConfig in src/lib/foamy-store.ts sends all nine keys on
+  // every settings change, so this rewrite happens on each tweak of the model,
+  // the effort or the provider — and a crash, a power loss or a full disk in
+  // that window left the user with a zero-length config and no API key, which
+  // this store exists precisely to stop them retyping.
+  //
+  // rename within a directory is atomic: the file is either the whole old config
+  // or the whole new one. 0o600 is set on the temp file so the secrets are never
+  // briefly world-readable, and the temp file is cleaned up if anything throws.
+  const tmp = file + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(toStore, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean */ }
+    throw err;
+  }
 }
 
 function registerConfigIpc() {
@@ -672,25 +805,16 @@ function createWindow() {
 
   // Open external (non-app) links in the user's default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (
-      url.startsWith('http://127.0.0.1:' + serverPort) ||
-      url.startsWith('http://localhost:' + serverPort)
-    ) {
-      return { action: 'allow' };
-    }
-    shell.openExternal(url);
+    if (isAppUrl(url)) return { action: 'allow' };
+    openExternalSafely(url);
     return { action: 'deny' };
   });
 
   // Block new-window navigation to anything that isn't our app origin.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const allowed = (
-      url.startsWith('http://127.0.0.1:' + serverPort) ||
-      url.startsWith('http://localhost:' + serverPort)
-    );
-    if (!allowed) {
+    if (!isAppUrl(url)) {
       event.preventDefault();
-      shell.openExternal(url);
+      openExternalSafely(url);
     }
   });
 
@@ -752,7 +876,17 @@ async function loadApp() {
   try {
     await serverReady;
   } catch (err) {
-    dialog.showErrorBox(APP_TITLE, 'Startup failed:\n' + (err && err.message ? err.message : err));
+    // Carry the server's last words here too. The exit handler used to print
+    // them in a dialog of its own, which meant two error boxes for one crash;
+    // now it stays quiet until the app is up, so this message has to be the
+    // complete one.
+    const tail = serverOutput.slice(-12).join('\n');
+    dialog.showErrorBox(
+      APP_TITLE,
+      'Startup failed:\n' + (err && err.message ? err.message : err)
+      + (tail ? '\n\nThe server said:\n' + tail : '')
+      + '\n\nFull log: ' + logFilePath(),
+    );
     killServer();
     app.quit();
     return;
@@ -763,7 +897,29 @@ async function loadApp() {
   creepTo(97);
   mainWindow.webContents.once('dom-ready', () => { stopCreep(); progress(97); });
 
-  await mainWindow.loadURL('http://127.0.0.1:' + serverPort + '/');
+  // loadURL REJECTS if the navigation fails — the server dying in the window
+  // between waitForServer resolving and this call, a connection refused, an
+  // aborted navigation. Unhandled, that rejection escaped this async function
+  // and left the user staring at a splash frozen at 96% with no message and no
+  // way forward, while an unhandled promise rejection took the main process
+  // down behind it. A failure to show the app has to be *said*.
+  try {
+    await mainWindow.loadURL('http://127.0.0.1:' + serverPort + '/');
+  } catch (err) {
+    stopCreep();
+    const detail = err && err.message ? err.message : String(err);
+    appendToLogFile('[main] loadURL failed: ' + detail);
+    const tail = serverOutput.slice(-12).join('\n');
+    dialog.showErrorBox(
+      APP_TITLE,
+      'The interface could not be loaded.\n\n' + detail + '\n\n'
+      + (tail ? 'The server said:\n' + tail + '\n\n' : '')
+      + 'Full log: ' + logFilePath(),
+    );
+    killServer();
+    app.quit();
+    return;
+  }
   // From here the real page owns the window; nothing must try to script the
   // splash that is no longer there.
   stopCreep();
@@ -805,4 +961,56 @@ app.on('before-quit', () => {
 // Belt-and-braces: make sure the server dies if we are killed.
 app.on('will-quit', () => {
   killServer();
+});
+
+/**
+ * The same kill, but survivable from a handler that cannot wait.
+ *
+ * killServer() spawns taskkill asynchronously, which is fine when Electron is
+ * shutting down in an orderly way and the loop is still turning. It is useless
+ * on `process.on('exit')`, where nothing asynchronous will ever run: the call is
+ * made and the process is gone before taskkill is even created.
+ *
+ * That matters because NONE of Electron's quit events fire when the main process
+ * dies abnormally — Ctrl+C in the terminal the folder build was launched from,
+ * End Task in Task Manager, or an uncaught exception. The server is a DETACHED
+ * node.exe, so it does not die with its parent: it stayed alive holding the port,
+ * along with any `wsl.exe` and any solver it had started, invisible, until the
+ * user found it in Task Manager. Starting the app again then bound a new port and
+ * left the old server running beside it.
+ */
+function killServerSync() {
+  quitting = true;
+  const pid = serverProcess && serverProcess.pid;
+  serverProcess = null;
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      require('child_process').spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        windowsHide: true, stdio: 'ignore', timeout: 5000,
+      });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+  } catch (_) { /* nothing left to do at this point */ }
+}
+
+process.on('exit', killServerSync);
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(signal, () => {
+    killServerSync();
+    process.exit(0);
+  });
+}
+
+process.on('uncaughtException', (err) => {
+  // Do not let a bug in the main process leave a detached server behind. The
+  // error is written where it can actually be read afterwards — the packaged
+  // app has no console — and then the app goes down honestly rather than
+  // limping on in a half-initialised state.
+  console.error('[main] uncaught exception:', err);
+  try { appendToLogFile('[main] uncaught exception: ' + (err && err.stack ? err.stack : String(err))); } catch (_) {}
+  killServerSync();
+  process.exit(1);
 });
