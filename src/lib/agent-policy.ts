@@ -26,8 +26,9 @@
 
 import {
   listCases, listDirectory, readFile, writeFile, executeCommandAsync, getCaseInfo,
+  getRunDirectory,
 } from '@/lib/wsl';
-import { validateCaseName, validateRelativePath } from '@/lib/wsl-input';
+import { argumentStaysInside, looksLikePath, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 import {
   ensureFoamIndex, getFoamIndexIfReady, validateDictText, checkDictSyntax, suggest,
 } from '@/lib/foam-index';
@@ -66,6 +67,32 @@ function record(tool: string, summary: string, ok: boolean): void {
  */
 const SCRIPT_COMMANDS = new Set(['Allrun', 'Allclean', 'Allmesh', 'Allpre', 'Allpost']);
 
+/**
+ * The agent may RUN the case's own scripts. It may not WRITE them.
+ *
+ * Without this the allowlist was decorative. `Allrun` is on it, and
+ * normalizeCommand() in src/lib/wsl.ts turns the bare word into `bash ./Allrun`
+ * — so an agent that could also author that file had a general-purpose shell in
+ * two guarded, individually-permitted steps:
+ *
+ *     write_case_file { case: "cavity", path: "Allrun", content: "#!/bin/bash\nrm -rf …" }
+ *     run_openfoam    { case: "cavity", command: "Allrun" }
+ *
+ * Both calls pass every check: "Allrun" is a valid relative path, and "Allrun"
+ * is an allowed command. The claim in this file's header that "there is no free
+ * shell: `rm -rf` is not expressible" was therefore false, and the run-directory
+ * confinement went with it — the script body is ordinary bash and reaches
+ * anything the user can.
+ *
+ * Refusing the write is what closes it while keeping the capability that made
+ * these names worth allowing: the Allrun that SHIPPED with a tutorial is still
+ * runnable, because the agent cannot have been the one to put it there.
+ */
+function isCaseScriptPath(relativePath: string): boolean {
+  const basename = relativePath.split('/').pop() ?? '';
+  return SCRIPT_COMMANDS.has(basename);
+}
+
 /** Fallback for the seconds before the index exists. */
 const CORE_COMMANDS = new Set([
   'blockMesh', 'checkMesh', 'foamRun', 'snappyHexMesh', 'surfaceFeatures',
@@ -90,7 +117,7 @@ export function allowedCommands(): Set<string> {
  * thing to ask for and building it out of allowed pieces is safer than letting
  * the agent write the whole line.
  */
-function checkCommand(raw: string): { ok: true; command: string } | { ok: false; reason: string } {
+function checkCommand(raw: string, caseName: string): { ok: true; command: string } | { ok: false; reason: string } {
   const command = raw.trim();
   if (!command) return { ok: false, reason: 'empty command' };
   if (SHELL_METACHARACTERS.test(command)) {
@@ -120,7 +147,62 @@ function checkCommand(raw: string): { ok: true; command: string } | { ok: false;
         (near.length ? ` — did you mean: ${near.join(', ')}?` : ''),
     };
   }
+
+  // Checking argv[0] is not enough, because the ARGUMENTS decide where an
+  // OpenFOAM utility does its work. Every one of them parses OpenFOAM's own
+  // argList, and argList understands `-case <dir>`: `checkMesh -case /mnt/c/Users`
+  // is an allowlisted executable pointed at the Windows disk, and
+  // `foamDictionary -case … -set …` is an allowlisted executable WRITING there.
+  // The confinement this file promises ("nothing outside $FOAM_RUN is reachable
+  // — not by `..`, not by symlink, not by an absolute path in an argument") was
+  // only true of the paths that went through the validators, and command
+  // arguments did not.
+  //
+  // The test is WHERE A TOKEN RESOLVES, not how it is spelled. Banning `..`
+  // outright was the first attempt and it was too blunt: it took out the whole
+  // two-case family of utilities — `mapFields ../coarse`, `mapFieldsPar`,
+  // `foamCloneCase ../pitzDaily myCase` — none of which is an escape, because a
+  // sibling case is inside $FOAM_RUN, which the agent may already read and write
+  // through list_cases and read_case_file. There is also no other spelling
+  // available: siblings can only be named with `..`, and absolute paths are
+  // refused too, so the ban left no way to express a legitimate operation.
+  //
+  // So each path-shaped token is resolved against the case directory and must
+  // land inside the run directory. `-region fluid` and `-latestTime` are not
+  // path-shaped and are untouched.
+  for (const token of parts.slice(1)) {
+    if (!looksLikePath(token)) continue;
+    const verdict = resolvesInsideRunDir(token, caseName);
+    if (!verdict.ok) return { ok: false, reason: verdict.reason };
+  }
+
   return { ok: true, command };
+}
+
+/**
+ * Does this argument stay inside the run directory?
+ *
+ * The resolution itself is `argumentStaysInside` in src/lib/wsl-input.ts, kept
+ * there because it is pure and therefore testable. This wrapper supplies the
+ * directories and the wording.
+ *
+ * Fails CLOSED: if the run directory cannot be determined, a path-shaped
+ * argument is refused rather than waved through, because this check is the only
+ * thing standing between an allowlisted executable and the rest of the disk.
+ */
+function resolvesInsideRunDir(token: string, caseName: string): { ok: true } | { ok: false; reason: string } {
+  let runDir = '';
+  try { runDir = getRunDirectory().trim().replace(/\/+$/, ''); } catch { runDir = ''; }
+  if (!runDir || !runDir.startsWith('/')) {
+    return { ok: false, reason: `the run directory could not be determined, so the path argument "${token}" cannot be checked — try again in a moment` };
+  }
+  if (!argumentStaysInside(token, `${runDir}/${caseName}`, runDir)) {
+    return {
+      ok: false,
+      reason: `"${token}" points outside the run directory. Everything this agent runs stays under ${runDir}.`,
+    };
+  }
+  return { ok: true };
 }
 
 /**
@@ -206,6 +288,15 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
     case 'write_case_file': {
       const name = validateCaseName(str('case'));
       const path = validateRelativePath(str('path'), 'File path');
+      // See isCaseScriptPath: these are the names run_openfoam executes as shell
+      // scripts, so writing one is writing a command, not a case file.
+      if (isCaseScriptPath(path)) {
+        return {
+          error: `"${path}" is a script this tool can RUN, so it is not something it may write — writing it would ` +
+            'be a way of running arbitrary shell. Put the changes in the case dictionaries instead, or ask the ' +
+            'user to edit the script themselves in the File Editor.',
+        };
+      }
       const content = typeof args.content === 'string' ? args.content : '';
       writeFile(name, path, content);
       return { text: `written: ${name}/${path} (${content.length} bytes)` };
@@ -215,7 +306,7 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
       const name = validateCaseName(str('case'));
       const decision = unrestricted
         ? checkUnrestrictedCommand(str('command'))
-        : checkCommand(str('command'));
+        : checkCommand(str('command'), name);
       if (!decision.ok) return { error: decision.reason };
       if (!decision.command) return { error: 'empty command' };
       const background = args.background === true;
@@ -352,13 +443,10 @@ function summarise(tool: string, args: Record<string, unknown>, result: ToolResu
 }
 
 /**
- * The token the bridge must present.
+ * The token the bridge must present — see src/lib/agent-token.ts.
  *
- * electron/main.js puts it in the server's environment and passes the same
- * value to the agent's MCP config. The server only listens on 127.0.0.1, so
- * this is not defending against the network - it stops another local program
- * from driving the user's cases just because it guessed the port.
+ * Re-exported here because this is where callers expect to find it, but it is
+ * defined apart so that src/lib/claude-cli.ts can hand the same value to the
+ * bridge without importing this whole policy (and with it wsl.ts and the index).
  */
-export function expectedToken(): string {
-  return process.env.OFSTUDIO_AGENT_TOKEN || '';
-}
+export { expectedToken } from '@/lib/agent-token';

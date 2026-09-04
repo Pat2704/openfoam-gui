@@ -19,7 +19,13 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const token = typeof body?.token === 'string' ? body.token : '';
     const expected = expectedToken();
-    if (expected && token !== expected) {
+    // Fail CLOSED. This used to read `if (expected && token !== expected)`, so an
+    // empty expected token skipped the check rather than failing it — and outside
+    // Electron nothing sets OFSTUDIO_AGENT_TOKEN, which meant `npm run dev` and
+    // `npm start` served this endpoint, and every tool behind it, to any local
+    // program that found the port. expectedToken() now always returns a token,
+    // so there is no configuration left in which this is unauthenticated.
+    if (!expected || token !== expected) {
       return NextResponse.json({ error: 'bad or missing token' }, { status: 401 });
     }
 

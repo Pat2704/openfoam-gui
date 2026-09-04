@@ -43,6 +43,7 @@ import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { tmpdir, homedir } from 'os';
 import { randomUUID } from 'crypto';
+import { expectedToken } from '@/lib/agent-token';
 
 // ── Finding the binary ──────────────────────────────────────────────────────
 
@@ -570,7 +571,12 @@ function mcpConfig(unrestricted: boolean): string {
         args: [script],
         env: {
           OFSTUDIO_PORT: String(process.env.PORT || 3000),
-          OFSTUDIO_AGENT_TOKEN: process.env.OFSTUDIO_AGENT_TOKEN || '',
+          // From expectedToken(), not straight from the environment: outside
+          // Electron the variable is unset, and the endpoint now REFUSES an
+          // empty token instead of waiving the check. expectedToken() mints one
+          // for that case, and because the bridge is spawned by this same server
+          // process both halves see the same value.
+          OFSTUDIO_AGENT_TOKEN: expectedToken(),
           // The guard rails, or the absence of them. Passed HERE, in the tool
           // server's environment, so the model cannot ask for the other mode:
           // it only ever writes tool arguments.
