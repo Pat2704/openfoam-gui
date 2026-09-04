@@ -35,12 +35,13 @@ import {
   Wind, Eye, Check, AlertTriangle, RefreshCw, Info,
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
+import { caseNameProblem } from '@/lib/case-name';
 import {
   DEFAULT_MESH, TURBULENCE_MODELS,
   buildField, estimateTurbulence, findSolver, flavourForVersion,
   generateBlockMeshDict, generateControlDict, generateFvSchemes, generateFvSolution,
   generateGravity, generateTransportProperties, generateTurbulenceProperties,
-  generateFieldFile, meshPatches, runCommand, solverChoices, syncFieldPatches,
+  generateFieldFile, meshPatches, meshProblems, runCommand, solverChoices, syncFieldPatches,
   transportFileName, turbulenceFieldNames, turbulenceFileName,
   type FieldConfig, type Flavour, type MeshSpec, type TurbulenceModel,
 } from '@/lib/case-templates';
@@ -315,11 +316,18 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   const problems = useMemo(() => {
     const out: string[] = [];
     const name = caseName.trim();
-    if (!name) out.push('The case has no name.');
-    else if (!/^[A-Za-z0-9._-]+$/.test(name)) out.push('The name may only contain letters, numbers, dot, dash and underscore.');
+    // The same rule the server applies, from the same module — the two used to
+    // be written separately and disagreed, so the wizard approved names like
+    // ".hidden" that creation then refused, and refused names like "café" that
+    // it would have accepted.
+    const nameProblem = caseNameProblem(name);
+    if (nameProblem) out.push(nameProblem);
     else if (existingCases.includes(name)) out.push(`A case called "${name}" already exists — creating will overwrite its files.`);
 
     if (!blockMeshDict.trim()) out.push('system/blockMeshDict is empty, so blockMesh has nothing to build.');
+    // A degenerate, inverted or enormous box is only discovered by blockMesh
+    // otherwise, and it reports it in terms of face normals and cell indices.
+    out.push(...meshProblems(mesh));
     if (fields.length === 0) out.push('No fields in 0/.');
 
     const patchNames = new Set(patches.map(p => p.name));
@@ -349,7 +357,7 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
       out.push(`${p.path}: OpenFOAM cannot parse this file — ${p.message}${p.line ? ` (line ${p.line})` : ''}.`);
     }
     return out;
-  }, [caseName, existingCases, blockMeshDict, fields, patches, turbulence, staleTurbulenceFields, nameProblems, syntaxProblems]);
+  }, [caseName, existingCases, blockMeshDict, mesh, fields, patches, turbulence, staleTurbulenceFields, nameProblems, syntaxProblems]);
 
   const filesToWrite = useMemo(() => {
     const list: { path: string; content: string }[] = [];

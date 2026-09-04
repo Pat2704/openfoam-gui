@@ -29,7 +29,13 @@ export function flavourForVersion(major: number | null | undefined): Flavour {
   // Unknown version: assume modern. Everything from 11 to 14 is modular, and a
   // legacy case on a modular install fails immediately and confusingly, while
   // the reverse at least reads.
-  if (major === null || major === undefined) return 'modular';
+  //
+  // NaN counts as unknown, and has to be tested for rather than fallen through:
+  // `NaN >= 11` is false, so the comparison below would quietly answer "legacy"
+  // — the one answer this function exists to avoid. NaN is not hypothetical
+  // either, it is exactly what the caller computes from a version string with no
+  // digits in it (`parseInt('', 10)`), which is what a failed detection returns.
+  if (major === null || major === undefined || !Number.isFinite(major)) return 'modular';
   return major >= MODULAR_FROM_VERSION ? 'modular' : 'legacy';
 }
 
@@ -179,6 +185,58 @@ export function meshPatches(m: MeshSpec): MeshPatch[] {
 function num(v: number): string {
   // Avoid 0.30000000000000004 in a dictionary a human is going to read.
   return String(Number(v.toFixed(10)));
+}
+
+/**
+ * What is wrong with a mesh, in words, or an empty list if nothing is.
+ *
+ * The wizard used to check names, fields and patches but never the geometry, so
+ * the three ways a box can be nonsense all reached blockMesh instead of the
+ * summary step:
+ *
+ *   - a zero-thickness domain (`x1` left equal to `x0`, easy to do by clearing
+ *     the field, since an empty number input reads back as 0) produced a block
+ *     with no volume, and blockMesh answered with an arithmetic error about a
+ *     face it could not normalise;
+ *   - an inverted domain (`x1 < x0`) produced negative volumes, which blockMesh
+ *     reports much later and in terms of cell indices;
+ *   - a cell count of a few hundred per side is 10^7-10^8 cells, which does not
+ *     fail at all — it takes the machine's memory and the app looks hung.
+ *
+ * Each of those is cheap to detect here and expensive to diagnose there.
+ */
+export function meshProblems(m: MeshSpec): string[] {
+  const out: string[] = [];
+  const axes: [string, number, number][] = [['X', m.x0, m.x1], ['Y', m.y0, m.y1], ['Z', m.z0, m.z1]];
+
+  for (const [axis, lo, hi] of axes) {
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+      out.push(`The ${axis} bounds are not numbers.`);
+    } else if (hi === lo) {
+      out.push(`The domain has no thickness in ${axis} (both bounds are ${num(lo)}).`);
+    } else if (hi < lo) {
+      out.push(`The ${axis} bounds are inverted (${num(lo)} to ${num(hi)}), which makes every cell volume negative.`);
+    }
+  }
+
+  if (!Number.isFinite(m.scale) || m.scale <= 0) {
+    out.push('scale must be a positive number — it multiplies every vertex.');
+  }
+
+  const counts: [string, number][] = [['X', m.nx], ['Y', m.ny], ['Z', m.twoD ? 1 : m.nz]];
+  for (const [axis, n] of counts) {
+    if (!Number.isFinite(n) || n < 1) out.push(`The ${axis} cell count must be at least 1.`);
+  }
+
+  const total = Math.max(1, Math.round(m.nx)) * Math.max(1, Math.round(m.ny))
+    * (m.twoD ? 1 : Math.max(1, Math.round(m.nz)));
+  if (Number.isFinite(total) && total > 20_000_000) {
+    out.push(`That is ${total.toLocaleString('en-US')} cells — blockMesh will most likely run the machine out of memory.`);
+  } else if (Number.isFinite(total) && total > 2_000_000) {
+    out.push(`That is ${total.toLocaleString('en-US')} cells, so blockMesh will take a while and the case will be large.`);
+  }
+
+  return out;
 }
 
 export function generateBlockMeshDict(m: MeshSpec): string {
