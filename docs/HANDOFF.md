@@ -1097,6 +1097,58 @@ whether the CLI is reachable and signed in, which is what to check before
 blaming a prompt — and remember §2f: a detection result obtained from an agent
 shell may be a false positive against what the user's own launch sees.
 
+## 2q. The full audit of 2026-09-03/04 — UNCOMMITTED, awaiting review
+
+The user asked for an exhaustive audit and repair pass over the whole project.
+**Everything from it is sitting in the working tree, uncommitted**, because they
+asked to inspect it before anything is committed — which suspends, for this round
+only, the standing rule in §1 about committing every change.
+
+`docs/audit-2026-09-03.md` is the full account: what was wrong, why, and how each
+was verified. Do not re-derive it from the diff. The supporting evidence is in
+`docs/frontend-audit.md`, `docs/frontend-audit-2.md` and
+`docs/regression-review.md` — raw findings, not all of which were acted on, and
+some of which were investigated and REFUTED. Read the audit doc first; the others
+are working notes.
+
+The five that matter most, because they change what this app is safe to do:
+
+1. **The agent's guarded mode had a complete shell escape.** `Allrun` is an
+   allowed command and `normalizeCommand()` runs it as `bash ./Allrun`, and the
+   agent could also WRITE that file — so two permitted calls gave it arbitrary
+   shell. §2f's claim that "`rm -rf` is not expressible" was false. It may now run
+   those scripts but not write them.
+2. **Command ARGUMENTS were never checked**, only `argv[0]`. Every OpenFOAM
+   utility honours `-case <dir>`, so an allowlisted executable could be aimed at
+   the Windows disk. `-case`, absolute paths and `..` are now refused in
+   arguments. Deliberate consequence: `mapFields ../otherCase` is refused too —
+   that is the confinement working, not a bug.
+3. **`/api/agent/tools` was unauthenticated outside Electron.** An empty expected
+   token skipped the check rather than failing it, and only `main.js` sets the
+   variable. It fails closed now, and `src/lib/agent-token.ts` mints one when the
+   environment does not supply it, so `npm run dev` is not a hole.
+4. **Any web page could drive the API.** `<img src="…/api/wsl?action=killAll">`
+   was enough to kill every solver. `src/middleware.ts` refuses `/api/*` when the
+   browser labels the request cross-origin, and lets header-less non-browser
+   callers (the MCP bridge, the §4 health check) through on purpose.
+5. **A failed `cd` did not stop the command.** `cd <case> && <cmd>` where `<cmd>`
+   starts with `foamSource()` groups as `(cd && source); command`, so a command
+   aimed at a renamed case ran in the shell's default directory instead. In
+   unrestricted mode that is the difference between an error and a loss.
+
+**There are tests now** — there were none. `npm test`, 81 of them, on
+`node --test` with Node's own TypeScript support: no framework, no build step,
+no new dependency. They cover the input validators and the case generator. Two
+real bugs were found *by writing them*. `npm run check` runs them alongside
+typecheck and lint.
+
+Everything was verified against the PACKAGED server, not the dev one (§4, and the
+README's three traps) — including a real 5000-line log proving the `?tail=`
+default is 100 again and not 1. What was NOT verified is the Electron
+main-process work: server lifecycle, the signal handlers, `isAppUrl` and the
+atomic config write are exercised only by launching the GUI, which a session
+cannot do. That is the first thing to try by hand.
+
 ## 3. `claude_test`
 
 A scratch case the user told me to create, at
