@@ -100,7 +100,9 @@ These are standing instructions, not one-offs:
   pair is deliberate: the .exe for a single file, the folder for a startup that
   does not spend 29 seconds unpacking itself. Approved on 2026-08-31 for the
   exe, extended to the zip on 2026-09-02. Earlier binaries stay attached to
-  their GitHub releases if one is ever needed. §4 has the details.
+  their GitHub releases if one is ever needed. §4 has the details — including
+  the same tidy-up inside `dist-electron/`, which is gitignored and will
+  otherwise keep every version ever built.
 - **Commit every change to the working tree, without being asked.** Agreed with
   the user on 2026-09-03, replacing the earlier rule that nothing was committed
   unless asked. If you edited a file — code, docs, this file — the work is not
@@ -1272,6 +1274,20 @@ format's startup cost cannot be fixed from inside the app.
 
 The zip's launch is also the honest answer to "why is startup slow": it is the
 same code, and the only difference is that nothing is unpacked at launch.
+
+**Delete the older versions out of `dist-electron/` when you cut a new one.**
+The artifact names carry the full version (§5), so a build does NOT overwrite
+the previous one — every release leaves its pair behind and the directory grows
+by about 220 MB each time. It had five versions' worth in it at one point.
+After a release there should be exactly one pair there, the one just built,
+alongside `win-unpacked/` and `builder-debug.yml`, which the next build
+regenerates anyway.
+
+This is safe, and it is the same rule as the one in §1 about `Working/`: the
+older binaries are attached to their own GitHub releases, so nothing is lost by
+removing them here — and anything still reachable is reachable from the release
+page, not from this directory. `dist-electron/` is gitignored, so this never
+shows up in `git status` to remind you; it has to be done deliberately.
 
 Nothing in this path re-does work, and it must stay that way:
 
