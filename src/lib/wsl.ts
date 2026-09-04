@@ -2,6 +2,7 @@ import { execSync, execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { randomBytes } from 'crypto';
 import {
   boundedInteger,
   shellQuote,
@@ -43,6 +44,9 @@ import {
 // ── Distro selection (cached) ──
 // Auto-detects an Ubuntu-like distro from `wsl --list -q`, skipping docker-desktop.
 let distroName: string | null = null;
+/** Set when `wsl --list` fails, so the 15 s probe is not repeated per call. */
+let distroFailedAt = 0;
+const DISTRO_RETRY_MS = 5000;
 
 function stripDefaultMarker(s: string): string {
   return s.replace(/^\*+\s*/, '');
@@ -50,8 +54,14 @@ function stripDefaultMarker(s: string): string {
 
 function getDistro(): string {
   if (distroName) return distroName;
+  if (distroFailedAt && Date.now() - distroFailedAt < DISTRO_RETRY_MS) return 'Ubuntu-22.04';
   try {
-    const raw = execSync('wsl --list -q', { windowsHide: true });
+    // execFileSync, not execSync: no shell in the middle. And a TIMEOUT, because
+    // `wsl.exe` blocks while the WSL VM starts — after a resume from hibernate
+    // that can be tens of seconds, and without a bound this synchronous call
+    // holds the server's only thread for as long as it takes, so every request
+    // the page makes during startup queues behind it.
+    const raw = execFileSync('wsl', ['--list', '-q'], { timeout: 15000, windowsHide: true });
     let str: string;
     // WSL on Windows returns UTF-16LE with BOM (FF FE)
     if (raw.length >= 2 && raw[0] === 255 && raw[1] === 254) {
@@ -69,7 +79,19 @@ function getDistro(): string {
       .filter(s => !/docker/i.test(s));
     distroName = lines.find(s => /ubuntu/i.test(s)) || lines[0] || 'Ubuntu-22.04';
   } catch {
-    distroName = 'Ubuntu-22.04';
+    // Return the guess WITHOUT caching it. This used to assign distroName, so a
+    // single failed probe — the app launched while WSL was still starting, which
+    // is the normal case on a cold boot — pinned the app to "Ubuntu-22.04" for
+    // the whole life of the server process. On a machine whose distro is called
+    // anything else, every WSL call then failed for ever, and the only cure was
+    // restarting the app. Leaving it null means the next call asks again —
+    // but not on EVERY call: getDistro() is on the path of every single WSL
+    // invocation, and the probe above has a 15 s timeout, so an unresponsive
+    // `wsl.exe` would otherwise add that timeout to every request in turn.
+    // Remembering the failure for a few seconds keeps a burst to one probe
+    // while still letting the app recover once WSL is up.
+    distroFailedAt = Date.now();
+    return 'Ubuntu-22.04';
   }
   return distroName;
 }
@@ -307,8 +329,34 @@ function persistCache(): void {
 // ── Find the OpenFOAM bashrc file ──
 // If the user has selected a specific version (via setOpenFOAMVersion), uses
 // that bashrc. Otherwise searches common install paths for the first one found.
+/**
+ * How long a FAILED detection is remembered.
+ *
+ * Caching a failure for ever is the bug that was just removed — one probe while
+ * WSL was still starting decided permanently that the machine had no OpenFOAM.
+ * But not remembering it at all is its own problem: `foamSource()` is on the path
+ * of nearly every operation, so with WSL unreachable each request would re-run
+ * the whole detection (several `wsl.exe` invocations, each synchronous and each
+ * blocking the server's only thread) instead of answering from one cached result.
+ *
+ * A few seconds is the middle ground: a burst of calls serving one page load
+ * probes once, and a user who starts WSL and clicks Retry is not made to wait for
+ * a stale "no".
+ */
+const NEGATIVE_CACHE_MS = 5000;
+let bashrcFailedAt = 0;
+let foamEnvFailedAt = 0;
+
+/** Reset by resetCache() so an explicit refresh is never answered from a failure. */
+export function clearNegativeCaches(): void {
+  bashrcFailedAt = 0;
+  distroFailedAt = 0;
+  foamEnvFailedAt = 0;
+}
+
 export function findBashrc(): string {
   if (cachedBashrc !== null) return cachedBashrc;
+  if (bashrcFailedAt && Date.now() - bashrcFailedAt < NEGATIVE_CACHE_MS) return '';
 
   // If a specific version was selected by the user, use it directly.
   if (selectedBashrc) {
@@ -356,8 +404,17 @@ export function findBashrc(): string {
     }
   } catch { /* next */ }
 
-  cachedBashrc = '';
-  persistCache();
+  // A FAILURE is not cached, and this is the same lesson findClaude learned:
+  // storing the empty string here (and persisting it) meant that one probe run
+  // while WSL was still coming up decided, permanently, that this machine has no
+  // OpenFOAM. Every later call short-circuited on the cached '' — foamSource()
+  // returned no prefix, so every command ran without the OpenFOAM environment
+  // and failed with "blockMesh: command not found", and nothing short of
+  // restarting the app could shift it. A wrong "yes" is impossible here; a wrong
+  // "no" was permanent. Leaving cachedBashrc null costs one retry per call until
+  // WSL answers, and then it caches the real answer — bounded by
+  // NEGATIVE_CACHE_MS so an unreachable WSL is not re-probed on every call.
+  bashrcFailedAt = Date.now();
   return '';
 }
 
@@ -418,7 +475,27 @@ done | sort -u
 
 export function setOpenFOAMVersion(bashrcPath: string): boolean {
   if (!bashrcPath || !bashrcPath.startsWith('/') || bashrcPath.includes('..')) return false;
+
+  // The chosen file is SOURCED into every WSL call this app makes from here on
+  // (foamSource, just below), so choosing it is choosing what runs — and the
+  // shape checks above accept any absolute path at all. `/api/wsl` reaches this
+  // over a plain GET, which made it the one endpoint where a request could
+  // install arbitrary code into the app's whole subsequent session.
+  //
+  // The only legitimate values are the ones the detector itself produced, so
+  // that is now the whole rule: it must be one of them. This is not a
+  // normalisation the caller can talk its way around — it is an identity test
+  // against a list this app built by looking at the disk.
+  const known = findOpenFOAMVersions();
+  if (!known.some(v => v.bashrcPath === bashrcPath)) return false;
+
   selectedBashrc = bashrcPath;
+  // An explicit choice must be acted on NOW. Clearing only the positive caches
+  // left a recent failure remembered, so findBashrc() would answer '' from the
+  // negative-cache window and the version the user had just picked was ignored
+  // for the next few seconds — long enough to look like the setting had not
+  // taken.
+  clearNegativeCaches();
   // Reset ALL caches — the new bashrc sources a completely different environment.
   cachedBashrc = null;
   cachedFoamEnv = null;
@@ -445,6 +522,21 @@ export function foamSource(): string {
 // ── Read all OpenFOAM-related env vars in a single WSL call ──
 function getFoamEnv(): Record<string, string> {
   if (cachedFoamEnv) return cachedFoamEnv;
+  if (foamEnvFailedAt && Date.now() - foamEnvFailedAt < NEGATIVE_CACHE_MS) return {};
+
+  // Without a bashrc there is no OpenFOAM environment to read, and running the
+  // probe anyway is how a TEMPORARY failure became a PERMANENT one: on a cold
+  // boot, findBashrc() fails while WSL is still starting, and moments later —
+  // still inside its negative-cache window, so foamSource() is empty without
+  // re-probing — WSL comes up and this probe SUCCEEDS. It then stored a shell
+  // environment with no OpenFOAM in it into `cachedFoamEnv`, which has no
+  // expiry and is persisted to ~/.wslgui-cache.json, and `cachedVersion` became
+  // the sticky string 'Unknown'. The version, the env panel and the
+  // applications browser stayed empty for the rest of the process, and survived
+  // a restart. Returning early keeps the two caches consistent: no bashrc, no
+  // environment, nothing remembered.
+  if (!foamSource()) return {};
+
   try {
     const src = foamSource();
     const output = runInWsl(`${src} env -0`).trim();
@@ -470,7 +562,12 @@ function getFoamEnv(): Record<string, string> {
       persistCache();
       return env;
     } catch {
-      cachedFoamEnv = {};
+      // Not cached, for the same reason as findBashrc above: an empty
+      // environment remembered from one unreachable-WSL moment is indis-
+      // tinguishable from "this installation exports nothing", and it never
+      // retried. Return the empty map, keep cachedFoamEnv null — but remember
+      // the failure briefly, so an unreachable WSL is not re-probed per call.
+      foamEnvFailedAt = Date.now();
       return {};
     }
   }
@@ -479,7 +576,12 @@ function getFoamEnv(): Record<string, string> {
 // ── Run a command with OpenFOAM env loaded, optionally in a workDir ──
 function foamExec(cmd: string, workDir?: string, timeout = 30000): string {
   const src = foamSource();
-  const cd = workDir ? `cd ${shellQuote(workDir)} 2>/dev/null && ` : '';
+  // `cd … || exit 1;` and NOT `cd … && `. What follows is `foamSource()` — which
+  // ends in a `;` — so `cd X && source …; cmd` groups as `(cd && source); cmd`,
+  // and bash happily runs `cmd` after a FAILED cd, in whatever directory the
+  // shell started in. A missing or renamed workDir therefore ran the command
+  // somewhere else instead of failing. `|| exit 1` binds to the cd alone.
+  const cd = workDir ? `cd ${shellQuote(workDir)} || exit 1; ` : '';
   return runInWsl(`${cd}${src}${cmd}`, timeout);
 }
 
@@ -527,6 +629,10 @@ export function setDistro(name: string): string {
   }
   if (distroName !== selected) {
     distroName = selected;
+    // A bashrc path the user picked inside the OLD distro names a file that
+    // need not exist in the new one, and keeping it made every command source
+    // nothing. The choice is meaningful per distro, so it goes with the distro.
+    selectedBashrc = null;
     resetCache();
   }
   return selected;
@@ -537,7 +643,12 @@ export function getOpenFOAMVersion(): string {
   if (cachedVersion) return cachedVersion;
   try {
     const env = getFoamEnv();
-    cachedVersion = env.WM_PROJECT_VERSION || 'Unknown';
+    // 'Unknown' is NOT cached. `cachedVersion` is guarded by a plain
+    // `if (cachedVersion) return`, so storing the failure made it permanent —
+    // one probe taken while WSL was still starting left the app reporting
+    // "Unknown" for the rest of the process, with no way to re-detect.
+    if (!env.WM_PROJECT_VERSION) return 'Unknown';
+    cachedVersion = env.WM_PROJECT_VERSION;
     return cachedVersion;
   } catch {
     return 'Unknown';
@@ -1483,7 +1594,56 @@ export function writeFile(caseName: string, filePath: string, content: string): 
 
   const b64 = Buffer.from(content).toString('base64');
   try {
-    runInWslWithInput(`base64 -d > ${shellQuote(fullPath)}`, b64, 30000);
+    // Decode into a sibling temp file and rename over the target, rather than
+    // redirecting straight onto it.
+    //
+    // `base64 -d > file` truncates `file` as the shell sets the redirect up —
+    // BEFORE a single decoded byte exists. Anything that interrupts the run
+    // between those two moments (WSL restarting, the 30 s timeout, a full disk,
+    // the app being closed) leaves the user's controlDict or 0/U empty, and the
+    // content it held is gone: this is the path the File Editor's Save, FOAMy's
+    // apply buttons and the agent's write_case_file all take.
+    //
+    // rename(2) within one directory is atomic, so the file is either wholly the
+    // old content or wholly the new one.
+    //
+    // NO SHELL VARIABLES HERE, and that is not a style choice. `wsl.exe`
+    // substitutes `$NAME` in the command line it is GIVEN, before bash ever sees
+    // it, so a script written as `T=…; … "$T"` arrives at bash with `$T` already
+    // replaced by nothing — the redirect target is empty and the write fails.
+    // (Verified: `wsl … bash -c 'X=hello; echo "[$X]"'` prints `[]`, while the
+    // same string piped in as base64 prints `[hello]`. That is exactly why every
+    // multi-line script in this file goes through runInWslScript.) The temp name
+    // is therefore generated HERE, in JavaScript, and both paths are literals.
+    const scratch = `${fullPath}.tmp.${randomBytes(6).toString('hex')}`;
+    const quotedDst = shellQuote(fullPath);
+    const quotedTmp = shellQuote(scratch);
+    // Two things the plain redirect used to give us for free, and a rename does
+    // not, so they are restored explicitly:
+    //
+    //   chmod --reference  The old form wrote THROUGH the existing inode and kept
+    //                      its mode. A fresh temp file is 0644, so renaming it
+    //                      over a 0755 script silently drops the executable bit —
+    //                      and a tutorial's `Allrun` that calls `./Allmesh` then
+    //                      dies with "Permission denied" on a file the user had
+    //                      only edited. It fails harmlessly when the target does
+    //                      not exist yet, which is why it is followed by `|| true`.
+    //   mv -T              `mv f d` where d is a DIRECTORY means "move f into d".
+    //                      Without -T, writing to "system" or "0" — a plausible
+    //                      mistake for the agent to make, and one no validator
+    //                      rejects — would quietly succeed, parking the content at
+    //                      `system/system.tmp.xxxx` and reporting it as written.
+    //                      -T (--no-target-directory) makes that an error instead.
+    //
+    // `A && { B; C; } || { cleanup; exit 1; }` — the cleanup runs if the decode
+    // fails or the rename fails, so a failed save never leaves a scratch file
+    // behind, and the non-zero exit is what makes runInWslWithInput throw.
+    runInWslWithInput(
+      `base64 -d > ${quotedTmp} && { chmod --reference=${quotedDst} ${quotedTmp} 2>/dev/null || true; ` +
+        `mv -fT -- ${quotedTmp} ${quotedDst}; } || { rm -f -- ${quotedTmp}; exit 1; }`,
+      b64,
+      30000,
+    );
   } catch (e: any) {
     throw new Error(`Unable to write ${filePath}: ${e.message}`);
   }
@@ -1671,6 +1831,13 @@ exec ${inner}${outputRedirect}
           const workerB64 = Buffer.from(scriptContent).toString('base64');
 
           const launcherContent = `#!/bin/bash
+# Delete this script now, while bash still holds an open descriptor on it.
+# Unlinking an open file is safe on Linux — the inode outlives the name — and
+# doing it FIRST means the scratch file is gone whatever happens below, including
+# the failure paths. The caller cannot do it: it would have to run a command
+# after this one, and the exit status of this launcher is what the caller
+# reports to the user.
+rm -f "/tmp/wslgui_launch_${scriptId}.sh" 2>/dev/null || true
 echo "${workerB64}" | base64 -d > "${tmpScript}"
 chmod +x "${tmpScript}" 2>/dev/null || true
 if command -v setsid >/dev/null 2>&1; then
@@ -1687,17 +1854,54 @@ if [ -s "${pidFile}" ]; then
 else
   echo "BG_PID="
 fi
+# Both scratch files have done their job by here: the pid has been read, and the
+# worker is already running with its own descriptor open on the script. Unlinking
+# a file a running bash still holds open is safe on Linux — the inode outlives the
+# name — so this is the last moment at which they can be removed at all, because
+# the worker ends in exec and nothing of ours survives it to clean up after.
+# Without this every background run left two files in /tmp for ever.
+rm -f "${tmpScript}" "${pidFile}" 2>/dev/null || true
+# And a swept net for the runs that never reached this line — a killed wsl.exe, a
+# distro shut down mid-launch. Bounded, one directory deep, only our own names,
+# and only once they are a day old so a live run is never touched.
+find /tmp -maxdepth 1 -name 'wslgui_*' -mmin +1440 -delete 2>/dev/null || true
 `;
           const launcherB64 = Buffer.from(launcherContent).toString('base64');
 
-          fullCmd = `bash -c 'echo "${launcherB64}" | base64 -d > "/tmp/wslgui_launch_${scriptId}.sh" && bash "/tmp/wslgui_launch_${scriptId}.sh" && rm -f "/tmp/wslgui_launch_${scriptId}.sh" 2>/dev/null || true'`;
+          // `;` rather than `&&`, and the launcher deletes ITSELF (see the first
+          // line of launcherContent above) rather than being deleted by a
+          // trailing command here.
+          //
+          // The obvious version — `bash LAUNCH; s=$?; rm LAUNCH; exit $s` —
+          // cannot work on this path: `wsl.exe` substitutes `$NAME` in the
+          // command line it is given before bash sees it, so `$?` and `$s` are
+          // gone by the time bash parses the line. Only text that goes through
+          // base64 (the launcher itself) may use shell variables.
+          //
+          // Leaving the deletion to the launcher gets both properties anyway:
+          // the cleanup happens on every path, including failure — which the
+          // original `&&` chain skipped, so the failure case was also the one
+          // that leaked — and this command's exit status is simply the
+          // launcher's, with nothing swallowing it. The old trailing `|| true`
+          // reported a launcher that had exited 7 as a success.
+          const launchScript = `/tmp/wslgui_launch_${scriptId}.sh`;
+          fullCmd = `bash -c 'echo "${launcherB64}" | base64 -d > "${launchScript}"; bash "${launchScript}"'`;
         } else {
           fullCmd = `${src}${trimmed}`;
         }
 
         const distro = getDistro();
         const wslArgs = ['-d', distro, '--', 'bash', '-c',
-          `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; cd ${shellQuote(casePath)} 2>/dev/null && ${fullCmd}`,
+          // `cd … || exit 1;` and NOT `cd … && `: fullCmd begins with foamSource(),
+          // which ends in a `;`, so `cd X && source …; blockMesh` grouped as
+          // `(cd && source); blockMesh` — and bash ran the user's command after a
+          // FAILED cd, in whatever directory the shell started in. That is how a
+          // command aimed at a case the user had just renamed ended up executing
+          // against their WSL home instead; in unrestricted mode, where the command
+          // may be an `rm`, it is the difference between an error and a loss.
+          // The cd's own stderr is kept (no 2>/dev/null) because "no such directory"
+          // is exactly what the user needs to be told here.
+          `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; cd ${shellQuote(casePath)} || exit 1; ${fullCmd}`,
         ];
         const proc = spawn('wsl', wslArgs, {
           env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
@@ -1784,7 +1988,7 @@ export function getProcesses(): string {
   // disappears just because cwd resolution had a bad day.
   const script = `#!/bin/bash
 ps -e -o user= -o pid= -o %cpu= -o %mem= -o vsz= -o rss= -o stat= -o time= -o etimes= -o command= |
-grep -E "foamRun|decompressPar|reconstructPar|simpleFoam|icoFoam|pimpleFoam|snappyHexMesh|blockMesh|checkMesh|wslgui_bg_" |
+grep -E "foamRun|decomposePar|reconstructPar|simpleFoam|icoFoam|pimpleFoam|snappyHexMesh|blockMesh|checkMesh|wslgui_bg_" |
 grep -v grep |
 while IFS= read -r line; do
   pid=$(printf '%s' "$line" | awk '{print $2}')
@@ -1881,9 +2085,32 @@ export function getCaseLog(caseName: string, logFile: string, tail = 100): strin
   const safeLogName = validateLogName(logFile);
   const safeTail = boundedInteger(tail, 100, 1, 50000);
   const logPath = safeLogName === 'log' ? `${casePath}/log` : `${casePath}/log.${safeLogName}`;
-  const cmd = safeTail >= 50000 ? `cat -- ${shellQuote(logPath)}` : `tail -n ${safeTail} -- ${shellQuote(logPath)}`;
+  // Always `tail`, never `cat`.
+  //
+  // The old form switched to `cat` at safeTail >= 50000 — which is precisely
+  // what the residual chart asks for on every refresh (monitor.tsx sends
+  // maxLines=50000). On a solve that has been running for hours the log is
+  // hundreds of MB, so each refresh read the WHOLE file, synchronously, blocking
+  // every other request in the server; and once the file passed runInWsl's 50 MiB
+  // maxBuffer, execFileSync threw and the catch below turned that into
+  // "Log not found: …" — the chart stopped working and blamed a missing file.
+  //
+  // `tail -n N` returns exactly the same bytes as `cat` for any log with at most
+  // N lines, and the correct last N for a longer one, so nothing is lost. The
+  // trailing `tail -c` bounds the pathological case of 50000 very long lines,
+  // keeping the result comfortably inside maxBuffer.
+  const MAX_LOG_BYTES = 40 * 1024 * 1024;
+  // The missing-file case is an explicit `test`, not a `|| echo` after the
+  // pipeline: a pipeline's status is its LAST command's, and the trailing
+  // `tail -c` succeeds even when the first tail found nothing to read — so the
+  // fallback would never have fired, and a missing log would have come back as
+  // an empty string instead of a message.
+  const quotedLog = shellQuote(logPath);
+  const cmd =
+    `if [ -f ${quotedLog} ]; then tail -n ${safeTail} -- ${quotedLog} 2>/dev/null | tail -c ${MAX_LOG_BYTES};` +
+    ` else echo ${shellQuote(`Log not found: ${safeLogName}`)}; fi`;
   try {
-    return runInWsl(`${cmd} 2>/dev/null || echo ${shellQuote(`Log not found: ${safeLogName}`)}`, safeTail > 1000 ? 120000 : 30000);
+    return runInWsl(cmd, safeTail > 1000 ? 120000 : 30000);
   } catch {
     return `Log not found: ${safeLogName}`;
   }
@@ -2766,8 +2993,23 @@ export function resetCache() {
   cachedTutDir = null;
   cachedFoamEnv = null;
   cachedVersion = null;
+  // The list of installed OpenFOAMs belongs to a DISTRO, and resetCache's only
+  // caller that matters is setDistro. Leaving it behind meant the Settings
+  // version dropdown went on offering the previous distro's installations after
+  // a switch — and picking one set selectedBashrc to a path that does not exist
+  // in the new distro, so every command then failed to source anything.
+  cachedFoamVersions = null;
+  // NOTE: selectedBashrc is deliberately NOT cleared here. It is the user's
+  // explicit version choice, and keeping it across a cache reset is the whole
+  // point of the v1.4 fix that stopped a transient WSL failure from silently
+  // re-detecting a different OpenFOAM (and with it a different run directory,
+  // which makes the user's cases appear to vanish). Only setDistro clears it,
+  // because only a distro change makes the path meaningless.
   runDirVerified = false;
   tutDirVerified = false;
+  // An explicit refresh must never be answered out of a remembered failure —
+  // "Retry" has to actually retry.
+  clearNegativeCaches();
   try { fs.unlinkSync(DISK_CACHE_PATH); } catch { /* best effort */ }
 }
 

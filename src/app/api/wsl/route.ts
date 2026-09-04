@@ -228,9 +228,15 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    resetCache();
 
     if (body.action === 'fullStatus') {
+      // resetCache() belongs INSIDE the branch that wanted it. Called before the
+      // action was looked at, it threw away every resolved path — and deleted the
+      // on-disk cache file — for any POST at all, including ones that go on to
+      // return 400. The next request then had to re-detect the distro, the
+      // bashrc, the run and tutorial directories from scratch, several seconds of
+      // synchronous WSL calls, for a request that did nothing.
+      resetCache();
       const status = wslCheck();
       let version = 'N/A';
       let runDir = 'N/A';
