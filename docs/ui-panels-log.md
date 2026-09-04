@@ -194,6 +194,45 @@ strength (the composer footnote, the turn duration, the account-menu footer, the
 sign-in version line). Grip and resize handles `/40` → `/60`, and the resize
 handle brightens on hover. Composer placeholder `/60` → `/70`.
 
+## The composer drew two rings — 2026-09-04
+
+Reported by the user: clicking into the Claude panel to type lit up TWO
+overlapping orange rectangles, one hugging the text row and a bigger one around
+the whole composer. Only the bigger one was wanted — it is the one that also
+encloses the model menu, the reasoning menu, the guard toggle and the send
+button, which is the whole point of drawing the ring on the box.
+
+**The inner one was not written on purpose. It was the shared ring, arriving
+where the code had asked it not to.** The composer wrapper already carried
+`focus-within:outline-2 focus-within:outline-brand`, and the textarea inside it
+already carried `focus:outline-none` to stay out of the way. The suppression
+never worked, and here is why:
+
+> `:focus-visible { outline: 2px solid var(--brand) }` in `globals.css` sits
+> OUTSIDE every cascade layer. Tailwind puts its utilities in `@layer utilities`.
+> An unlayered author declaration beats a layered one no matter how specific the
+> layered selector is — so `focus:outline-none` lost, silently, and the browser
+> painted the shared ring on the textarea as well.
+
+Specificity is the wrong lever here and `!important` is the wrong fix. The
+opt-out has to live at the same cascade level as the rule it opts out of, so
+`globals.css` gained `.no-focus-ring:focus-visible { outline: none }` directly
+beneath it, and the textarea carries `no-focus-ring` instead of the utility that
+was doing nothing.
+
+Measured in the packaged build at `127.0.0.1:3117`, light theme, composer
+focused: textarea `outline-style: none`, wrapper `2px solid` in exactly
+`var(--brand)`, 86px tall — the text row plus the three controls. Tab off the
+textarea and the model button still gets its own ring, so nothing was lost for
+keyboard users; only the duplicate went.
+
+**The trap generalises.** Every other `focus:outline-none` in the app
+(`command-panel.tsx`, `file-editor.tsx`, `monitor.tsx`, `ui/toast.tsx`) is
+equally inert for the same reason. They were left alone deliberately — there the
+shared ring is the only focus indicator those controls have, and removing it
+would cost keyboard users something real. If one of them ever needs to go, it
+needs `no-focus-ring` and a replacement indicator, not another dead utility.
+
 ## Launchers
 
 Both are `w-14 h-14 rounded-full shadow-lg hover:shadow-xl`, both use

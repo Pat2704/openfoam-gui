@@ -2,16 +2,26 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-04, after cutting v3.0.0.
+Last updated: 2026-09-04, after republishing v3.0.0 with the composer focus-ring fix.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v3.0.0 is released.** Everything is committed and pushed to `main`, the tag is
-published, both artifacts are attached, and the repository license is MIT. The
-working tree is clean and `main` is level with `origin/main`; nothing is
-half-finished waiting for you.
+**v3.0.0 is released, and it was REPUBLISHED on 2026-09-04** — same version, same
+tag, new binaries. Everything is committed and pushed to `main`, both artifacts
+are attached, and the repository license is MIT. The working tree is clean and
+`main` is level with `origin/main`; nothing is half-finished waiting for you.
+
+The republish carried one fix: the Claude panel’s composer was drawing two
+overlapping focus rings instead of one (§2t). The user asked for the fix without
+a version bump — "aggiornare solo i file della release mantenendo v3" — so the
+assets on the v3.0.0 release were replaced with `gh release upload --clobber` and
+the `v3.0.0` tag was force-moved onto the new build commit, with their explicit
+approval, so that the invariant below still holds. **Republishing is the exception,
+not the pattern**: it only works because the change is presentation-only and nobody
+can be running a build of v3.0.0 that behaves differently in any way that matters.
+Anything with behaviour in it gets a number of its own.
 
 It is a MAJOR version because the security model changed. The audit of
 2026-09-03/04 (§2q) closed an agent sandbox escape, an argument-injection hole,
@@ -19,10 +29,11 @@ an endpoint that was unauthenticated outside Electron, and a cross-origin one;
 §2r is the interface round that followed, and §2s the boundary-condition fix
 that closed it out.
 
-**The `v3.0.0` tag builds exactly the artifacts that are attached.** It was put
-on the build commit, not moved onto it afterwards — `git diff v3.0.0 HEAD` was
-empty at the moment of tagging. Keep doing it in that order and the check stays
-a one-liner.
+**The `v3.0.0` tag builds exactly the artifacts that are attached** — still true
+after the republish, because the tag was moved with the assets rather than left
+behind them. `git diff v3.0.0 HEAD` is empty. Whenever you replace what is
+attached to a release, the tag moves too, or this stops being a one-liner and
+starts being an archaeology problem.
 
 | | |
 |---|---|
@@ -1243,6 +1254,40 @@ boundary conditions. There is a test for exactly that.
 Verified against the real case: the check now returns `omega, alphat, T, k, p,
 nut, U` and no warnings, where it used to return all twelve.
 
+## 2t. One focus ring on the composer, not two — republished in v3.0.0
+
+The user reported that clicking into the Claude panel to type lit up two
+overlapping orange rectangles: one around the text row, one around the whole
+composer. They asked to keep the bigger one — the box that also holds the model
+menu, the reasoning menu and the guard toggle — and drop the other.
+
+**Nobody wrote the second ring. It was the app’s shared one, landing where the
+code had explicitly asked it not to.** `globals.css` has a single
+`:focus-visible { outline: 2px solid var(--brand) }` so that "where am I" is
+answered the same way everywhere (§2r), and it sits OUTSIDE every cascade layer.
+Tailwind v4 puts its utilities in `@layer utilities`. **An unlayered author
+declaration beats a layered one however specific the layered selector is** — so
+the `focus:outline-none` on the composer textarea had never done anything, and
+the shared ring was painted on the textarea on top of the wrapper’s own.
+
+The fix is an opt-out at the same cascade level as the rule it opts out of:
+`.no-focus-ring:focus-visible { outline: none }`, written directly under the
+shared rule, and `no-focus-ring` on the textarea in place of the dead utility.
+Not `!important`, and not a more specific selector — neither addresses why the
+utility lost.
+
+Measured in the packaged build (`PORT=3117` against `win-unpacked`, light theme,
+composer focused): textarea `outline-style: none`, wrapper `2px solid` in exactly
+`var(--brand)` and 86px tall, which is the text row plus the three controls.
+Tab off the textarea and the model button still gets its own ring — the shared
+rule is untouched, only one element opts out of it.
+
+`docs/ui-panels-log.md` carries the longer version, including why the other five
+`focus:outline-none` in the app were left alone: they are equally inert, but
+there the shared ring is the only focus indicator those controls have.
+
+---
+
 ## 3. `claude_test`
 
 A scratch case the user told me to create, at
@@ -1436,6 +1481,17 @@ the canonical filenames to the tags as they were actually published.
   user how to tell two identically named downloads apart. The user caught it.
   A filename is how someone tells two downloads apart; it carries the whole
   version or it is wrong.
+- **An unlayered rule in `globals.css` silently beats any Tailwind utility.**
+  `:focus-visible { outline: 2px solid var(--brand) }` is written outside every
+  `@layer`, and Tailwind v4 puts its utilities inside `@layer utilities`; the
+  cascade gives unlayered author styles priority over layered ones regardless of
+  specificity. So `focus:outline-none` on an element does nothing at all, and it
+  fails QUIETLY — the class is in the DOM, the rule is in the stylesheet, and the
+  ring is on screen anyway. It cost a duplicated focus ring on the Claude
+  composer that shipped in v3.0.0 (§2t). To suppress the shared ring, add a class
+  to the unlayered block next to the rule itself (`.no-focus-ring:focus-visible`)
+  — raising specificity does not help, and `!important` hides the reason. The
+  same applies to anything else ever added unlayered to that file.
 - **Declined by the user, do not re-propose**: auto-hiding `empty`/`wedge`
   patches in the mesh viewer, even though they are 91–99.95% of their cases.
 
