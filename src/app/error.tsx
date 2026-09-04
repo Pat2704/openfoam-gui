@@ -41,6 +41,15 @@ export default function GlobalError({
             Try again
           </Button>
           <Button
+            // A FULL reload, deliberately, and not router.push('/').
+            //
+            // This is the error boundary: we are here because the React tree
+            // threw, and a client-side navigation keeps that same tree — along
+            // with whatever state got it into this condition. "Try again" beside
+            // it is already the soft path (`reset()` re-renders the segment);
+            // this button is the one the user reaches for when that did not
+            // work, and its value is precisely that it throws everything away.
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
             onClick={() => { window.location.href = '/'; }}
             variant="outline"
             size="sm"

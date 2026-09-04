@@ -267,9 +267,18 @@ export default function Dashboard({
       } else {
         // Rollback: restore the case
         setCases(prevCases);
-        toast.error('Error');
+        const detail = await res.json().catch(() => ({} as { error?: string }));
+        toast.error(detail?.error ? `Could not delete "${name}": ${detail.error}` : `Could not delete "${name}"`);
       }
-    } catch { toast.error('Error'); }
+    } catch (e: unknown) {
+      // This branch was missing its rollback, and it is the one that fires when
+      // WSL is unreachable or the request never completes. The case had already
+      // been removed from the list optimistically, so it stayed gone from the
+      // UI while still existing on disk: the user was told "Error" — with no
+      // subject — and saw the case vanish, which reads as a delete that worked.
+      setCases(prevCases);
+      toast.error(`Could not delete "${name}": ${e instanceof Error ? e.message : 'the app could not reach the server'}`);
+    }
     setDeleting(null);
   };
 
@@ -498,12 +507,31 @@ export default function Dashboard({
             ) : (
               <div className="space-y-1">
                 {cases.map(c => (
+                  // Opening a case is the app's primary action and was reachable
+                  // only with a mouse: a bare <div onClick>, absent from the tab
+                  // order and announced as nothing. It cannot become a <button>
+                  // — it contains the rename and delete buttons, and nesting
+                  // those is invalid — so it takes the role explicitly, with the
+                  // keyboard behaviour a button would have given for free.
                   <div
                     key={c.name}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all hover:bg-accent/50 ${
+                    role="button"
+                    tabIndex={0}
+                    aria-current={selectedCase === c.name ? 'true' : undefined}
+                    aria-label={`Open case ${c.name}`}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       selectedCase === c.name ? 'bg-accent ring-1 ring-primary/50' : ''
                     }`}
                     onClick={() => onSelectCase(c.name)}
+                    onKeyDown={(e) => {
+                      // Space must not scroll the list, and neither key should
+                      // fire when the event came from one of the nested buttons.
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelectCase(c.name);
+                      }
+                    }}
                   >
                     {/* Icon + Name */}
                     <Box className="w-4 h-4 text-primary flex-shrink-0" />
@@ -544,27 +572,36 @@ export default function Dashboard({
                       <Button
                         size="sm" variant="ghost" className="h-7 w-7 p-0 text-primary"
                         onClick={(e) => { e.stopPropagation(); onSelectCase(c.name); }}
+                        title="Open case"
+                        aria-label={`Open case ${c.name}`}
                       >
                         <Terminal className="w-3 h-3" />
                       </Button>
                       <Button
-                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-blue-500 hover:text-blue-700 hover:bg-blue-50"
+                        // `hover:bg-blue-50` is a near-white chip, which is what
+                        // this button flashed in dark mode. A translucent tint of
+                        // the icon's own colour reads correctly in both themes.
+                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10"
                         onClick={(e) => { e.stopPropagation(); setCloneDialogCase(c.name); setCloneNewName(c.name + '_copy'); }}
                         title="Clone case"
+                        aria-label={`Clone case ${c.name}`}
                       >
                         <GitBranch className="w-3 h-3" />
                       </Button>
                       <Button
-                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-amber-600 hover:text-amber-500 hover:bg-amber-500/10"
                         onClick={(e) => { e.stopPropagation(); setRenameDialogCase(c.name); setRenameNewName(c.name); }}
                         title="Rename case"
+                        aria-label={`Rename case ${c.name}`}
                       >
                         <Pencil className="w-3 h-3" />
                       </Button>
                       <Button
-                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-500 hover:text-red-600 hover:bg-destructive/10"
                         onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete "${c.name}"?`, { title: 'Delete case', confirmLabel: 'Delete', destructive: true })) handleDeleteCase(c.name); }}
                         disabled={deleting === c.name}
+                        title="Delete case"
+                        aria-label={`Delete case ${c.name}`}
                       >
                         <Trash2 className="w-3 h-3" />
                       </Button>

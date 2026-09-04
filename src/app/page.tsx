@@ -56,6 +56,13 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
   const isDark = mounted && resolvedTheme === 'dark';
+  // The keyboard shortcut below is registered once and must still see the
+  // CURRENT theme; keeping it in a ref avoids re-binding the window listener on
+  // every theme change just to keep a closure fresh. Written in an effect, not
+  // during render — a ref assignment in the render body is exactly what
+  // react-hooks/refs forbids.
+  const isDarkRef = useRef(isDark);
+  useEffect(() => { isDarkRef.current = isDark; }, [isDark]);
   const [activeTab, setActiveTab] = useState('dashboard');
   /** Bumped whenever the case list changes from outside the Dashboard. */
   const [caseListVersion, setCaseListVersion] = useState(0);
@@ -141,7 +148,14 @@ export default function Home() {
       // Ctrl+B → toggle dark/light mode
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault();
-        setTheme(isDark ? 'light' : 'dark');
+        // Read the theme through the ref, not from the closure. This effect is
+        // registered once with an empty dependency list, so `isDark` inside it
+        // was frozen at its first-render value — which is `false`, because
+        // `mounted` is still false on that render. Ctrl+B therefore set "dark"
+        // every time and could never switch back; the toolbar button worked,
+        // which is what made it look like a shortcut problem rather than a
+        // stale-closure one.
+        setTheme(isDarkRef.current ? 'light' : 'dark');
         return;
       }
       // Ctrl+/  →  toggle shortcuts dialog

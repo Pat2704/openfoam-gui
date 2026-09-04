@@ -95,8 +95,12 @@ export default function FileEditor({ caseName }: { caseName: string }) {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
         if (currentFile && !saving) {
-          saveFileRef.current();
-          toast.success('File saved (Ctrl+S)');
+          // No toast here. saveFile() already reports both outcomes, and this
+          // one fired the instant the request was SENT — it did not await
+          // anything — so a save that failed told the user twice that it had
+          // worked: once here, wrongly, and then again from saveFile's own
+          // error toast, contradicting it.
+          void saveFileRef.current();
         }
       }
     };
@@ -207,6 +211,18 @@ export default function FileEditor({ caseName }: { caseName: string }) {
       toggleSelectionRef.current(filePath);
       return;
     }
+    // Opening another file used to overwrite the editor unconditionally, so a
+    // click in the tree threw away unsaved edits without a word — the state was
+    // already tracked (isModified) and simply never consulted here. The dot in
+    // the header said the file was modified right up until the moment the edits
+    // ceased to exist.
+    if (filePath !== currentFile && fileContent !== originalContent) {
+      const ok = await confirmDialog(
+        `"${currentFile}" has unsaved changes. Opening "${filePath}" will discard them.`,
+        { title: 'Unsaved changes', confirmLabel: 'Discard and open', destructive: true },
+      );
+      if (!ok) return;
+    }
     // Check the cache first — if the file has already been read, show it instantly
     const cached = fileCacheRef.current.get(filePath);
     if (cached !== undefined) {
@@ -254,8 +270,16 @@ export default function FileEditor({ caseName }: { caseName: string }) {
         fileCacheRef.current.set(currentFile, fileContent);
         toast.success(`Saved: ${currentFile}`);
         fetchCaseInfo();
-      } else toast.error('Error saving');
-    } catch { toast.error('Error saving'); }
+      } else {
+        // Say WHAT went wrong. "Error saving" is the same message for a
+        // read-only file, a full disk, a case deleted underneath the editor and
+        // WSL having stopped — and the server already sends a usable reason.
+        const detail = await res.json().catch(() => ({} as { error?: string }));
+        toast.error(detail?.error ? `Could not save: ${detail.error}` : 'Could not save the file');
+      }
+    } catch (e: unknown) {
+      toast.error(`Could not save the file: ${e instanceof Error ? e.message : 'the app could not reach the server'}`);
+    }
     setSaving(false);
   };
 
@@ -587,10 +611,28 @@ export default function FileEditor({ caseName }: { caseName: string }) {
             >
               <Pencil className="w-3 h-3" />
             </button>
-            <Trash2
-              className="w-3 h-3 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 cursor-pointer"
-              onClick={(e) => { e.stopPropagation(); deleteSingle(itemPath); }}
-            />
+            {/* A real <button>, and it asks first. This was a bare <Trash2> SVG
+                with an onClick: unreachable from the keyboard, nameless to a
+                screen reader, and — unlike the folder delete a few lines above,
+                which has always confirmed — it deleted the file the moment it
+                was clicked. It sits directly beside the row that opens the file
+                and only appears on hover, so a mis-aimed click destroyed a file
+                with no warning and no undo. */}
+            <button
+              type="button"
+              className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 mr-1"
+              title={`Delete ${item.name}`}
+              aria-label={`Delete ${item.name}`}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (await confirmDialog(`Delete "${item.name}"? This cannot be undone.`,
+                  { title: 'Delete file', confirmLabel: 'Delete', destructive: true })) {
+                  deleteSingle(itemPath);
+                }
+              }}
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
           </div>
         );
       }
@@ -780,10 +822,23 @@ export default function FileEditor({ caseName }: { caseName: string }) {
                           <File className="w-3 h-3" />
                           <span className="truncate">{item.name}</span>
                         </button>
-                        <Trash2
-                          className="w-3 h-3 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 cursor-pointer"
-                          onClick={(e) => { e.stopPropagation(); deleteSingle(item.path); }}
-                        />
+                        {/* Same fix as the tree above: a real button, named, and
+                            it asks before destroying the file. */}
+                        <button
+                          type="button"
+                          className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                          title={`Delete ${item.name}`}
+                          aria-label={`Delete ${item.name}`}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (await confirmDialog(`Delete "${item.name}"? This cannot be undone.`,
+                              { title: 'Delete file', confirmLabel: 'Delete', destructive: true })) {
+                              deleteSingle(item.path);
+                            }
+                          }}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
                       </div>
                     );
                   })}

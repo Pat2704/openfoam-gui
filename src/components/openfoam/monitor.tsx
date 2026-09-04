@@ -377,7 +377,7 @@ export default function Monitor({ caseName, active = true }: {
       const res = await fetch(`/api/wsl?action=kill&pid=${pid}`);
       const data = await res.json();
       if (data.killed) {
-        toast.success(`PID ${pid} killato (SIGKILL)`);
+        toast.success(`PID ${pid} stopped (SIGKILL)`);
       } else {
         toast.error(`PID ${pid}: ${data.result}`);
         fetchProcesses();
@@ -931,7 +931,21 @@ export default function Monitor({ caseName, active = true }: {
                         allowDataOverflow
                       />
                       <Tooltip
-                        contentStyle={{ fontSize: 11, backgroundColor: 'hsl(var(--popover))', border: '1px solid hsl(var(--border))', borderRadius: 6 }}
+                        // The tokens in globals.css are complete colours —
+                        // `--popover: oklch(1 0 0)` — not the bare HSL triplets
+                        // the `hsl(var(--x))` idiom expects. Wrapping them
+                        // produced `hsl(oklch(1 0 0))`, which is not a valid
+                        // colour, so the browser dropped both declarations and
+                        // the tooltip had NO background: its text drew straight
+                        // over the residual curves and was unreadable exactly
+                        // when it was wanted, on a busy part of the chart.
+                        contentStyle={{
+                          fontSize: 11,
+                          backgroundColor: 'var(--popover)',
+                          color: 'var(--popover-foreground)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 6,
+                        }}
                         formatter={(value: number) => value.toExponential(3)}
                         labelFormatter={(label: number) => `Time = ${label}`}
                       />

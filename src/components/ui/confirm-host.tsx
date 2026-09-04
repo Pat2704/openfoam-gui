@@ -84,12 +84,35 @@ export function ConfirmHost() {
   const [closing, setClosing] = React.useState<PendingConfirm | null>(null)
   const shown = current ?? closing
 
+  /**
+   * One answer per dialog.
+   *
+   * Every answer used to arrive TWICE. The buttons call settle() directly, and
+   * Radix then closes the dialog, which fires onOpenChange(false) — and that
+   * called settle(false) again. The second call shifted the queue a second time,
+   * so with two confirmations pending, answering the first one silently resolved
+   * the SECOND as "cancel": its dialog never appeared and the action it guarded
+   * was quietly dropped. When the queue was empty the second call still ran
+   * setClosing(null), which threw away the entry being held for the exit
+   * animation — the blank flash the `closing` state exists to prevent.
+   *
+   * The flag is reset when the next dialog opens, below.
+   */
+  const settledRef = React.useRef(false)
+
   const settle = React.useCallback((value: boolean) => {
+    if (settledRef.current) return
+    settledRef.current = true
     const entry = queue.shift()
     setClosing(entry ?? null)
     if (entry) entry.resolve(value)
     notify()
   }, [])
+
+  // A new dialog is a new question, and may be answered.
+  React.useEffect(() => {
+    if (current) settledRef.current = false
+  }, [current])
 
   return (
     <AlertDialog
