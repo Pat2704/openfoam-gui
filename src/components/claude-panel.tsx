@@ -957,9 +957,13 @@ export default function ClaudePanel() {
           {ready && (
             <div className="px-3 pb-3 pt-1">
               {/* The composer reads as ONE field, so the app's shared focus ring
-                  goes on the box rather than on the textarea inside it — same
-                  2px brand outline at the same offset, just around the thing the
-                  user is actually typing into. */}
+                  goes on the box rather than on the textarea inside it — one 2px
+                  brand outline around everything the user is composing with, the
+                  model and reasoning menus included.
+                  The textarea opts out with `no-focus-ring` and NOT with a
+                  utility: the shared rule in globals.css is unlayered, so it beat
+                  the `focus:outline-none` that used to be here and drew a second,
+                  smaller rectangle inside this one. */}
               <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#26251F] shadow-sm transition-colors duration-150 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand">
                 <textarea
                   ref={inputRef}
@@ -971,7 +975,7 @@ export default function ClaudePanel() {
                   placeholder={caseName ? `Ask Claude to work on ${caseName}…` : 'Ask Claude…'}
                   rows={1}
                   disabled={running}
-                  className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm min-h-[38px] max-h-[120px] focus:outline-none placeholder:text-muted-foreground/70 disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="no-focus-ring w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm min-h-[38px] max-h-[120px] placeholder:text-muted-foreground/70 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
                 <div className="flex items-center gap-1 px-2 pb-2" onClick={e => e.stopPropagation()}>
                   {/* Model */}

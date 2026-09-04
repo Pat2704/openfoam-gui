@@ -283,6 +283,15 @@
   border-radius: 4px;
 }
 
+/* The one deliberate opt-out, and it has to live here rather than on the
+   element. The rule above sits outside every cascade layer, and an unlayered
+   declaration beats a Tailwind utility however specific — so a
+   `focus:outline-none` written on the element itself is silently ignored.
+   Anything whose ring is drawn by the box around it says so with this. */
+.no-focus-ring:focus-visible {
+  outline: none;
+}
+
 /* ══ Motion ══
    Short, and only where it explains a change. Nothing runs on its own: an
    engineer watching a solve should not have the interface moving at them. */
