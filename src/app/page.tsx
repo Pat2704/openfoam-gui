@@ -76,7 +76,26 @@ export default function Home() {
     setVisitedTabs(prev => (prev.includes(activeTab) ? prev : [...prev, activeTab]));
   }, [activeTab]);
   // Tailwind's `hidden` (display:none) rather than unmounting.
-  const paneClass = (id: string) => (activeTab === id ? undefined : 'hidden');
+  /**
+   * Tabs whose content is a WORKSPACE rather than a document.
+   *
+   * These four are two-pane layouts — a tree or a list beside an editor, a
+   * terminal or a viewport — and they should fill the window and scroll their
+   * own panes, the way an IDE does. The others (Dashboard, the wizard, the
+   * Monitor) read top to bottom and scroll normally inside `main`.
+   *
+   * Naming them here is what lets the fill-height ones stop guessing: the file
+   * browser used to size itself with `calc(100vh - 180px)`, a hard-coded
+   * assumption about how tall the header and tabs are, which silently went wrong
+   * the moment either changed.
+   *
+   * Mesh is deliberately NOT in this set: the 3D viewport has its own
+   * user-draggable height and the checkMesh and boundary-condition reports stack
+   * below it, so that tab is a column that scrolls, not a pane that fills.
+   */
+  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'applications', 'src']);
+  const paneClass = (id: string) =>
+    activeTab !== id ? 'hidden' : FILL_HEIGHT_TABS.has(id) ? 'h-full' : undefined;
   // Open cases: array of names. First element is the active one.
   const [openCases, setOpenCases] = useState<string[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -175,8 +194,14 @@ export default function Home() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // The window, not a document: the shell is exactly the viewport and the
+  // CONTENT scrolls inside it, so the header, the tab bar and the status bar
+  // stay put. Before this the page itself grew — a case with a long command
+  // list made it 1860px tall in a 900px window — so scrolling carried the
+  // navigation off the top of the screen and every scroll repainted the whole
+  // tree.
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="h-screen overflow-hidden flex flex-col bg-background">
       {/* Header — NOTE: keep this background fully opaque (bg-card, not
           bg-card/80 + backdrop-blur-sm). Under Electron we run with GPU
           acceleration disabled, and a blurred backdrop on a sticky element
@@ -232,29 +257,46 @@ export default function Home() {
           </div>
           {/* Open cases tabs */}
           <div className="flex items-center gap-1.5 max-w-[50%] overflow-x-auto">
-            {openCases.map(name => (
-              <button
-                key={name}
-                onClick={() => {
-                  // Bring this case to front as active
-                  setOpenCases(prev => [name, ...prev.filter(c => c !== name)]);
-                }}
-                className={`flex items-center gap-1 sm:gap-1.5 text-[11px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded-full border transition-colors flex-shrink-0 ${
-                  name === selectedCase
-                    ? 'bg-primary/10 border-primary text-primary font-medium'
-                    : 'bg-muted/50 border-transparent text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              >
-                <Cpu className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                <span className="font-mono max-w-[80px] sm:max-w-[120px] truncate">{name}</span>
-                <span
-                  className="ml-0.5 text-muted-foreground hover:text-foreground cursor-pointer"
-                  onClick={(e) => handleCloseCase(name, e)}
+            {/* The open cases. Two changes: the active one is marked in the
+                app's brand orange rather than the neutral primary, so it matches
+                the tab underline and the mark in the corner; and the close
+                control is a real sibling BUTTON. It used to be a <span onClick>
+                nested inside the chip's own <button> — invalid HTML, which
+                browsers resolve by dropping it out of the tab order entirely, so
+                a case could not be closed from the keyboard at all. */}
+            {openCases.map(name => {
+              const active = name === selectedCase;
+              return (
+                <div
+                  key={name}
+                  className={`group flex items-center gap-1 sm:gap-1.5 text-[11px] sm:text-xs pl-1.5 sm:pl-2.5 pr-1 py-1 rounded-full border transition-colors flex-shrink-0 ${
+                    active
+                      ? 'bg-brand-soft border-brand/50 text-brand font-medium'
+                      : 'bg-muted/50 border-transparent text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
                 >
-                  <X className="w-3 h-3" />
-                </span>
-              </button>
-            ))}
+                  <button
+                    type="button"
+                    onClick={() => setOpenCases(prev => [name, ...prev.filter(c => c !== name)])}
+                    className="flex items-center gap-1 sm:gap-1.5 min-w-0 outline-none"
+                    aria-current={active ? 'true' : undefined}
+                    title={`Switch to ${name}`}
+                  >
+                    <Cpu className="w-2.5 h-2.5 sm:w-3 sm:h-3 flex-shrink-0" />
+                    <span className="font-mono max-w-[80px] sm:max-w-[120px] truncate">{name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleCloseCase(name, e)}
+                    className="rounded-full p-0.5 opacity-60 transition-opacity hover:opacity-100 hover:bg-background/60 focus-visible:opacity-100"
+                    title={`Close ${name}`}
+                    aria-label={`Close ${name}`}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       </header>
@@ -268,7 +310,22 @@ export default function Home() {
                 <TabsTrigger
                   key={tab.id}
                   value={tab.id}
-                  className="relative rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-3 py-2.5 text-sm gap-1.5 transition-colors"
+                  title={tab.label}
+                  /* The active tab is marked in the app's OWN orange — the
+                     colour of the mark in the corner — rather than the neutral
+                     near-black `primary`, which appears nowhere else and made
+                     the main navigation the least characterful thing on screen.
+                     It is not colour alone: the active tab is also darker and
+                     semibold, and the inactive ones are muted until hovered, so
+                     the current section is legible without relying on hue. */
+                  /* The `!` is doing real work. The shared TabsTrigger carries
+                     `dark:data-[state=active]:border-input`, which has the same
+                     specificity as anything written here, so which one wins came
+                     down to the order Tailwind happened to emit them in — and it
+                     emitted theirs last, leaving the underline the input grey in
+                     dark mode. Checked by reading the computed border colour
+                     rather than by eye, twice. */
+                  className="relative rounded-none border-b-2 border-transparent px-3 py-2.5 text-sm gap-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent/40 data-[state=active]:border-b-brand! data-[state=active]:bg-transparent! data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
                 >
                   {tab.icon}
                   <span className="hidden sm:inline">{tab.label}</span>
@@ -280,7 +337,9 @@ export default function Home() {
       </div>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-[1800px] mx-auto w-full px-3 sm:px-4 py-4">
+      {/* min-h-0 is what lets this shrink below its content so it can scroll;
+          without it a flex child refuses to and pushes the shell instead. */}
+      <main className="flex-1 min-h-0 overflow-y-auto max-w-[1800px] mx-auto w-full px-3 sm:px-4 py-4">
         {visitedTabs.includes('dashboard') && (
           <div className={paneClass('dashboard')}>
             <Dashboard

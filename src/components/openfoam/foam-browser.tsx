@@ -125,7 +125,7 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
     // right each have their own ScrollArea/overflow, so opening a large file in
     // the reader does NOT expand the layout or push the tree out of view — the
     // tree stays scrollable on its own regardless of what's open in the reader.
-    <div className="flex gap-3 w-full" style={{ height: 'calc(100vh - 180px)', minHeight: '480px' }}>
+    <div className="flex gap-3 w-full h-full min-h-0">
       {/* ═══ Browser Sidebar ═══ */}
       <Card className="w-80 flex-shrink-0 flex flex-col overflow-hidden">
         <CardHeader className="pb-2 pt-3 px-3 flex-shrink-0">
