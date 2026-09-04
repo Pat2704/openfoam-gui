@@ -91,6 +91,40 @@ function lineClass(line: string): string {
  */
 const MAX_COLOURED_LINES = 3000;
 
+/**
+ * How much of the session the terminal keeps.
+ *
+ * Nothing used to bound either dimension. `lines` grew by one entry per command
+ * for as long as the panel was mounted, and each entry's `output` grew with
+ * everything that command streamed — the server stops a single command at 5 MiB,
+ * so a working session of twenty meshing and solving runs could hold well over
+ * a hundred megabytes of text in React state, all of it retained because the
+ * user had scrolled past it rather than because anyone would read it again.
+ * The symptom is not a crash but a slow slide: every keystroke in the input
+ * re-renders a component holding all of it.
+ *
+ * Both caps keep the END, which is the part that matters — a solver's last
+ * lines say why it stopped. Dropping is announced in the transcript rather than
+ * done silently, because output disappearing without explanation is worse than
+ * output that is admittedly incomplete.
+ */
+const MAX_TRANSCRIPT_ENTRIES = 100;
+const MAX_ENTRY_OUTPUT_CHARS = 2_000_000;
+const TRUNCATION_NOTICE = '\n[… earlier output dropped to keep the terminal responsive …]\n';
+
+/** Keep the tail of a single command's output, with a visible marker. */
+function capOutput(text: string): string {
+  if (text.length <= MAX_ENTRY_OUTPUT_CHARS) return text;
+  return TRUNCATION_NOTICE + text.slice(text.length - MAX_ENTRY_OUTPUT_CHARS);
+}
+
+/** Keep the most recent commands. */
+function capEntries<T>(entries: T[]): T[] {
+  return entries.length <= MAX_TRANSCRIPT_ENTRIES
+    ? entries
+    : entries.slice(entries.length - MAX_TRANSCRIPT_ENTRIES);
+}
+
 function OutputBlock({ text }: { text: string }) {
   const lines = React.useMemo(() => text.split('\n'), [text]);
   if (lines.length > MAX_COLOURED_LINES) {
@@ -407,7 +441,7 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
       historyIdx: -1,
       input: '',
       running: true,
-      lines: [...prev.lines, { command: trimmed, output: '', success: false, timestamp: new Date().toLocaleTimeString() }],
+      lines: capEntries([...prev.lines, { command: trimmed, output: '', success: false, timestamp: new Date().toLocaleTimeString() }]),
     }));
 
     // Append whatever has arrived since the last frame to the entry being
@@ -421,7 +455,7 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
         const updated = [...prev.lines];
         const i = updated.length - 1;
         if (i < 0) return prev;
-        updated[i] = { ...updated[i], output: updated[i].output + chunk };
+        updated[i] = { ...updated[i], output: capOutput(updated[i].output + chunk) };
         return { ...prev, lines: updated };
       });
       // Scrolling is handled by the effect above, which runs after the text is
@@ -495,7 +529,9 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
         if (i >= 0) {
           // A background command streams nothing and reports one line, which
           // arrives on the end event instead.
-          const body = streamed ? updated[i].output + tail : finalOutput;
+          // Capped here too: `finalOutput` arrives whole on the end event and
+          // has not been through the streaming path's cap.
+          const body = capOutput(streamed ? updated[i].output + tail : finalOutput);
           updated[i] = { ...updated[i], output: body, success, exitCode };
         }
         return { ...prev, lines: updated, running: false };

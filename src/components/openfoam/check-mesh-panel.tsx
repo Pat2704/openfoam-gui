@@ -8,7 +8,7 @@
  * both the panel and its data disappear when the case changes.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
@@ -27,6 +27,10 @@ export default function CheckMeshPanel({ caseName }: { caseName: string }) {
   const [checkMeshLoading, setCheckMeshLoading] = useState(false);
   const [showCheckMesh, setShowCheckMesh] = useState(false);
 
+  /** The case on screen now — a checkMesh is a long WSL round trip, and its
+   *  answer used to be stored whatever case the user had moved on to. */
+  const currentCaseRef = useRef(caseName);
+
   const runCheckMeshAction = useCallback(async () => {
     if (!caseName) return;
     setCheckMeshLoading(true);
@@ -34,7 +38,22 @@ export default function CheckMeshPanel({ caseName }: { caseName: string }) {
     setCheckMeshResult(null);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=checkMesh`);
-      const data = await res.json();
+      const raw = await res.json();
+      // Superseded by a case switch while this was in flight.
+      if (currentCaseRef.current !== caseName) return;
+      // Same shape guard as the boundary-condition panel. The route answers
+      // `{ error: "…" }` on failure, which has neither `overallStats` nor
+      // `failedChecks`, and the render reads `.length` on both — so an error
+      // response threw a TypeError out of render and took the tab down. Worse
+      // here, because `meshOk` is undefined on that object and the banner above
+      // renders on `!meshOk`: the user was briefly shown "Mesh issues detected"
+      // about a check that had never run, and then the panel crashed.
+      const data: CheckMeshData = (raw && Array.isArray(raw.overallStats) && Array.isArray(raw.failedChecks))
+        ? raw
+        : {
+            success: false, meshOk: false, overallStats: [], failedChecks: [],
+            raw: String(raw?.error || 'checkMesh could not be run.'),
+          };
       setCheckMeshResult(data);
       if (!data.success) {
         toast.error('checkMesh failed: ' + (data.raw || 'unknown error'));
@@ -51,8 +70,10 @@ export default function CheckMeshPanel({ caseName }: { caseName: string }) {
   }, [caseName]);
 
   useEffect(() => {
+    currentCaseRef.current = caseName;
     setShowCheckMesh(false);
     setCheckMeshResult(null);
+    setCheckMeshLoading(false);
   }, [caseName]);
 
   if (!caseName) return null;

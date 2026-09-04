@@ -613,17 +613,37 @@ export default function MeshViewer({ caseName, active = true }: {
       if (spinId !== null) cancelAnimationFrame(spinId);
       mount.removeEventListener('pointerdown', syncControlsRect, true);
       controls.dispose();
+      // Disposing a material does NOT dispose the textures it points at — three
+      // leaves those to the caller. The vertex labels are sprites whose material
+      // carries a supersampled CanvasTexture each, so every teardown that did
+      // not walk the maps left those textures resident on the GPU.
+      const disposeMaterial = (mat: THREE.Material) => {
+        for (const key of ['map', 'alphaMap', 'bumpMap', 'normalMap', 'specularMap', 'envMap'] as const) {
+          const texture = (mat as unknown as Record<string, THREE.Texture | null>)[key];
+          texture?.dispose();
+        }
+        mat.dispose();
+      };
       for (const root of [group, labels]) {
         root.traverse(o => {
           const m = o as THREE.Mesh & { material?: THREE.Material | THREE.Material[] };
           m.geometry?.dispose();
           const mat = m.material;
-          if (Array.isArray(mat)) mat.forEach(x => x.dispose());
-          else mat?.dispose();
+          if (Array.isArray(mat)) mat.forEach(disposeMaterial);
+          else if (mat) disposeMaterial(mat);
         });
       }
       gizmo.dispose();
       gizmoRef.current = null;
+      // `renderer.dispose()` releases three's own objects but does NOT give the
+      // WebGL context back — that waits for the garbage collector, which is under
+      // no obligation to hurry. A browser allows only a handful of live contexts
+      // (around 16 in Chromium) and silently drops the OLDEST when a new one
+      // exceeds the limit. Mounting this viewer that many times in a session
+      // therefore killed it: the canvas went black or stopped updating, and it
+      // stayed that way until the whole app was restarted. forceContextLoss()
+      // hands the context back immediately and deterministically.
+      renderer.forceContextLoss();
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       rendererRef.current = null;

@@ -8,7 +8,7 @@
  * changing case clears it.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -27,6 +27,18 @@ export default function BCValidationPanel({ caseName }: { caseName: string }) {
   const [bcLoading, setBcLoading] = useState(false);
   const [showBC, setShowBC] = useState(false);
 
+  /**
+   * The case this panel is showing right now.
+   *
+   * The check is a WSL round trip of several seconds, and its result used to be
+   * stored unconditionally when it came back — so switching case while one was
+   * running dropped the OLD case's verdict into the NEW case's panel, under the
+   * new case's name, with nothing to indicate it. The reset effect below could
+   * not help: it runs at the moment of the switch, and the stale response
+   * arrives after it.
+   */
+  const currentCaseRef = useRef(caseName);
+
   const validateBCAction = useCallback(async () => {
     if (!caseName) return;
     setBcLoading(true);
@@ -34,10 +46,23 @@ export default function BCValidationPanel({ caseName }: { caseName: string }) {
     setBcResult(null);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=validateBC`);
-      const data = await res.json();
+      const raw = await res.json();
+      // The user moved on while this was in flight; this answer is about a case
+      // that is no longer on screen.
+      if (currentCaseRef.current !== caseName) return;
+      // Normalise before it reaches state. On any server-side failure the route
+      // answers `{ error: "…" }` — no `fields`, no `meshPatches`, and crucially
+      // no `warnings` — and the render below reads `bcResult.warnings.length`
+      // unconditionally. Storing the error object therefore threw a TypeError
+      // out of render and took the whole tab down through the error boundary:
+      // the user asked for a check and the app disappeared. Anything unexpected
+      // now becomes a well-formed "it failed, here is why" result.
+      const data: BCData = (raw && Array.isArray(raw.fields) && Array.isArray(raw.warnings) && Array.isArray(raw.meshPatches))
+        ? raw
+        : { success: false, fields: [], meshPatches: [], warnings: [String(raw?.error || 'The boundary-condition check could not be run.')] };
       setBcResult(data);
       if (!data.success) {
-        toast.error('BC validation failed');
+        toast.error(data.warnings[0] || 'BC validation failed');
       } else {
         const totalPatches = data.fields.reduce((s: number, f: BCData['fields'][number]) => s + f.patches.length, 0);
         const invalidPatches = data.fields.reduce(
@@ -53,8 +78,12 @@ export default function BCValidationPanel({ caseName }: { caseName: string }) {
   }, [caseName]);
 
   useEffect(() => {
+    currentCaseRef.current = caseName;
     setShowBC(false);
     setBcResult(null);
+    // Also clear the spinner: a check whose answer is discarded as stale would
+    // otherwise leave the panel looking busy for ever.
+    setBcLoading(false);
   }, [caseName]);
 
   if (!caseName) return null;
