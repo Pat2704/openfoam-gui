@@ -233,7 +233,14 @@ npm run electron:build     # → dist-electron/OpenFOAMStudio-v<version>-portabl
 ```
 
 Other commands: `npm run dev` (browser, hot reload, port 3000) ·
-`npm run check` (typecheck + lint) · `npm start` (built server, no Electron).
+`npm test` (unit tests) · `npm run check` (typecheck + lint + tests) ·
+`npm start` (built server, no Electron).
+
+The tests run on `node --test` with Node's own TypeScript support, so there is no test
+framework to install and no build step — `npm test` works on a fresh clone. They cover
+the parts where a mistake is silent: the input validators that everything reaching
+`wsl.exe` passes through, and the case generator, whose output has to be accepted by
+two incompatible OpenFOAM layouts (≤10 and 11+).
 
 Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 `electron/electron-builder.yml` and `electron/scripts/prepare-resources.js`.

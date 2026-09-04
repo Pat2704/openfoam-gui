@@ -15,7 +15,8 @@
     "release:check": "node scripts/check-release.js",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
-    "check": "npm run typecheck && npm run lint"
+    "test": "node --import ./tests/resolve-ts.mjs --test \"tests/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.14",
