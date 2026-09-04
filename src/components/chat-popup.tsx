@@ -296,6 +296,11 @@ export default function ChatPopup() {
 
   // ── Fetch full case context ──
   const caseContextSentRef = useRef(false);
+  /** Which case `caseFilesContext` was loaded for — see the effect below. */
+  const contextCaseRef = useRef('');
+  /** In-flight lock for "Apply all", so a second click cannot start a second pass. */
+  const applyingAllRef = useRef(false);
+  const [applyingAll, setApplyingAll] = useState(false);
   /** Files written since the context was sent, with their current content. */
   const changedFilesRef = useRef<Map<string, string>>(new Map());
 
@@ -348,12 +353,34 @@ export default function ChatPopup() {
     setLoadingContext(false);
   }, [caseName]);
 
+  /**
+   * The context has to belong to the case that is actually open.
+   *
+   * The guard used to be `!caseFilesContext`, which is true only the FIRST
+   * time. Switching case left the previous case's files sitting in state — so
+   * with "Case context" on, FOAMy went on being handed cavity's controlDict
+   * while the user asked about nozzleFlow2D, and answered confidently about
+   * files that were not on screen. Nothing said so: the badge just read "case
+   * context", and it was the wrong case's.
+   *
+   * Remembering WHICH case the context was loaded for is what makes the
+   * difference, so a switch invalidates it and a re-render does not.
+   */
   useEffect(() => {
-    if (autoContext && caseName && !caseFilesContext && !loadingContext) loadCaseContext();
     if (!autoContext) {
       setCaseFilesContext(null);
       caseContextSentRef.current = false;
+      contextCaseRef.current = '';
+      return;
     }
+    if (!caseName || loadingContext) return;
+    if (contextCaseRef.current === caseName && caseFilesContext) return;
+    contextCaseRef.current = caseName;
+    // Drop the old case's files before the new ones arrive, so nothing can be
+    // sent from the gap in between, and let the model be told afresh.
+    setCaseFilesContext(null);
+    caseContextSentRef.current = false;
+    loadCaseContext();
   }, [autoContext, caseName]);
 
   // ── Fetch models from provider ──
@@ -451,14 +478,21 @@ export default function ChatPopup() {
 
   // ── Persist config (userData file in the packaged app, localStorage in a
   //    browser — see src/lib/foamy-store.ts) ──
-  const saveConfig = useCallback(() => {
-    void saveFoamyConfig({
+  const saveConfig = useCallback(async () => {
+    // Awaited, and the result is believed. The toast used to fire immediately
+    // after a fire-and-forget write, so a failed save — which is how the API key
+    // goes missing at the next launch — was reported as a success.
+    const written = await saveFoamyConfig({
       'foamy-llm-provider': llmProvider,
       'foamy-llm-key': llmKey,
       'foamy-model-id': modelId.trim(),
       'foamy-base-url': baseUrl.trim(),
       'foamy-api-format': apiFormat.trim(),
     });
+    if (!written) {
+      toast.error('The configuration could not be saved — it will be lost when the app closes.');
+      return;
+    }
     setSavedConfig(true);
     setConnectionStatus('idle');
     setShowSettings(false);
@@ -556,16 +590,30 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
 
   // ── Apply ALL file modifications in a message at once ──
   const applyAllChanges = useCallback(async (msgContent: string, msgIndex: number) => {
-    const applyRegex = /```apply:([^\n]+)\n([\s\S]*?)```/g;
-    const matches: { path: string; content: string; key: string }[] = [];
-    let m;
-    while ((m = applyRegex.exec(msgContent)) !== null) {
-      matches.push({ path: m[1].trim(), content: m[2], key: `msg${msgIndex}-${matches.length}` });
-    }
-    for (const match of matches) {
-      // NOT skipping the read check: "Apply all" used to bypass the
-      // shrink guard, so the one-click path was the unprotected one.
-      await applyFileChange(match.path, match.content, match.key);
+    // One run at a time. Nothing disabled this button while it was working, and
+    // it awaits a WSL write per file, so a second click started a SECOND loop
+    // over the same list: the two interleaved, each file was written twice, and
+    // the shrink-guard confirmation appeared twice for each — the second one on
+    // top of a file the first pass had already replaced, so its "this file is
+    // about to get much shorter" comparison was against the wrong content.
+    if (applyingAllRef.current) return;
+    applyingAllRef.current = true;
+    setApplyingAll(true);
+    try {
+      const applyRegex = /```apply:([^\n]+)\n([\s\S]*?)```/g;
+      const matches: { path: string; content: string; key: string }[] = [];
+      let m;
+      while ((m = applyRegex.exec(msgContent)) !== null) {
+        matches.push({ path: m[1].trim(), content: m[2], key: `msg${msgIndex}-${matches.length}` });
+      }
+      for (const match of matches) {
+        // NOT skipping the read check: "Apply all" used to bypass the
+        // shrink guard, so the one-click path was the unprotected one.
+        await applyFileChange(match.path, match.content, match.key);
+      }
+    } finally {
+      applyingAllRef.current = false;
+      setApplyingAll(false);
     }
   }, [applyFileChange]);
 
@@ -831,11 +879,24 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           const linkSegs = cs.split(/(\[[^\]]+\]\([^)]+\))/g);
           for (const ls of linkSegs) {
             if (!ls) continue;
-            const lm = ls.match(/^\[[^\]]+\]\([^)]+\)$/);
+            // The groups are what make this work at all. The pattern used to be
+            // /^\[[^\]]+\]\([^)]+\)$/ — no parentheses around the text or the
+            // URL — so `lm` had length 1 and both `lm[1]` and `lm[2]` were
+            // undefined. React omits an undefined href and renders no children,
+            // so EVERY markdown link FOAMy produced became an empty, invisible,
+            // unclickable anchor: the answer simply lost the reference it was
+            // pointing at, with nothing on screen to show that it had.
+            const lm = ls.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
-              out.push(
-                <a key={blockIdx++} href={lm[2]} target="_blank" rel="noopener noreferrer"
-                   className="text-primary underline hover:text-primary/80">{lm[1]}</a>
+              // The URL is model output, and this is a desktop app with a
+              // renderer: `javascript:` and `file:` are not link schemes here.
+              // A link whose target is not web is rendered as its own text, so
+              // the user still sees what was written and nothing navigates.
+              const href = /^https?:\/\//i.test(lm[2].trim()) ? lm[2].trim() : null;
+              out.push(href
+                ? <a key={blockIdx++} href={href} target="_blank" rel="noopener noreferrer"
+                     className="text-primary underline hover:text-primary/80">{lm[1]}</a>
+                : <span key={blockIdx++}>{lm[1]} ({lm[2]})</span>
               );
               continue;
             }
@@ -945,8 +1006,10 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
               size="sm"
               className="h-7 text-[11px] px-3 bg-green-600 hover:bg-green-700 text-white"
               onClick={() => applyAllChanges(text, msgIndex)}
+              disabled={applyingAll}
             >
-              <Check className="w-3.5 h-3.5 mr-1" /> Apply all changes ({applyCount} files)
+              <Check className="w-3.5 h-3.5 mr-1" />
+              {applyingAll ? 'Applying…' : `Apply all changes (${applyCount} files)`}
             </Button>
           </div>
         );

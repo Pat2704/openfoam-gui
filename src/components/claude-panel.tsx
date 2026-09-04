@@ -419,7 +419,12 @@ export default function ClaudePanel() {
   });
 
   useEffect(() => {
-    if (open && inputRef.current) setTimeout(() => inputRef.current?.focus(), 100);
+    if (!open || !inputRef.current) return;
+    // Cleared on close. Without it, opening and immediately closing the panel
+    // still fired 100 ms later and pulled keyboard focus into an input the user
+    // could no longer see — so the next thing they typed went nowhere visible.
+    const id = setTimeout(() => inputRef.current?.focus(), 100);
+    return () => clearTimeout(id);
   }, [open]);
 
   useEffect(() => {
@@ -1208,6 +1213,10 @@ function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
 
 function Markdown({ text }: { text: string }) {
   const [copied, setCopied] = useState<number | null>(null);
+  // Held so a second copy cannot be cleared early by the first one's timer, and
+  // so nothing is left pending when the block unmounts.
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
   const parts = text.split(/(```[\s\S]*?```)/g);
 
   return (
@@ -1226,12 +1235,24 @@ function Markdown({ text }: { text: string }) {
                 <span>{lang || 'text'}</span>
                 <button
                   className="hover:text-foreground transition-colors"
-                  onClick={() => {
-                    navigator.clipboard.writeText(code);
+                  onClick={async () => {
+                    // Awaited, so the tick means the text is actually on the
+                    // clipboard. The write can reject (no permission, no
+                    // clipboard in the context) and the confirmation used to
+                    // appear regardless — the one case where the user needs to
+                    // know is the one where it lied.
+                    try {
+                      await navigator.clipboard.writeText(code);
+                    } catch {
+                      toast.error('Could not copy to the clipboard');
+                      return;
+                    }
                     setCopied(index);
-                    setTimeout(() => setCopied(null), 1800);
+                    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                    copyTimerRef.current = setTimeout(() => setCopied(null), 1800);
                   }}
                   title="Copy"
+                  aria-label="Copy this code block"
                 >
                   {copied === index ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3" />}
                 </button>

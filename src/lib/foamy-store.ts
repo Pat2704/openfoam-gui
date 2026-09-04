@@ -95,21 +95,34 @@ export async function loadFoamyConfig(): Promise<FoamyConfig> {
  * is what FOAMy's settings form wants, and exactly what a panel that only owns
  * two of the keys must not do.
  */
-export async function patchFoamyConfig(partial: FoamyConfig): Promise<void> {
+export async function patchFoamyConfig(partial: FoamyConfig): Promise<boolean> {
   const current = await loadFoamyConfig();
-  await saveFoamyConfig({ ...current, ...partial });
+  return saveFoamyConfig({ ...current, ...partial });
 }
 
-export async function saveFoamyConfig(config: FoamyConfig): Promise<void> {
+/**
+ * Write the configuration, and SAY whether it was written.
+ *
+ * This used to return `Promise<void>` and swallow every error, which meant the
+ * settings form could only ever report success — so a write that failed (the
+ * userData directory not writable, a full disk, the IPC channel gone) was
+ * announced as "Configuration saved", and the user discovered otherwise on the
+ * next launch, when their API key was missing and nothing had ever suggested a
+ * problem. The caller can now tell the truth.
+ */
+export async function saveFoamyConfig(config: FoamyConfig): Promise<boolean> {
   const payload: Record<string, string> = {};
   for (const k of FOAMY_KEYS) payload[k] = config[k] ?? '';
 
   const native = bridge();
   if (native) {
-    try { await native.set(payload); } catch { /* nothing else to fall back to */ }
-    return;
+    try { await native.set(payload); return true; } catch { return false; }
   }
   try {
     for (const [k, v] of Object.entries(payload)) localStorage.setItem(k, v);
-  } catch { /* ignore */ }
+    return true;
+  } catch {
+    // localStorage throws in a private window or with site data blocked.
+    return false;
+  }
 }
