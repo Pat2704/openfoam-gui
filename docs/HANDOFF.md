@@ -128,6 +128,12 @@ slightly offset stack at FOAMy's former bottom-right position; hovering any
 one fans them up and left so every assistant is selectable. The panels and
 their access remain unchanged.
 
+The 2026-09-07 follow-up removes the transform transition while the group is
+being dragged, so the anchor tracks the pointer directly. Its server-rendered
+fallback is already bottom-right, avoiding the first-paint top-left flash.
+Every panel close calls the provider's `collapse()` callback, so a closed chat
+always returns the remaining launchers to their compact stack.
+
 `src/components/openfoam/mesh-viewer.tsx` now recalculates its pixel ratio and
 camera framing after a zero-sized/hidden mount becomes visible. Framing uses
 both horizontal and vertical field of view, preserving the mesh centre on

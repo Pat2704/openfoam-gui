@@ -1042,7 +1042,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
               </button>
               <button
                 className="w-7 h-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent active:bg-accent/70 transition-colors duration-150"
-                onClick={() => setOpen(false)} title="Close"
+                onClick={() => { launcher.collapse(); setOpen(false); }} title="Close"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

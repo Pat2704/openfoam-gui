@@ -21,6 +21,7 @@ interface LauncherProps {
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   isClick: (event: React.MouseEvent) => boolean;
+  collapse: () => void;
 }
 
 interface LauncherContextValue {
@@ -41,9 +42,11 @@ const EXPANDED: Record<LauncherName, Point> = {
 };
 
 export function AgentLauncherProvider({ children }: { children: React.ReactNode }) {
-  const [anchor, setAnchor] = useState<Point>({ left: 0, top: 0 });
-  const [ready, setReady] = useState(false);
+  // Leave the server-rendered stack at its final CSS position. The first client
+  // measurement only replaces equivalent values, so there is no top-left flash.
+  const [anchor, setAnchor] = useState<Point | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; y: number; left: number; top: number; moved: boolean } | null>(null);
   const dragged = useRef(false);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -53,16 +56,17 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
     codex: React.createRef<HTMLButtonElement>(),
   });
 
-  const place = useCallback((force = false) => {
+  const place = useCallback(() => {
     const vw = window.innerWidth, vh = window.innerHeight;
     if (vw < 100 || vh < 100) return;
     setAnchor(current => {
-      const outside = current.left > vw - BUTTON || current.top > vh - BUTTON || current.left < 0 || current.top < 0;
-      if (!force && ready && !outside) return current;
+      if (current) {
+        const outside = current.left > vw - BUTTON || current.top > vh - BUTTON || current.left < 0 || current.top < 0;
+        if (!outside) return current;
+      }
       return { left: Math.max(88, vw - 86), top: Math.max(88, vh - 86) };
     });
-    setReady(true);
-  }, [ready]);
+  }, []);
 
   useEffect(() => {
     place();
@@ -83,7 +87,11 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
         top: Math.max(88, Math.min(d.top + dy, window.innerHeight - BUTTON)),
       });
     };
-    const onUp = () => { drag.current = null; document.body.style.userSelect = ''; };
+    const onUp = () => {
+      drag.current = null;
+      setDragging(false);
+      document.body.style.userSelect = '';
+    };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
@@ -99,32 +107,43 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
     if (collapseTimer.current) clearTimeout(collapseTimer.current);
     collapseTimer.current = setTimeout(() => setExpanded(false), 140);
   }, []);
+  const collapse = useCallback(() => {
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    setExpanded(false);
+  }, []);
 
   const launcher = useCallback((name: LauncherName): LauncherProps => {
     const offset = (expanded ? EXPANDED : COLLAPSED)[name];
+    const initial = anchor === null;
     return {
       ref: buttonRefs.current[name],
       style: {
-        left: 0, top: 0,
+        ...(initial ? { right: 30, bottom: 30 } : { left: 0, top: 0 }),
         zIndex: 100 + (expanded ? 1 : name === 'foamy' ? 3 : name === 'claude' ? 2 : 1),
-        transform: `translate(${anchor.left + offset.left}px, ${anchor.top + offset.top}px)`,
+        transform: initial
+          ? `translate(${offset.left}px, ${offset.top}px)`
+          : `translate(${anchor.left + offset.left}px, ${anchor.top + offset.top}px)`,
+        transitionDuration: dragging ? '0ms' : undefined,
         willChange: 'transform',
       },
       onMouseDown: event => {
         event.preventDefault();
         dragged.current = false;
-        drag.current = { x: event.clientX, y: event.clientY, left: anchor.left, top: anchor.top, moved: false };
+        const start = anchor ?? { left: Math.max(88, window.innerWidth - 86), top: Math.max(88, window.innerHeight - 86) };
+        setDragging(true);
+        drag.current = { x: event.clientX, y: event.clientY, left: start.left, top: start.top, moved: false };
         document.body.style.userSelect = 'none';
       },
       onMouseEnter: enter,
       onMouseLeave: leave,
+      collapse,
       isClick: () => {
         const clicked = !dragged.current;
         dragged.current = false;
         return clicked;
       },
     };
-  }, [anchor, enter, expanded, leave]);
+  }, [anchor, collapse, dragging, enter, expanded, leave]);
 
   const value = useMemo(() => ({ launcher }), [launcher]);
   return <LauncherContext.Provider value={value}>{children}</LauncherContext.Provider>;

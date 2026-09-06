@@ -737,7 +737,7 @@ export default function ClaudePanel() {
               </button>
               <button
                 className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15 text-muted-foreground hover:text-foreground transition-colors duration-150"
-                onClick={() => setOpen(false)} title="Close"
+                onClick={() => { launcher.collapse(); setOpen(false); }} title="Close"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
