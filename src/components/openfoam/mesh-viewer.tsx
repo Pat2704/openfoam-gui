@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { useTheme } from 'next-themes';
+import { safeDrawingBufferPixelRatio } from '@/lib/webgl-sizing';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -198,6 +199,27 @@ function frameDistance(size: THREE.Vector3, camera: THREE.PerspectiveCamera): nu
     halfZ,
     1e-6,
   ) * 1.35;
+}
+
+/**
+ * Choose a backing-buffer scale that fits both the display and this GPU.
+ *
+ * CSS width/height, camera aspect and pointer coordinates stay unchanged. Only
+ * raster density is reduced when a HiDPI/large display would exceed WebGL's
+ * viewport/renderbuffer limits or allocate an unnecessarily large buffer.
+ */
+function safePixelRatio(renderer: THREE.WebGLRenderer, width: number, height: number): number {
+  const gl = renderer.getContext();
+  const maxRenderbuffer = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) || 4096;
+  const maxViewport = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
+  return safeDrawingBufferPixelRatio({
+    width,
+    height,
+    devicePixelRatio: window.devicePixelRatio,
+    maxRenderbufferSize: maxRenderbuffer,
+    maxViewportWidth: Number(maxViewport?.[0]),
+    maxViewportHeight: Number(maxViewport?.[1]),
+  });
 }
 
 /** A single letter, drawn in its axis colour, for the tip of an arrow. */
@@ -417,6 +439,7 @@ export default function MeshViewer({ caseName, active = true }: {
   const { resolvedTheme } = useTheme();
 
   const [loading, setLoading] = useState(false);
+  const [rendererError, setRendererError] = useState<string | null>(null);
   const [labelsLoading, setLabelsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [patches, setPatches] = useState<PatchInfo[]>([]);
@@ -512,8 +535,21 @@ export default function MeshViewer({ caseName, active = true }: {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.001, 10000);
     camera.position.set(3, 2, 4);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    let renderer: THREE.WebGLRenderer;
+    const rendererOptions = { powerPreference: 'default' as const, failIfMajorPerformanceCaveat: false };
+    try {
+      renderer = new THREE.WebGLRenderer({ ...rendererOptions, antialias: true });
+    } catch {
+      // Some older integrated adapters expose WebGL2 but cannot create an
+      // antialiased default framebuffer. Geometry is still fully usable.
+      try {
+        renderer = new THREE.WebGLRenderer({ ...rendererOptions, antialias: false });
+      } catch {
+        setRendererError('The 3D viewer could not start because WebGL 2 is unavailable. Update the graphics driver or enable hardware acceleration.');
+        return;
+      }
+    }
+    setRendererError(null);
     // A canvas is inline by default, which reserves a text baseline below it.
     // On a short viewport that invisible strip makes the WebGL drawing area
     // disagree with the measured parent and shifts the mesh off centre.
@@ -611,7 +647,7 @@ export default function MeshViewer({ caseName, active = true }: {
     const resize = () => {
       const w = mount.clientWidth, h = mount.clientHeight;
       if (w === 0 || h === 0) { viewportNeedsFitRef.current = true; return; }
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(safePixelRatio(renderer, w, h));
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -630,6 +666,18 @@ export default function MeshViewer({ caseName, active = true }: {
     const ro = new ResizeObserver(resize);
     ro.observe(mount);
 
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      setRendererError('The graphics device was interrupted. Restoring the 3D viewer…');
+    };
+    const onContextRestored = () => {
+      setRendererError(null);
+      viewportNeedsFitRef.current = true;
+      resize();
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', onContextRestored);
+
     // next-themes flips a class on <html>, and it does so from its own effect —
     // there is no ordering guarantee against ours, so reading the token when
     // `resolvedTheme` changes can sample the OLD colour. Watching the attribute
@@ -642,6 +690,8 @@ export default function MeshViewer({ caseName, active = true }: {
     return () => {
       themeObserver.disconnect();
       ro.disconnect();
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       if (spinId !== null) cancelAnimationFrame(spinId);
       mount.removeEventListener('pointerdown', syncControlsRect, true);
@@ -982,7 +1032,7 @@ export default function MeshViewer({ caseName, active = true }: {
     if (!mount || !r || !c) return;
     const w = mount.clientWidth, h = mount.clientHeight;
     if (w > 0 && h > 0) {
-      r.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      r.setPixelRatio(safePixelRatio(r, w, h));
       r.setSize(w, h, false);
       c.aspect = w / h;
       c.updateProjectionMatrix();
@@ -1082,10 +1132,10 @@ export default function MeshViewer({ caseName, active = true }: {
         </CardHeader>
 
         <CardContent className="pt-0">
-          {error && (
+          {(rendererError || error) && (
             <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs">
               <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-              <span>{error}</span>
+              <span>{rendererError || error}</span>
             </div>
           )}
 

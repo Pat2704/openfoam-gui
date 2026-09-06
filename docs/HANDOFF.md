@@ -153,6 +153,18 @@ both horizontal and vertical field of view, preserving the mesh centre on
 narrow laptop viewports; the canvas is block-level so its measured dimensions
 match the renderer and orientation axes render in the correct viewport.
 
+The hardware/resolution audit on 2026-09-07 keeps all layout, camera and pointer
+math in logical CSS pixels. `src/lib/webgl-sizing.ts` only scales the physical
+drawing buffer: it caps device pixel ratio at 2, respects the adapter's
+`MAX_RENDERBUFFER_SIZE` / `MAX_VIEWPORT_DIMS`, and limits the buffer to about
+one 4K frame. Integrated GPUs therefore trade a little raster sharpness under
+pressure without changing centring or geometry. Renderer creation uses
+Chromium's default adapter preference, retries without MSAA when an older GPU
+cannot create an antialiased WebGL2 buffer, reports a clear error if WebGL2 is
+unavailable, and remeasures/refits after a lost context is restored.
+`tests/webgl-sizing.test.ts` covers ordinary HiDPI, pixel-budget and lower-limit
+adapter cases.
+
 ---
 
 ## 0. Orientation
