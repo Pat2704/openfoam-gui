@@ -10,9 +10,11 @@
  * whole group, so it never splits back into three unrelated launchers.
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { LAUNCHER_Z } from '@/lib/floating-order';
 
 type LauncherName = 'foamy' | 'claude' | 'codex';
 type Point = { left: number; top: number };
+type Anchor = { right: number; bottom: number };
 
 interface LauncherProps {
   ref: React.RefObject<HTMLButtonElement | null>;
@@ -42,12 +44,13 @@ const EXPANDED: Record<LauncherName, Point> = {
 };
 
 export function AgentLauncherProvider({ children }: { children: React.ReactNode }) {
-  // The buttons themselves provide the server-rendered bottom-right CSS
-  // fallback. The first client measurement only replaces equivalent values.
-  const [anchor, setAnchor] = useState<Point | null>(null);
+  // Keep one coordinate system from SSR through every client render. Switching
+  // from right/bottom to left/top made the transform transition visibly travel
+  // from the top-left corner during hydration.
+  const [anchor, setAnchor] = useState<Anchor>({ right: 30, bottom: 30 });
   const [expanded, setExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const drag = useRef<{ x: number; y: number; left: number; top: number; moved: boolean } | null>(null);
+  const drag = useRef<{ x: number; y: number; right: number; bottom: number; moved: boolean } | null>(null);
   const dragged = useRef(false);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const buttonRefs = useRef<Record<LauncherName, React.RefObject<HTMLButtonElement | null>>>({
@@ -59,21 +62,19 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
   const place = useCallback(() => {
     const vw = window.innerWidth, vh = window.innerHeight;
     if (vw < 100 || vh < 100) return;
-    setAnchor(current => {
-      if (current) {
-        const outside = current.left > vw - BUTTON || current.top > vh - BUTTON || current.left < 0 || current.top < 0;
-        if (!outside) return current;
-      }
-      return { left: Math.max(88, vw - 86), top: Math.max(88, vh - 86) };
-    });
+    const maxRight = Math.max(0, vw - BUTTON - 88);
+    const maxBottom = Math.max(0, vh - BUTTON - 88);
+    setAnchor(current => ({
+      right: Math.max(0, Math.min(current.right, maxRight)),
+      bottom: Math.max(0, Math.min(current.bottom, maxBottom)),
+    }));
   }, []);
 
   useEffect(() => {
     place();
-    const frame = requestAnimationFrame(() => place());
     const onResize = () => place();
     window.addEventListener('resize', onResize);
-    return () => { cancelAnimationFrame(frame); window.removeEventListener('resize', onResize); };
+    return () => window.removeEventListener('resize', onResize);
   }, [place]);
 
   useEffect(() => {
@@ -82,9 +83,11 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
       if (!d) return;
       const dx = event.clientX - d.x, dy = event.clientY - d.y;
       if (Math.abs(dx) > 4 || Math.abs(dy) > 4) { d.moved = true; dragged.current = true; }
+      const maxRight = Math.max(0, window.innerWidth - BUTTON - 88);
+      const maxBottom = Math.max(0, window.innerHeight - BUTTON - 88);
       setAnchor({
-        left: Math.max(88, Math.min(d.left + dx, window.innerWidth - BUTTON)),
-        top: Math.max(88, Math.min(d.top + dy, window.innerHeight - BUTTON)),
+        right: Math.max(0, Math.min(d.right - dx, maxRight)),
+        bottom: Math.max(0, Math.min(d.bottom - dy, maxBottom)),
       });
     };
     const onUp = () => {
@@ -112,31 +115,38 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
     setExpanded(false);
   }, []);
 
+  const startDrag = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    dragged.current = false;
+    setDragging(true);
+    drag.current = {
+      x: event.clientX,
+      y: event.clientY,
+      right: anchor.right,
+      bottom: anchor.bottom,
+      moved: false,
+    };
+    document.body.style.userSelect = 'none';
+  }, [anchor]);
+
   const launcher = useCallback((name: LauncherName): LauncherProps => {
     const offset = (expanded ? EXPANDED : COLLAPSED)[name];
-    const initial = anchor === null;
     return {
       ref: buttonRefs.current[name],
       style: {
-        ...(initial ? {} : { left: 0, top: 0 }),
+        right: anchor.right,
+        bottom: anchor.bottom,
         // Windows begin at LAUNCHER_Z + 1 and only increase from there.
         // Keep every part of the anchor below every open or subsequently
         // focused chat window.
-        zIndex: expanded ? 100 : name === 'foamy' ? 100 : name === 'claude' ? 99 : 98,
-        transform: initial
-          ? `translate(${offset.left}px, ${offset.top}px)`
-          : `translate(${anchor.left + offset.left}px, ${anchor.top + offset.top}px)`,
+        zIndex: expanded
+          ? LAUNCHER_Z
+          : name === 'foamy' ? LAUNCHER_Z : name === 'claude' ? LAUNCHER_Z - 1 : LAUNCHER_Z - 2,
+        transform: `translate(${offset.left}px, ${offset.top}px)`,
         transitionDuration: dragging ? '0ms' : undefined,
         willChange: 'transform',
       },
-      onMouseDown: event => {
-        event.preventDefault();
-        dragged.current = false;
-        const start = anchor ?? { left: Math.max(88, window.innerWidth - 86), top: Math.max(88, window.innerHeight - 86) };
-        setDragging(true);
-        drag.current = { x: event.clientX, y: event.clientY, left: start.left, top: start.top, moved: false };
-        document.body.style.userSelect = 'none';
-      },
+      onMouseDown: startDrag,
       onMouseEnter: enter,
       onMouseLeave: leave,
       collapse,
@@ -146,10 +156,28 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
         return clicked;
       },
     };
-  }, [anchor, collapse, dragging, enter, expanded, leave]);
+  }, [anchor, collapse, dragging, enter, expanded, leave, startDrag]);
 
   const value = useMemo(() => ({ launcher }), [launcher]);
-  return <LauncherContext.Provider value={value}>{children}</LauncherContext.Provider>;
+  return (
+    <LauncherContext.Provider value={value}>
+      {children}
+      {expanded && (
+        <div
+          aria-hidden="true"
+          className="fixed h-[172px] w-[172px] rounded-full cursor-grab active:cursor-grabbing"
+          style={{
+            right: anchor.right - 20,
+            bottom: anchor.bottom - 30,
+            zIndex: LAUNCHER_Z - 3,
+          }}
+          onMouseDown={startDrag}
+          onMouseEnter={enter}
+          onMouseLeave={leave}
+        />
+      )}
+    </LauncherContext.Provider>
+  );
 }
 
 export function useAgentLauncher(name: LauncherName): LauncherProps {

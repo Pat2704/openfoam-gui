@@ -128,14 +128,19 @@ slightly offset stack at FOAMy's former bottom-right position; hovering any
 one fans them up and left so every assistant is selectable. The panels and
 their access remain unchanged.
 
-The 2026-09-07 follow-up removes the transform transition while the group is
-being dragged, so the anchor tracks the pointer directly. Each button has a
-static `right-[30px] bottom-[30px]` CSS fallback, avoiding the first-paint
-top-left flash before client code runs. Every panel opens and closes through
-the provider's `collapse()` callback, so the remaining launchers return to
-their compact stack in either case. Launcher depths are 98–100 while windows
-begin at 101 and rise with `bringToFront()`: the last clicked chat therefore
-remains in front of every other chat and the whole launcher anchor.
+The 2026-09-07 follow-up keeps the anchor in `right`/`bottom` coordinates from
+the server render through hydration and dragging. Do not change back to the old
+`right`/`bottom` → `left`/`top` handoff: because the buttons animate transforms,
+that put them at `(0,0)` for a frame and visibly flew them across the window.
+The measured pre-hydration and settled positions are now identical. While the
+buttons are fanned, a circular 172 px drag surface behind them moves the whole
+group, including when the pointer is between the individual buttons.
+
+Every panel opens and closes through the provider's `collapse()` callback, so
+the remaining launchers return to their compact stack in either case. Launcher
+depths are 98–100 while windows begin at 101 and rise with `bringToFront()`:
+the last clicked chat therefore remains in front of every other chat and the
+whole launcher anchor.
 
 `src/components/openfoam/mesh-viewer.tsx` now recalculates its pixel ratio and
 camera framing after a zero-sized/hidden mount becomes visible. Framing uses
