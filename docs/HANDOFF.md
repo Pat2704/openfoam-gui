@@ -2,23 +2,21 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-06 — Codex agent added and locally committed; its visual
-refresh is verified and awaiting a local commit. Neither commit may be pushed
-or versioned until the user asks.
+Last updated: 2026-09-06 — v3.1.0 adds the isolated Codex case agent and its
+ChatGPT-styled panel. Its two artifacts, tag and GitHub release were published
+with the user's explicit authorisation.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v3.0.0 is released, and it was REPUBLISHED on 2026-09-04** — same version, same
-tag, new binaries. Both artifacts are attached, the repository license is MIT,
-and the working tree is clean; nothing is half-finished waiting for you.
+**v3.1.0 is released on 2026-09-06.** It adds the Codex case agent alongside
+FOAMy and Claude, with the same scoped OpenFOAM tools and an isolated ChatGPT
+sign-in. Both artifacts are attached and the repository license is MIT.
 
-Everything is committed and pushed: `main` is level with `origin/main`, the tag
-is where the artifacts were built, and the user closed the session on 2026-09-04
-with "fai quello che serve per chiudere definitivamente questa v3". There is no
-follow-up waiting and nothing was left half-done — the next session starts on a
-finished v3.0.0, not in the middle of it.
+Everything is committed and pushed: `main` is level with `origin/main`, and the
+`v3.1.0` tag is where the artifacts were built. The next session starts on a
+finished release, not in the middle of it.
 
 The republish carried one fix: the Claude panel’s composer was drawing two
 overlapping focus rings instead of one (§2t). The user asked for the fix without
@@ -47,10 +45,10 @@ starts being an archaeology problem.
 
 | | |
 |---|---|
-| release commit | tagged `v3.0.0` — what the attached artifacts were built from |
-| tags | …`v2.3.0` at `1d01a85`, `v2.3.1` at `02302fc`, `v3.0.0` on the v3 build commit |
-| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v3.0.0 — both artifacts attached |
-| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v3.0.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
+| release commit | tagged `v3.1.0` — what the attached artifacts were built from |
+| tags | …`v2.3.0` at `1d01a85`, `v2.3.1` at `02302fc`, `v3.0.0` and `v3.1.0` on their respective release commits |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v3.1.0 — both artifacts attached |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v3.1.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
