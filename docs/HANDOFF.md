@@ -142,6 +142,11 @@ depths are 98–100 while windows begin at 101 and rise with `bringToFront()`:
 the last clicked chat therefore remains in front of every other chat and the
 whole launcher anchor.
 
+Expansion is conditional on the number of launcher buttons currently mounted.
+With two chats open, the sole remaining launcher ignores hover and stays fixed;
+as soon as either chat closes and a second launcher remounts, hover expansion
+becomes available again without any separate synchronisation state.
+
 `src/components/openfoam/mesh-viewer.tsx` now recalculates its pixel ratio and
 camera framing after a zero-sized/hidden mount becomes visible. Framing uses
 both horizontal and vertical field of view, preserving the mesh centre on

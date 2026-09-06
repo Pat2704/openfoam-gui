@@ -102,10 +102,21 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
 
   useEffect(() => () => { if (collapseTimer.current) clearTimeout(collapseTimer.current); }, []);
 
+  const mountedLauncherCount = useCallback(() => (
+    Object.values(buttonRefs.current).reduce(
+      (count, ref) => count + (ref.current?.isConnected ? 1 : 0),
+      0,
+    )
+  ), []);
+
   const enter = useCallback(() => {
     if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    if (mountedLauncherCount() < 2) {
+      setExpanded(false);
+      return;
+    }
     setExpanded(true);
-  }, []);
+  }, [mountedLauncherCount]);
   const leave = useCallback(() => {
     if (collapseTimer.current) clearTimeout(collapseTimer.current);
     collapseTimer.current = setTimeout(() => setExpanded(false), 140);
