@@ -9,6 +9,7 @@ import { Toaster } from "@/components/ui/toaster";
 // src/components/ui/sonner.tsx for why importing it here directly does not work.
 import { SonnerToaster } from "@/components/ui/sonner";
 import ChatPopup from "@/components/chat-popup";
+import CodexPanel from "@/components/codex-panel";
 import ClaudePanel from "@/components/claude-panel";
 import { CaseProvider } from "@/lib/case-context";
 import { ThemeProvider } from "next-themes";
@@ -51,6 +52,7 @@ export default function RootLayout({
           <SonnerToaster />
           <ChatPopup />
           <ClaudePanel />
+          <CodexPanel />
           <ConfirmHost />
         </CaseProvider>
         </ThemeProvider>

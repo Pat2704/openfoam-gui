@@ -2,8 +2,8 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-04, closing v3.0.0 — republished with the composer
-focus-ring fix, and §1 gained the rule about subagents.
+Last updated: 2026-09-06 — Codex agent added locally, verified and awaiting a
+local commit. It must not be pushed or versioned until the user asks.
 
 ---
 
@@ -70,7 +70,9 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** nothing in the code. Two things sit outside it: the trade mark
+**What is open:** the Codex agent work of 2026-09-06 has passed its checks, its
+two v3.0.0 artifacts have been refreshed in `Working/`, and it is ready for a
+local commit. Two things sit outside it: the trade mark
 request to OpenCFD is unanswered (§2l), and the repository's social preview image has yet to be
 uploaded — the user is doing that one, and it can only be done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
@@ -83,6 +85,33 @@ rounds of fixes that followed it, and §2m is the 2026-09-03 round, newest last.
 produces TWO artifacts and both ship — and §4b is how a release is named and
 published. §5 is the trap list, and it is the section
 most worth reading before touching startup, packaging or the Browser pane.
+
+### 2026-09-06 — Codex agent, same OpenFOAM policy as Claude
+
+The teal `</>` launcher in `src/components/codex-panel.tsx` is positioned above
+Claude's orange launcher. It is a full floating agent panel: separate ChatGPT
+sign-in/out, model and reasoning selection, drag/resize state, conversation
+history, activity cards, interruption, a persisted CLI path and the guarded /
+unrestricted switch. `src/app/api/codex/route.ts` is its separate SSE endpoint;
+it shares `src/lib/agent-prompt.ts` and `src/lib/agent-policy.ts` with Claude,
+so both panels expose the same files, validation and OpenFOAM commands.
+
+`src/lib/codex-cli.ts` launches `codex app-server --listen stdio://` from an
+isolated `%APPDATA%\\openfoam-studio\\codex` home. It deliberately clears inherited
+Codex/OpenAI/Claude settings, disables native shell, filesystem, web, skills,
+plugins, MCP and other desktop tools, and supplies only the app's dynamic
+OpenFOAM functions. Login and logout therefore affect only this panel's ChatGPT
+credentials. The Codex CLI must be version 0.153.1 or newer; discovery checks an
+explicit path, `OFSTUDIO_CODEX_PATH`, global npm, Codex desktop and `PATH`.
+
+The shared tool schemas are in `electron/mcp/openfoam-tools.json`; the
+dependency-free Claude MCP bridge reads the same file. `tests/codex-protocol.test.ts`
+covers the stdio transport, event privacy and model catalogue parsing.
+`tests/codex-app-server.test.ts` is an opt-in offline contract test that drives
+a real Codex CLI against a local fake Responses endpoint when
+`OFSTUDIO_TEST_CODEX` points to `codex.exe`; it checks the dynamic tool boundary,
+resume and interruption. Do not remove its opt-in guard: normal tests must never
+spend a user's subscription or reach the network.
 
 ---
 

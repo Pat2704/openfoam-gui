@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/github/license/Pat2704/openfoam-gui?color=blue)](LICENSE)
 
 A desktop GUI for running **OPENFOAM®** CFD simulations inside **WSL2 (Ubuntu)**
-on Windows, with two AI helpers built in: **FOAMy**, a copilot that proposes
-edits you apply, and **Claude**, an agent that does the work itself.
+on Windows, with three AI helpers built in: **FOAMy**, a copilot that proposes
+edits you apply, and **Claude** and **Codex**, agents that do the work themselves.
 
 One portable `.exe`. No installer, no Docker, no Node.js, no browser tab.
 Double-click and it opens in its own window.
@@ -57,6 +57,7 @@ Windows SmartScreen will warn on first run because the executable is unsigned:
 | OpenFOAM | v9 → v14, installed inside WSL |
 | LLM API key | optional, only for the FOAMy chat |
 | Claude desktop app | optional, only for the Claude agent — it runs on your subscription |
+| Codex CLI | optional, only for the Codex agent — it runs on your ChatGPT subscription |
 
 Node.js is **not** needed — one is bundled inside the `.exe`.
 
@@ -118,6 +119,10 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   approve, Claude changes the case and tells you what it did.
 
   ![The Claude panel: the agent inspects a case, runs checkMesh and reports the result, with each tool call shown as a row you can open](screenshots/claude-agent.png)
+
+- **Codex** — an OpenAI agent with the same case access and controls as Claude,
+  using your ChatGPT subscription. Its teal launcher sits above Claude's; it has
+  its own account, model and reasoning settings.
 
 ### Keyboard shortcuts
 
@@ -188,6 +193,31 @@ what it read, wrote and ran is on screen rather than in a log file.
 
 ---
 
+## Setting up the Codex agent (optional)
+
+Click the teal code button above Claude's launcher → **Sign in**. Codex opens
+your browser once and uses your ChatGPT subscription; it does not need an API
+key. The panel keeps its own Codex home, so signing in or out there does not
+change any other Codex desktop or CLI login on the machine.
+
+It needs **Codex CLI 0.153.1 or newer**. The app finds the native executable in
+the Codex desktop app, a global npm installation, `PATH`, or the optional
+`OFSTUDIO_CODEX_PATH` environment variable. If it cannot find one, enter the
+absolute path to `codex.exe` in the panel. A global installation is:
+
+```bash
+npm install -g @openai/codex
+```
+
+Codex receives exactly the same OpenFOAM tools as Claude: it can read and write
+inside the run directory and run only installed OpenFOAM commands in `Guarded`
+mode. `No limits` enables a WSL shell inside the case directory, with the same
+`/mnt/` protection and visible activity cards. It has no inherited desktop
+skills, plugins, MCP servers, shell, filesystem or web tools: every action goes
+through the app's shared OpenFOAM policy.
+
+---
+
 ## Troubleshooting
 
 **The WSL2 badge is red** — run `wsl --status`; if the distro hangs, `wsl --shutdown`
@@ -222,6 +252,10 @@ Or type the full path to your `claude.exe` in the box on that screen. **Look
 again** forces a fresh search and lists every path tried with the reason it
 failed.
 
+**"Codex CLI was not found"** — install it with `npm install -g @openai/codex`,
+then click **Look again** in the Codex panel. You can also enter the full path
+to `codex.exe`; the panel shows each attempted path and why it was rejected.
+
 ---
 
 ## Building from source
@@ -255,6 +289,7 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `src/lib/wsl.ts` | every OpenFOAM interaction goes through here |
 | `src/lib/foamy-store.ts` | where the API key is persisted |
 | `src/lib/claude-cli.ts` | finds, authenticates and drives the Claude Code process |
+| `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
 | `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
 | `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |

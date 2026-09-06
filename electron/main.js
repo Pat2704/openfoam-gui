@@ -396,6 +396,11 @@ async function startServer() {
   // locateClaudeCode() for why the server cannot be trusted to find it alone.
   const claudePath = locateClaudeCode();
   if (claudePath) env.OFSTUDIO_CLAUDE_PATH = claudePath;
+  // A separate Codex home keeps this panel's login and tools independent of
+  // the user's desktop Codex tasks. Resolve Windows folders here, as for Claude.
+  env.OFSTUDIO_CODEX_HOME = path.join(app.getPath('userData'), 'codex');
+  env.APPDATA = app.getPath('appData');
+  env.LOCALAPPDATA = path.join(app.getPath('home'), 'AppData', 'Local');
   // Avoid the Node worker being affected by the parent's color/CI settings.
   env.FORCE_COLOR = '0';
   env.NO_COLOR = '1';

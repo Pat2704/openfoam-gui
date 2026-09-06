@@ -35,6 +35,10 @@ export const FOAMY_KEYS = [
   'claude-agent-path',
   // Whether the guard rails are off for the Claude agent.
   'claude-agent-unrestricted',
+  'codex-agent-model',
+  'codex-agent-effort',
+  'codex-agent-path',
+  'codex-agent-unrestricted',
 ] as const;
 
 export type FoamyConfig = Partial<Record<(typeof FOAMY_KEYS)[number], string>>;
