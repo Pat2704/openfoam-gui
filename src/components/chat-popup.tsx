@@ -160,6 +160,7 @@ export default function ChatPopup() {
   const resizeStart = useRef({ mx: 0, my: 0, w: 0, h: 0 });
 
   const handleOpen = useCallback(() => {
+    launcher.collapse();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const w = Math.min(size.w, vw - 40);
@@ -168,7 +169,7 @@ export default function ChatPopup() {
     setSize({ w, h });
     setZ(bringToFront());
     setOpen(true);
-  }, [size]);
+  }, [launcher, size]);
 
   // ── Global mouse move/up ──
   useEffect(() => {
@@ -977,7 +978,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-105"
+          className="fixed right-[30px] bottom-[30px] w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-105"
           style={launcher.style}
           title="FOAMy - OpenFOAM Assistant (drag the group)"
         >

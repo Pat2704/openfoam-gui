@@ -292,6 +292,7 @@ export default function ClaudePanel() {
   const launcher = useAgentLauncher('claude');
 
   const handleOpen = useCallback(() => {
+    launcher.collapse();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const w = Math.min(size.w, vw - 40);
@@ -300,7 +301,7 @@ export default function ClaudePanel() {
     setSize({ w, h });
     setZ(bringToFront());
     setOpen(true);
-  }, [size]);
+  }, [launcher, size]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -638,7 +639,7 @@ export default function ClaudePanel() {
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-[#D97757] text-white shadow-lg hover:shadow-xl hover:shadow-[#D97757]/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-105"
+          className="fixed right-[30px] bottom-[30px] w-14 h-14 rounded-full bg-[#D97757] text-white shadow-lg hover:shadow-xl hover:shadow-[#D97757]/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-105"
           style={launcher.style}
           title="Claude — agent for your cases (drag the group)"
         >

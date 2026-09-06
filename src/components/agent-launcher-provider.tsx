@@ -42,8 +42,8 @@ const EXPANDED: Record<LauncherName, Point> = {
 };
 
 export function AgentLauncherProvider({ children }: { children: React.ReactNode }) {
-  // Leave the server-rendered stack at its final CSS position. The first client
-  // measurement only replaces equivalent values, so there is no top-left flash.
+  // The buttons themselves provide the server-rendered bottom-right CSS
+  // fallback. The first client measurement only replaces equivalent values.
   const [anchor, setAnchor] = useState<Point | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -118,8 +118,11 @@ export function AgentLauncherProvider({ children }: { children: React.ReactNode 
     return {
       ref: buttonRefs.current[name],
       style: {
-        ...(initial ? { right: 30, bottom: 30 } : { left: 0, top: 0 }),
-        zIndex: 100 + (expanded ? 1 : name === 'foamy' ? 3 : name === 'claude' ? 2 : 1),
+        ...(initial ? {} : { left: 0, top: 0 }),
+        // Windows begin at LAUNCHER_Z + 1 and only increase from there.
+        // Keep every part of the anchor below every open or subsequently
+        // focused chat window.
+        zIndex: expanded ? 100 : name === 'foamy' ? 100 : name === 'claude' ? 99 : 98,
         transform: initial
           ? `translate(${offset.left}px, ${offset.top}px)`
           : `translate(${anchor.left + offset.left}px, ${anchor.top + offset.top}px)`,

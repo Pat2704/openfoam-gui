@@ -247,6 +247,7 @@ export default function CodexPanel() {
   const launcher = useAgentLauncher('codex');
 
   const handleOpen = useCallback(() => {
+    launcher.collapse();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const w = Math.min(size.w, vw - 40);
@@ -255,7 +256,7 @@ export default function CodexPanel() {
     setSize({ w, h });
     setZ(bringToFront());
     setOpen(true);
-  }, [size]);
+  }, [launcher, size]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -593,7 +594,7 @@ export default function CodexPanel() {
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-[#0D0D0D] text-white shadow-lg hover:shadow-xl hover:shadow-black/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-125"
+          className="fixed right-[30px] bottom-[30px] w-14 h-14 rounded-full bg-[#0D0D0D] text-white shadow-lg hover:shadow-xl hover:shadow-black/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-125"
           style={launcher.style}
           title="Codex — agent for your cases (drag the group)"
         >
