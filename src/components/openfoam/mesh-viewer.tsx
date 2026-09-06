@@ -180,6 +180,26 @@ const GIZMO_MARGIN = 10;
 const AXIS_COLORS: [number, number, number] = [0xef4444, 0x22c55e, 0x3b82f6];
 const AXIS_NAMES = ['X', 'Y', 'Z'];
 
+/**
+ * Distance that fits a box in BOTH directions of a perspective viewport.
+ *
+ * The earlier fit used only the vertical FOV and the largest side. That left a
+ * narrow laptop viewport with the same camera distance as a wide monitor, so
+ * the horizontal frame could be wrong after the layout settled. Use the real
+ * horizontal FOV derived from the current aspect ratio instead.
+ */
+function frameDistance(size: THREE.Vector3, camera: THREE.PerspectiveCamera): number {
+  const vertical = THREE.MathUtils.degToRad(camera.fov);
+  const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * camera.aspect);
+  const halfX = size.x / 2, halfY = size.y / 2, halfZ = size.z / 2;
+  return Math.max(
+    halfY / Math.tan(vertical / 2),
+    halfX / Math.tan(horizontal / 2),
+    halfZ,
+    1e-6,
+  ) * 1.35;
+}
+
 /** A single letter, drawn in its axis colour, for the tip of an arrow. */
 function makeAxisLabelSprite(text: string, color: number): THREE.Sprite {
   const s = LABEL_TEXTURE_SCALE;
@@ -391,6 +411,7 @@ export default function MeshViewer({ caseName, active = true }: {
   const labelsRef = useRef<THREE.Group | null>(null);
   const frameRef = useRef<number | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
+  const viewportNeedsFitRef = useRef(true);
   const themeRef = useRef<(() => void) | null>(null);
 
   const { resolvedTheme } = useTheme();
@@ -492,7 +513,11 @@ export default function MeshViewer({ caseName, active = true }: {
     camera.position.set(3, 2, 4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // A canvas is inline by default, which reserves a text baseline below it.
+    // On a short viewport that invisible strip makes the WebGL drawing area
+    // disagree with the measured parent and shifts the mesh off centre.
+    renderer.domElement.style.display = 'block';
     mount.appendChild(renderer.domElement);
 
     // Two lights plus a little ambient: enough to read curvature on a coloured
@@ -585,12 +610,20 @@ export default function MeshViewer({ caseName, active = true }: {
 
     const resize = () => {
       const w = mount.clientWidth, h = mount.clientHeight;
-      if (w === 0 || h === 0) return; // hidden tab: nothing meaningful to size to
+      if (w === 0 || h === 0) { viewportNeedsFitRef.current = true; return; }
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       controls.handleResize();
       updateLabelScale();
+      // The first non-zero measurement after a hidden tab or laptop layout
+      // change is the one that knows the actual aspect ratio. Frame again only
+      // then; ordinary resize drags keep the user's chosen camera position.
+      if (viewportNeedsFitRef.current && group.children.length > 0) {
+        viewportNeedsFitRef.current = false;
+        requestAnimationFrame(() => fitRef.current?.());
+      }
       requestRender();
     };
     resize();
@@ -666,15 +699,16 @@ export default function MeshViewer({ caseName, active = true }: {
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
-    const dist = radius / Math.sin((cam.fov * Math.PI) / 360) * 1.6;
+    const dist = frameDistance(size, cam);
 
     cam.near = Math.max(dist / 1000, 1e-6);
     cam.far = dist * 100;
-    cam.position.set(center.x + dist * 0.6, center.y + dist * 0.5, center.z + dist * 0.7);
+    cam.up.set(0, 1, 0);
+    cam.position.copy(center).addScaledVector(new THREE.Vector3(0.6, 0.5, 0.7).normalize(), dist);
     cam.updateProjectionMatrix();
     ctr.target.copy(center);
     ctr.update();
+    viewportNeedsFitRef.current = false;
     updateLabelScale();
     renderNow();
   }, [renderNow, updateLabelScale]);
@@ -697,8 +731,7 @@ export default function MeshViewer({ caseName, active = true }: {
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
-    const dist = radius / Math.sin((cam.fov * Math.PI) / 360) * 1.6;
+    const dist = frameDistance(size, cam);
 
     const v = new THREE.Vector3(...dir).normalize().multiplyScalar(dist);
     cam.up.set(...up);
@@ -941,22 +974,23 @@ export default function MeshViewer({ caseName, active = true }: {
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
   }, []);
 
-  // Coming back to the tab: the canvas was sized against a hidden (0x0) parent,
-  // so re-measure and redraw.
+  // Coming back to the tab: the canvas may have been sized against a hidden
+  // (0x0) parent. Re-measure and reframe once at the real aspect ratio.
   useEffect(() => {
     if (!active) return;
     const mount = mountRef.current, r = rendererRef.current, c = cameraRef.current;
     if (!mount || !r || !c) return;
     const w = mount.clientWidth, h = mount.clientHeight;
     if (w > 0 && h > 0) {
+      r.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       r.setSize(w, h, false);
       c.aspect = w / h;
       c.updateProjectionMatrix();
       controlsRef.current?.handleResize();
       updateLabelScale();
-      renderNow();
+      requestAnimationFrame(() => fitRef.current?.());
     }
-  }, [active, renderNow, updateLabelScale]);
+  }, [active, updateLabelScale]);
 
   // Switching case invalidates what is on screen, exactly as a reload does.
   useEffect(() => {

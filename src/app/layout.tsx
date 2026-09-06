@@ -14,6 +14,7 @@ import ClaudePanel from "@/components/claude-panel";
 import { CaseProvider } from "@/lib/case-context";
 import { ThemeProvider } from "next-themes";
 import { ConfirmHost } from "@/components/ui/confirm-host";
+import { AgentLauncherProvider } from "@/components/agent-launcher-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -50,9 +51,11 @@ export default function RootLayout({
           {children}
           <Toaster />
           <SonnerToaster />
-          <ChatPopup />
-          <ClaudePanel />
-          <CodexPanel />
+          <AgentLauncherProvider>
+            <ChatPopup />
+            <ClaudePanel />
+            <CodexPanel />
+          </AgentLauncherProvider>
           <ConfirmHost />
         </CaseProvider>
         </ThemeProvider>

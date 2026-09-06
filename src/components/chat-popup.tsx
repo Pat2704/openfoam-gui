@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, saveFoamyConfig } from '@/lib/foamy-store';
 import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
+import { useAgentLauncher } from '@/components/agent-launcher-provider';
 
 // ── Provider presets ──
 interface ProviderPreset {
@@ -128,10 +129,7 @@ export default function ChatPopup() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Button: uses direct DOM manipulation for 60fps drag ──
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const btnPosRef = useRef({ left: 0, top: 0 });
-  const btnInitialized = useRef(false);
+  const launcher = useAgentLauncher('foamy');
 
   // Load the LLM config on mount. In the packaged app this comes from a file
   // in userData (see src/lib/foamy-store.ts for why localStorage cannot be
@@ -161,45 +159,6 @@ export default function ChatPopup() {
   const dragStart = useRef({ mx: 0, my: 0, left: 0, top: 0 });
   const resizeStart = useRef({ mx: 0, my: 0, w: 0, h: 0 });
 
-  /**
-   * Park the launcher at the bottom right.
-   *
-   * Guarded, because the viewport can still be 0×0 when this first runs (a
-   * window that has not been laid out yet), and `innerWidth - 86` is then -86:
-   * the button exists, the DOM calls it visible, and it is nowhere on screen,
-   * with nothing to move it back. So placing is retried until the viewport is
-   * real, and repeated on resize whenever the button would be left outside the
-   * window. Dragging is untouched — it still writes `style.transform` directly.
-   *
-   * Same guard as src/components/claude-panel.tsx, where the bug was found.
-   */
-  useEffect(() => {
-    const place = () => {
-      const button = btnRef.current;
-      if (!button) return;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      if (vw < 100 || vh < 100) return;          // not laid out yet; try later
-      const { left, top } = btnPosRef.current;
-      const outside = left > vw - 56 || top > vh - 56 || left < 0 || top < 0;
-      if (btnInitialized.current && !outside) return;
-      const x = Math.max(0, vw - 86);
-      const y = Math.max(0, vh - 86);
-      btnPosRef.current = { left: x, top: y };
-      button.style.transform = `translate(${x}px, ${y}px)`;
-      btnInitialized.current = true;
-    };
-
-    place();
-    // One rAF covers the common case of a viewport measured a tick late.
-    const frame = requestAnimationFrame(place);
-    window.addEventListener('resize', place);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('resize', place);
-    };
-  }, []);
-
   const handleOpen = useCallback(() => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -214,15 +173,6 @@ export default function ChatPopup() {
   // ── Global mouse move/up ──
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (isDragging.current === 'button' && btnRef.current) {
-        const dx = e.clientX - dragStart.current.mx;
-        const dy = e.clientY - dragStart.current.my;
-        const newLeft = Math.max(0, Math.min(dragStart.current.left + dx, window.innerWidth - 56));
-        const newTop = Math.max(0, Math.min(dragStart.current.top + dy, window.innerHeight - 56));
-        btnPosRef.current = { left: newLeft, top: newTop };
-        btnRef.current.style.transform = `translate(${newLeft}px, ${newTop}px)`;
-        return;
-      }
       if (isDragging.current === 'window') {
         const dx = e.clientX - dragStart.current.mx;
         const dy = e.clientY - dragStart.current.my;
@@ -253,13 +203,6 @@ export default function ChatPopup() {
       window.removeEventListener('mouseup', onUp);
     };
   }, [winPos]);
-
-  const onBtnMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragStart.current = { mx: e.clientX, my: e.clientY, left: btnPosRef.current.left, top: btnPosRef.current.top };
-    isDragging.current = 'button';
-    document.body.style.userSelect = 'none';
-  }, []);
 
   const onWinDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1025,16 +968,18 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
       {/* Floating Button */}
       {!open && (
         <button
-          ref={btnRef}
-          onMouseDown={onBtnMouseDown}
+          ref={launcher.ref}
+          onMouseDown={launcher.onMouseDown}
+          onMouseEnter={launcher.onMouseEnter}
+          onMouseLeave={launcher.onMouseLeave}
           onClick={(e) => {
-            if (Math.abs(e.clientX - dragStart.current.mx) < 5 && Math.abs(e.clientY - dragStart.current.my) < 5) {
+            if (launcher.isClick(e)) {
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter] duration-150 hover:brightness-105"
-          style={{ left: 0, top: 0, zIndex: LAUNCHER_Z, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
-          title="FOAMy - OpenFOAM Assistant (draggable)"
+          className="fixed w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-lg hover:shadow-xl hover:shadow-orange-500/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-105"
+          style={launcher.style}
+          title="FOAMy - OpenFOAM Assistant (drag the group)"
         >
           <MessageCircle className="w-6 h-6" />
           <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-success rounded-full border-2 border-background" />

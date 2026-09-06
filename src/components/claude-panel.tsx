@@ -30,6 +30,7 @@ import { useCaseContext } from '@/lib/case-context';
 import { toast } from 'sonner';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
+import { useAgentLauncher } from '@/components/agent-launcher-provider';
 
 // ── Claude's mark ───────────────────────────────────────────────────────────
 
@@ -288,47 +289,7 @@ export default function ClaudePanel() {
   const dragStart = useRef({ mx: 0, my: 0, left: 0, top: 0 });
   const resizeStart = useRef({ mx: 0, my: 0, w: 0, h: 0 });
 
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const btnPosRef = useRef({ left: 0, top: 0 });
-  const btnInitialized = useRef(false);
-
-  /**
-   * Park the launcher at the bottom right — above FOAMy's, which sits at
-   * innerHeight - 86.
-   *
-   * Guarded, because the viewport can still be 0×0 when this first runs (a
-   * hidden or not-yet-laid-out window), and `innerWidth - 86` is then -86:
-   * the button exists, is "visible" to the DOM, and is nowhere on screen.
-   * So placing is retried until the viewport is real, and repeated on resize
-   * whenever the button would otherwise be left outside the window.
-   */
-  useEffect(() => {
-    const place = (force: boolean) => {
-      const button = btnRef.current;
-      if (!button) return;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      if (vw < 100 || vh < 100) return;          // not laid out yet; try later
-      const { left, top } = btnPosRef.current;
-      const outside = left > vw - 56 || top > vh - 56 || left < 0 || top < 0;
-      if (!force && btnInitialized.current && !outside) return;
-      const x = Math.max(0, vw - 86);
-      const y = Math.max(0, vh - 156);
-      btnPosRef.current = { left: x, top: y };
-      button.style.transform = `translate(${x}px, ${y}px)`;
-      btnInitialized.current = true;
-    };
-
-    place(false);
-    // One rAF covers the common case of a viewport that is measured a tick late.
-    const frame = requestAnimationFrame(() => place(false));
-    const onResize = () => place(false);
-    window.addEventListener('resize', onResize);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('resize', onResize);
-    };
-  }, []);
+  const launcher = useAgentLauncher('claude');
 
   const handleOpen = useCallback(() => {
     const vw = window.innerWidth;
@@ -343,15 +304,6 @@ export default function ClaudePanel() {
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (isDragging.current === 'button' && btnRef.current) {
-        const dx = e.clientX - dragStart.current.mx;
-        const dy = e.clientY - dragStart.current.my;
-        const left = Math.max(0, Math.min(dragStart.current.left + dx, window.innerWidth - 56));
-        const top = Math.max(0, Math.min(dragStart.current.top + dy, window.innerHeight - 56));
-        btnPosRef.current = { left, top };
-        btnRef.current.style.transform = `translate(${left}px, ${top}px)`;
-        return;
-      }
       if (isDragging.current === 'window') {
         const dx = e.clientX - dragStart.current.mx;
         const dy = e.clientY - dragStart.current.my;
@@ -382,13 +334,6 @@ export default function ClaudePanel() {
       window.removeEventListener('mouseup', onUp);
     };
   }, [winPos]);
-
-  const onBtnMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragStart.current = { mx: e.clientX, my: e.clientY, left: btnPosRef.current.left, top: btnPosRef.current.top };
-    isDragging.current = 'button';
-    document.body.style.userSelect = 'none';
-  }, []);
 
   const onWinDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -684,16 +629,18 @@ export default function ClaudePanel() {
     <>
       {!open && (
         <button
-          ref={btnRef}
-          onMouseDown={onBtnMouseDown}
+          ref={launcher.ref}
+          onMouseDown={launcher.onMouseDown}
+          onMouseEnter={launcher.onMouseEnter}
+          onMouseLeave={launcher.onMouseLeave}
           onClick={(e) => {
-            if (Math.abs(e.clientX - dragStart.current.mx) < 5 && Math.abs(e.clientY - dragStart.current.my) < 5) {
+            if (launcher.isClick(e)) {
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-[#D97757] text-white shadow-lg hover:shadow-xl hover:shadow-[#D97757]/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter] duration-150 hover:brightness-105"
-          style={{ left: 0, top: 0, zIndex: LAUNCHER_Z, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
-          title="Claude — agent for your cases (draggable)"
+          className="fixed w-14 h-14 rounded-full bg-[#D97757] text-white shadow-lg hover:shadow-xl hover:shadow-[#D97757]/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter,transform] duration-200 hover:brightness-105"
+          style={launcher.style}
+          title="Claude — agent for your cases (drag the group)"
         >
           <ClaudeMark className="w-7 h-7" color="#ffffff" />
         </button>

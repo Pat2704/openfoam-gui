@@ -2,9 +2,9 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-06 — v3.1.0 adds the isolated Codex case agent and its
-ChatGPT-styled panel. Its two artifacts, tag and GitHub release were published
-with the user's explicit authorisation.
+Last updated: 2026-09-07 — a local, unpushed change groups the three assistant
+launchers and makes the Mesh viewer reframe reliably after laptop-sized or
+initially hidden layouts. v3.1.0 remains the published release.
 
 ---
 
@@ -69,9 +69,9 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** the Codex agent work of 2026-09-06 has passed its checks, its
-two v3.0.0 artifacts have been refreshed in `Working/`, and it is ready for a
-local commit. Two things sit outside it: the trade mark
+**What is open:** the assistant-launcher and Mesh-viewer follow-up of 2026-09-07
+is committed locally with refreshed v3.1.0 artifacts in `Working/`; do not push
+it until the user explicitly asks. Two things sit outside it: the trade mark
 request to OpenCFD is unanswered (§2l), and the repository's social preview image has yet to be
 uploaded — the user is doing that one, and it can only be done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
@@ -119,6 +119,20 @@ colour. The three composer focus outlines are deliberately local: green Codex,
 orange Claude and orange FOAMy. Their textareas carry `no-focus-ring`, because
 the shared unlayered rule in `globals.css` otherwise restores the app-wide
 orange outline inside the panel-specific one.
+
+### 2026-09-07 — Shared assistant launcher and responsive Mesh framing
+
+`src/components/agent-launcher-provider.tsx` owns the common position and
+dragging of the FOAMy, Claude and Codex launcher buttons. At rest they are a
+slightly offset stack at FOAMy's former bottom-right position; hovering any
+one fans them up and left so every assistant is selectable. The panels and
+their access remain unchanged.
+
+`src/components/openfoam/mesh-viewer.tsx` now recalculates its pixel ratio and
+camera framing after a zero-sized/hidden mount becomes visible. Framing uses
+both horizontal and vertical field of view, preserving the mesh centre on
+narrow laptop viewports; the canvas is block-level so its measured dimensions
+match the renderer and orientation axes render in the correct viewport.
 
 ---
 
