@@ -2,8 +2,9 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-06 — Codex agent added locally, verified and awaiting a
-local commit. It must not be pushed or versioned until the user asks.
+Last updated: 2026-09-06 — Codex agent added and locally committed; its visual
+refresh is verified and awaiting a local commit. Neither commit may be pushed
+or versioned until the user asks.
 
 ---
 
@@ -88,8 +89,8 @@ most worth reading before touching startup, packaging or the Browser pane.
 
 ### 2026-09-06 — Codex agent, same OpenFOAM policy as Claude
 
-The teal `</>` launcher in `src/components/codex-panel.tsx` is positioned above
-Claude's orange launcher. It is a full floating agent panel: separate ChatGPT
+The black ChatGPT-logo launcher in `src/components/codex-panel.tsx` is positioned
+above Claude's orange launcher. It is a full floating agent panel: separate ChatGPT
 sign-in/out, model and reasoning selection, drag/resize state, conversation
 history, activity cards, interruption, a persisted CLI path and the guarded /
 unrestricted switch. `src/app/api/codex/route.ts` is its separate SSE endpoint;
@@ -112,6 +113,14 @@ a real Codex CLI against a local fake Responses endpoint when
 `OFSTUDIO_TEST_CODEX` points to `codex.exe`; it checks the dynamic tool boundary,
 resume and interruption. Do not remove its opt-in guard: normal tests must never
 spend a user's subscription or reach the network.
+
+The follow-up visual round replaces the temporary `</>` mark with the OpenAI
+blossom at `public/openai.svg`, in the launcher, header and empty states. Codex
+uses a black launcher, white/charcoal surfaces and its ChatGPT-green action
+colour. The three composer focus outlines are deliberately local: green Codex,
+orange Claude and orange FOAMy. Their textareas carry `no-focus-ring`, because
+the shared unlayered rule in `globals.css` otherwise restores the app-wide
+orange outline inside the panel-specific one.
 
 ---
 

@@ -32,27 +32,17 @@ import { toast } from 'sonner';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
 
-// ── Codex's mark ───────────────────────────────────────────────────────────
+// ── ChatGPT mark ───────────────────────────────────────────────────────────
 
-/**
- * The Codex burst, drawn rather than shipped as an asset.
- *
- * Twelve rays around a centre, the shorter ones offset between the longer —
- * built in code so it stays crisp at every size the panel uses (16 px in a
- * message, 28 px in the launcher) with no bitmap to scale.
- */
-/**
- * Rounded to three decimals, and computed ONCE at module scope.
- *
- * Not cosmetic: raw `Math.cos` output serialises differently on the server and
- * in the browser (…016046 against …0160461), which React reports as a
- * hydration mismatch on every page load. Fixed-width strings are identical on
- * both sides.
- */
-function CodexMark({ className = '', color = 'currentColor' }: { className?: string; color?: string }) {
-  return <svg viewBox="0 0 24 24" className={className} aria-hidden="true" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M8 5 2 12l6 7M16 5l6 7-6 7M14 3l-4 18" />
-  </svg>;
+/** The unmodified OpenAI blossom lives in public/openai.svg. Masking lets the
+ * official black and white forms stay sharp at each size without duplicating
+ * or altering its path data in the component. */
+function ChatGPTMark({ className = '', color = 'currentColor' }: { className?: string; color?: string }) {
+  return <span aria-hidden="true" className={`inline-block flex-none ${className}`} style={{
+    backgroundColor: color,
+    WebkitMask: 'url(/openai.svg) center / contain no-repeat',
+    mask: 'url(/openai.svg) center / contain no-repeat',
+  }} />;
 }
 
 // ── Conversation model ──────────────────────────────────────────────────────
@@ -656,17 +646,17 @@ export default function CodexPanel() {
               handleOpen();
             }
           }}
-          className="fixed w-14 h-14 rounded-full bg-[#167D8D] text-white shadow-lg hover:shadow-xl hover:shadow-[#167D8D]/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter] duration-150 hover:brightness-105"
+          className="fixed w-14 h-14 rounded-full bg-[#0D0D0D] text-white shadow-lg hover:shadow-xl hover:shadow-black/30 flex items-center justify-center cursor-grab active:cursor-grabbing transition-[box-shadow,filter] duration-150 hover:brightness-125"
           style={{ left: 0, top: 0, zIndex: LAUNCHER_Z, transform: `translate(${btnPosRef.current.left}px, ${btnPosRef.current.top}px)`, willChange: 'transform' }}
           title="Codex — agent for your cases (draggable)"
         >
-          <CodexMark className="w-7 h-7" color="#ffffff" />
+          <ChatGPTMark className="w-7 h-7" color="#ffffff" />
         </button>
       )}
 
       {open && (
         <div
-          className="fixed flex flex-col rounded-xl border shadow-2xl overflow-hidden bg-[#F5FAFA] dark:bg-[#192326] text-foreground"
+          className="fixed flex flex-col rounded-xl border shadow-2xl overflow-hidden bg-white dark:bg-[#171717] text-foreground"
           style={{ left: winPos.left, top: winPos.top, width: size.w, height: size.h, zIndex: z }}
           // Capture, so clicking anywhere in the window raises it — including
           // on a control that stops the event before it would bubble to here.
@@ -679,7 +669,7 @@ export default function CodexPanel() {
           >
             <div className="flex items-center gap-2 min-w-0">
               <GripHorizontal className="w-4 h-4 text-muted-foreground/60 flex-shrink-0" />
-              <CodexMark className="w-5 h-5 flex-shrink-0" color="#167D8D" />
+              <ChatGPTMark className="w-5 h-5 flex-shrink-0" color="#0D0D0D" />
               <div className="min-w-0">
                 <div className="text-sm font-semibold leading-tight">Codex</div>
                 <div className="text-[10px] text-muted-foreground leading-tight flex items-center gap-1.5">
@@ -691,7 +681,7 @@ export default function CodexPanel() {
                     <span>Agent for your OpenFOAM cases</span>
                   )}
                   {status?.auth?.subscriptionType && (
-                    <span className="uppercase tracking-wide text-[10px] px-1.5 py-px rounded bg-[#167D8D]/15 text-[#0F6170] dark:text-[#78D3DF] flex-shrink-0">
+                    <span className="uppercase tracking-wide text-[10px] px-1.5 py-px rounded bg-[#10A37F]/15 text-[#08785F] dark:text-[#74D6C0] flex-shrink-0">
                       {status.auth.subscriptionType}
                     </span>
                   )}
@@ -708,7 +698,7 @@ export default function CodexPanel() {
                 >
                   <UserRound className="w-3.5 h-3.5" />
                   {status && !status.auth?.loggedIn && (
-                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#167D8D]" />
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#10A37F]" />
                   )}
                 </button>
                 {menu === 'account' && (
@@ -732,7 +722,7 @@ export default function CodexPanel() {
                       </button>
                     ) : (
                       <button
-                        className="w-full text-left px-3 py-2 text-[11px] hover:bg-accent active:bg-accent/70 transition-colors duration-150 inline-flex items-center gap-1.5 font-medium text-[#167D8D] disabled:opacity-50 disabled:pointer-events-none"
+                        className="w-full text-left px-3 py-2 text-[11px] hover:bg-accent active:bg-accent/70 transition-colors duration-150 inline-flex items-center gap-1.5 font-medium text-[#10A37F] disabled:opacity-50 disabled:pointer-events-none"
                         onClick={() => { setMenu(null); void signIn(); }}
                         disabled={loggingIn}
                       >
@@ -786,7 +776,7 @@ export default function CodexPanel() {
 
             {status && !status.installed && (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
-                <CodexMark className="w-10 h-10 mb-3 opacity-30" color="#167D8D" />
+                <ChatGPTMark className="w-10 h-10 mb-3 opacity-30" color="#0D0D0D" />
                 <p className="text-sm font-medium">Codex CLI was not found</p>
                 <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
                   This panel runs Codex on your ChatGPT subscription. Install Codex CLI 0.153.1 or newer,
@@ -837,7 +827,7 @@ export default function CodexPanel() {
 
             {status?.installed && !status.auth?.loggedIn && (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
-                <CodexMark className="w-10 h-10 mb-3" color="#167D8D" />
+                <ChatGPTMark className="w-10 h-10 mb-3" color="#0D0D0D" />
                 <p className="text-sm font-medium">Sign in with your ChatGPT account</p>
                 <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
                   The agent runs on your ChatGPT subscription — no API key. Your plan limits apply.
@@ -845,7 +835,7 @@ export default function CodexPanel() {
                 </p>
                 <Button
                   size="sm"
-                  className="mt-3 h-8 text-xs bg-[#167D8D] hover:bg-[#126B79] active:bg-[#0F6170] text-white"
+                  className="mt-3 h-8 text-xs bg-[#10A37F] hover:bg-[#0D8C6D] active:bg-[#08785F] text-white"
                   onClick={signIn}
                   disabled={loggingIn}
                 >
@@ -861,7 +851,7 @@ export default function CodexPanel() {
                   <div className="mt-3 w-full space-y-2">
                     <a
                       href={loginUrl} target="_blank" rel="noopener noreferrer"
-                      className="text-[11px] text-[#167D8D] hover:underline inline-flex items-center gap-1"
+                      className="text-[11px] text-[#10A37F] hover:underline inline-flex items-center gap-1"
                     >
                       <ExternalLink className="w-3 h-3" /> Open the sign-in page manually
                     </a>
@@ -876,7 +866,7 @@ export default function CodexPanel() {
 
             {ready && turns.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-center px-2">
-                <CodexMark className="w-10 h-10 mb-3" color="#167D8D" />
+                <ChatGPTMark className="w-10 h-10 mb-3" color="#0D0D0D" />
                 <p className="text-sm font-medium">What should we work on?</p>
                 <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed max-w-[300px]">
                   I can read and write the files of your cases and run OpenFOAM myself — inside the
@@ -891,7 +881,7 @@ export default function CodexPanel() {
                     <button
                       key={i}
                       onClick={() => setInput(q)}
-                      className="block w-full text-left text-xs px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/5 hover:border-[#167D8D]/40 active:bg-black/[0.06] dark:active:bg-white/10 text-muted-foreground hover:text-foreground transition-colors duration-150"
+                      className="block w-full text-left text-xs px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/5 hover:border-[#10A37F]/40 active:bg-black/[0.06] dark:active:bg-white/10 text-muted-foreground hover:text-foreground transition-colors duration-150"
                     >
                       {q}
                     </button>
@@ -916,7 +906,7 @@ export default function CodexPanel() {
                   utility: the shared rule in globals.css is unlayered, so it beat
                   the `focus:outline-none` that used to be here and drew a second,
                   smaller rectangle inside this one. */}
-              <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#202E31] shadow-sm transition-colors duration-150 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand">
+              <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#202020] shadow-sm transition-colors duration-150 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#10A37F]">
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -949,7 +939,7 @@ export default function CodexPanel() {
                           >
                             <div className="text-xs font-medium flex items-center gap-1.5">
                               {m.label}
-                              {model === m.id && <Check className="w-3 h-3 text-[#167D8D]" />}
+                              {model === m.id && <Check className="w-3 h-3 text-[#10A37F]" />}
                             </div>
                             <div className="text-[10px] text-muted-foreground">{m.hint}</div>
                           </button>
@@ -983,7 +973,7 @@ export default function CodexPanel() {
                           >
                             <div className="text-xs font-medium flex items-center gap-1.5">
                               {e.label}
-                              {effort === e.id && <Check className="w-3 h-3 text-[#167D8D]" />}
+                              {effort === e.id && <Check className="w-3 h-3 text-[#10A37F]" />}
                             </div>
                             <div className="text-[10px] text-muted-foreground">{e.hint}</div>
                           </button>
@@ -999,7 +989,7 @@ export default function CodexPanel() {
                     onClick={toggleUnrestricted}
                     className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors duration-150 ${
                       unrestricted
-                        ? 'bg-[#167D8D]/15 ring-1 ring-[#167D8D]/45 text-[#0F6170] dark:text-[#78D3DF] font-medium hover:bg-[#167D8D]/25'
+                        ? 'bg-[#10A37F]/15 ring-1 ring-[#10A37F]/45 text-[#08785F] dark:text-[#74D6C0] font-medium hover:bg-[#10A37F]/25'
                         : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15'
                     }`}
                     title={unrestricted
@@ -1024,7 +1014,7 @@ export default function CodexPanel() {
                     <button
                       onClick={sendMessage}
                       disabled={!input.trim()}
-                      className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#167D8D] text-white hover:bg-[#126B79] active:bg-[#0F6170] disabled:opacity-30 disabled:pointer-events-none transition-colors duration-150"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#10A37F] text-white hover:bg-[#0D8C6D] active:bg-[#08785F] disabled:opacity-30 disabled:pointer-events-none transition-colors duration-150"
                       title="Send"
                     >
                       <Send className="w-3.5 h-3.5" />
@@ -1079,7 +1069,7 @@ function TurnView({ turn, running }: { turn: Turn; running: boolean }) {
         return (
           <div key={i} className="text-sm leading-relaxed">
             <Markdown text={block.text} />
-            {block.live && <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-[#167D8D] animate-pulse" />}
+            {block.live && <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-[#10A37F] animate-pulse" />}
           </div>
         );
       })}
@@ -1146,7 +1136,7 @@ function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
         className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-left hover:bg-black/[0.03] dark:hover:bg-white/5 active:bg-black/[0.06] dark:active:bg-white/10 transition-colors duration-150"
       >
         {block.status === 'running'
-          ? <Loader2 className="w-3 h-3 animate-spin text-[#167D8D] flex-shrink-0" />
+          ? <Loader2 className="w-3 h-3 animate-spin text-[#10A37F] flex-shrink-0" />
           : block.status === 'error'
             ? <AlertCircle className="w-3 h-3 text-danger flex-shrink-0" />
             : <Wrench className="w-3 h-3 text-muted-foreground flex-shrink-0" />}

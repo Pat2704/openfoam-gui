@@ -964,7 +964,7 @@ export default function ClaudePanel() {
                   utility: the shared rule in globals.css is unlayered, so it beat
                   the `focus:outline-none` that used to be here and drew a second,
                   smaller rectangle inside this one. */}
-              <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#26251F] shadow-sm transition-colors duration-150 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand">
+              <div className="rounded-2xl border border-black/10 dark:border-white/15 bg-white dark:bg-[#26251F] shadow-sm transition-colors duration-150 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#D97757]">
                 <textarea
                   ref={inputRef}
                   value={input}

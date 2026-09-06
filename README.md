@@ -121,7 +121,7 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   ![The Claude panel: the agent inspects a case, runs checkMesh and reports the result, with each tool call shown as a row you can open](screenshots/claude-agent.png)
 
 - **Codex** — an OpenAI agent with the same case access and controls as Claude,
-  using your ChatGPT subscription. Its teal launcher sits above Claude's; it has
+  using your ChatGPT subscription. Its black ChatGPT-logo launcher sits above Claude's; it has
   its own account, model and reasoning settings.
 
 ### Keyboard shortcuts
@@ -195,7 +195,7 @@ what it read, wrote and ran is on screen rather than in a log file.
 
 ## Setting up the Codex agent (optional)
 
-Click the teal code button above Claude's launcher → **Sign in**. Codex opens
+Click the black ChatGPT-logo button above Claude's launcher → **Sign in**. Codex opens
 your browser once and uses your ChatGPT subscription; it does not need an API
 key. The panel keeps its own Codex home, so signing in or out there does not
 change any other Codex desktop or CLI login on the machine.

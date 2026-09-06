@@ -1451,16 +1451,18 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           {/* Input */}
           <div className="border-t p-3">
             <div className="flex gap-1.5 items-end">
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={activeFile ? `Ask FOAMy... (${activeFile.path})` : 'Ask FOAMy...'}
-                className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm min-h-[38px] max-h-[100px] transition-colors duration-150 hover:border-foreground/25 disabled:opacity-60 disabled:cursor-not-allowed"
-                rows={1}
-                disabled={loading}
-              />
+              <div className="flex-1 rounded-lg focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#EA580C]">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={activeFile ? `Ask FOAMy... (${activeFile.path})` : 'Ask FOAMy...'}
+                  className="no-focus-ring w-full resize-none rounded-lg border bg-background px-3 py-2 text-sm min-h-[38px] max-h-[100px] transition-colors duration-150 hover:border-foreground/25 disabled:opacity-60 disabled:cursor-not-allowed"
+                  rows={1}
+                  disabled={loading}
+                />
+              </div>
               <Button
                 size="sm"
                 onClick={sendMessage}
