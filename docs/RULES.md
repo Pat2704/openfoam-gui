@@ -1,10 +1,21 @@
-# Handoff — current project state
+# RULES — canonical AI project instructions
 
 Last updated: 2026-09-07.
 
-This file is intentionally concise. Historical implementation details belong in
-Git history, `docs/releases/`, and `docs/audit-2026-09-03.md`; do not copy them
-back here. Read this file and `README.md` before changing the project.
+**This is the single canonical file for every project-specific rule an AI must
+follow.** `AGENTS.md` and `CLAUDE.md` may route an AI here, but must not contain
+separate project rules. Other documents may describe the product, public
+contribution process, security policy, releases, or historical evidence; when
+they reveal a durable AI instruction, record it here as well.
+
+Read this entire file and `README.md` before changing the project. Keep this file
+compact: **it must never remain above 500 lines.** If an update would take it
+past 500, compact it in the same task before committing. Preserve current
+decisions, safety boundaries, commands, and known traps; remove chronology,
+repetition, measurements that no longer guide work, and implementation history
+already recoverable from Git, `docs/releases/`, or
+`docs/audit-2026-09-03.md`. Never solve growth by splitting AI rules into a
+second file.
 
 ## 1. Current state
 
@@ -37,11 +48,15 @@ Open items:
 
 These are standing user instructions:
 
-1. **Rebuild after every project change.** Use the incremental build path; do
-   not delete caches to start clean.
-2. **Always deliver both artifacts.** Copy the fresh portable executable and
-   folder zip into `Working/`, and remove the previous version's pair there and
-   from `dist-electron/` when a new version is cut.
+1. **Build only after an effective application change.** Changes to runtime
+   code, UI, packaged assets, dependencies, build configuration, or anything
+   that can alter the installed app require an Electron build. Documentation,
+   comments, tests, formatting, or repository housekeeping alone do not. This
+   avoids spending minutes rebuilding identical binaries. When a build is
+   required, use the incremental path and never wipe caches for a clean start.
+2. **Every required build delivers both artifacts.** Copy the fresh portable
+   executable and folder zip into `Working/`, and remove the previous version's
+   pair there and from `dist-electron/` when a new version is cut.
 3. **Commit every completed change locally** in coherent commits. Do not add
    `Co-Authored-By` trailers.
 4. **Never push, tag, publish, replace a release asset, or bump the version
@@ -57,6 +72,11 @@ These are standing user instructions:
    `claude_test`.
 8. The user writes in Italian; repository prose, UI copy, and comments remain
    in English.
+9. Keep all durable AI instructions in this file. Update it when the user makes
+   a standing decision or when a bug reveals a reusable trap. Do not leave the
+   only copy of a rule in a chat, code comment, audit note, or release note.
+10. Help the user with code and GitHub publication, but treat publication as the
+    separately authorized action described above.
 
 Interface decisions already made:
 
@@ -108,8 +128,9 @@ Important modules:
 
 ### OpenFOAM compatibility
 
-- The app supports OpenFOAM Foundation v9–v14 and selects legacy (`<=10`) or
-  modular (`>=11`) case layouts.
+- The app supports the OpenFOAM Foundation line v9–v14 and selects legacy
+  (`<=10`) or modular (`>=11`) case layouts. ESI releases such as `v2312` are
+  unsupported; do not imply compatibility or tailor generated cases to them.
 - New Case generates a complete parametric box mesh, synchronized patch fields,
   version-correct dictionaries, numeric dimension sets, and a preflight.
 - The installed OpenFOAM vocabulary is built with `foamToC` and source scans,
@@ -164,9 +185,21 @@ schemas, prompt, policy, case confinement, and activity model.
   atomically.
 - External links opened by Electron are restricted to HTTP and HTTPS.
 - In unrestricted mode a failed `cd` aborts before any command can run.
+- Treat the unrestricted `/mnt/` text check as protection against accidents,
+  not a complete sandbox against a determined bypass. Any way to reach Windows
+  storage without spelling `/mnt/` is a real security finding.
+- Never place secrets in `.env`: it is copied into the packaged application.
+  Local overrides belong in ignored `.env.local` or `.env.*.local` files, and
+  credentials must never be committed, logged, or included in artifacts.
+- Security vulnerabilities are reported privately through GitHub's Security
+  tab, not in a public issue. Do not publish exploit details without the user's
+  explicit instruction.
 
 ## 5. Current UI behavior
 
+- Hardware acceleration must remain enabled. The Mesh viewer requires real
+  WebGL; disabling GPU acceleration forces the wrong renderer and is not an
+  acceptable workaround for unrelated focus or input bugs.
 - The shell owns the viewport: header, tabs, and status bar stay fixed while
   main content scrolls. Two-pane workspaces use bounded native scroll areas.
 - FOAMy, Claude, and Codex launchers share a saved bottom-right anchor. Multiple
@@ -198,7 +231,12 @@ It may be broken and recreated from the OpenFOAM 14 tutorials. Do not use
 
 ## 7. Validation and build
 
-Routine validation:
+Run validation in proportion to the change. Application code normally gets the
+full check; documentation-only changes need spelling/reference/diff checks but
+do not require the application test suite or Electron build unless they alter a
+generated or packaged input.
+
+Full application validation:
 
 ```powershell
 npm run check
@@ -211,6 +249,7 @@ npm run electron:build
 node scripts/build-electron.js --skip-build  # packaging only
 ```
 
+Run the build only under the effective-application-change rule in section 2.
 The full build is incremental and normally takes a few minutes. Never delete:
 
 - `.next/cache`;
@@ -301,8 +340,10 @@ source-to-artifact verification.
    must keep `windowsHide: true`. The server port changes every launch, so
    persistent state cannot live in origin-scoped `localStorage`.
 2. **Next 16 differs from older Next versions.** Read the relevant guide under
-   `node_modules/next/dist/docs/` before changing conventions. `proxy.ts`
-   replaced the deprecated middleware convention.
+   `node_modules/next/dist/docs/`, resolved from this project directory, before
+   changing APIs, conventions, or file structure. Heed deprecations; do not
+   rely on remembered behavior from older Next versions. `proxy.ts` replaced
+   the deprecated middleware convention.
 3. **Shell variables through `wsl.exe`:** inline `$NAME` expansion is unreliable
    in this path. Multi-line scripts and scripts using variables must use the
    existing base64 script runner.
@@ -326,16 +367,25 @@ source-to-artifact verification.
    Keep the set free of orphans. Automated sessions cannot produce the same
    full-window captures; ask the user for a saved image when one is needed.
 10. **Generated local files:** repository-root `AGENTS.md` and `CLAUDE.md` are
-    generated by `next dev`, ignored by Git, and carry the Next-version warning.
-    Deleting them is temporary. `Working/.claude/launch.json` is the Browser
-    pane's dev-server configuration and depends on the stable checkout folder
-    name `OpenFOAMStudio-source`.
+    generated or updated by `next dev` and ignored by Git. Keep only a pointer
+    to this file plus Next's unavoidable managed warning; do not put project
+    rules there. `Working/.claude/launch.json` is the Browser pane's dev-server
+    configuration and depends on the stable checkout folder name
+    `OpenFOAMStudio-source`; do not delete or rename either casually.
+11. **Code style:** match the naming, idiom, and comment density of the file
+    being edited. Comments should explain why a non-obvious choice exists or
+    why an apparent alternative failed, rather than restating the code.
+12. **Startup reports:** when investigating a launch failure, collect
+    `%APPDATA%\\openfoam-studio\\startup.log` immediately after reproduction;
+    it is truncated on every launch. Always record whether the folder zip or
+    portable executable was used, because their startup paths differ.
 
 ## 10. Documentation map
 
 - `README.md`: product description, installation, usage, architecture, and the
   packaged-app traps users and contributors need.
-- `docs/HANDOFF.md`: current operational state and constraints (this file).
+- `docs/RULES.md`: the only canonical AI instructions and current operational
+  state (this file); keep it at or below 500 lines.
 - `docs/audit-2026-09-03.md`: consolidated security, correctness, robustness,
   and frontend audit with verification evidence.
 - `docs/releases/`: canonical release history and asset naming.

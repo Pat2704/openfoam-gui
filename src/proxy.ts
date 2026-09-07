@@ -43,7 +43,7 @@
  * The `middleware` file convention is DEPRECATED in Next.js 16 and renamed to
  * `proxy` — same behaviour, different file name and different export name (see
  * node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md,
- * and note AGENTS.md's warning that this is not the Next.js you remember). A
+ * and note docs/RULES.md's warning that this is not the Next.js you remember). A
  * `middleware.ts` still builds today, which is exactly what makes it worth
  * getting right now rather than discovering it on the next upgrade.
  */

@@ -1,6 +1,6 @@
 /** Codex app-server over stdio: ChatGPT login, durable conversations, scoped tools.
  * No API key, SDK dependency, terminal window or connection to the desktop task.
- * Protocol verified against codex-cli 0.153.1; see docs/HANDOFF.md.
+ * Protocol verified against codex-cli 0.153.1; see docs/RULES.md.
  */
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';

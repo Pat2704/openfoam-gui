@@ -36,7 +36,7 @@ CLAUDE.md
 
 # step-by-step logs subagents keep so an interrupted one can be resumed
 # (§1). Working state, not project state — anything that matters gets
-# written into docs/HANDOFF.md in prose instead.
+# written into docs/RULES.md in prose instead.
 docs/agent-log/
 
 # editors / OS
