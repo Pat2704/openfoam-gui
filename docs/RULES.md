@@ -163,7 +163,12 @@ Important modules:
   lines use real ParaView guide geometry. Browser drag actions are allowlisted,
   converted through the camera basis and update both the active proxy and guide;
   do not substitute a cosmetic 2D overlay. Preserve numeric property editing as
-  an exact alternative and hide inactive guides.
+  an exact alternative and hide inactive guides. Overlay controls must stop
+  pointer propagation before the viewport captures the pointer.
+- Additional ParaView sources may be opened only from files physically inside
+  the active case. List only allowlisted data extensions, validate the relative
+  path at the API, resolve it again in the worker, reject symlink/path escapes,
+  and use ParaView's own compatible reader. Never expose a general file picker.
 - Camera and timestep interaction render at full viewport resolution. Coalesce
   pending motion/time requests and discard stale intermediate timesteps instead
   of reducing image dimensions. The Information panel must report reader-level
@@ -176,7 +181,8 @@ Important modules:
 - Real ParaView 6.0.0 probes on 2026-09-07 validated `cavity_test` reconstructed
   and four-way decomposed, six regions, 20 result times, all representations and
   all 23 catalogue filters, including both Stream Tracer seeds, guarded Tube and
-  plane/sphere/line manipulation, plus mesh-only `claude_test` renders.
+  plane/sphere/line manipulation, plus mesh-only `claude_test` renders and an
+  imported case-local STL with a downstream Slice.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.

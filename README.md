@@ -110,8 +110,10 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   and line manipulators. The Information panel reports the case extents, centre
   and dimensions along colour-coded X/Y/Z axes. Camera movement and timestep
   scrubbing remain at full viewport resolution, with coalesced requests keeping
-  interaction responsive. Mesh-only cases remain usable, and detection assumes
-  neither a versioned folder name nor an install directory.
+  interaction responsive. The Pipeline Browser can also open supported STL,
+  OBJ, PLY, VTK/XML, PVD, XDMF, EnSight, Exodus and CSV files found inside the
+  active case, including its subfolders. Mesh-only cases remain usable, and
+  detection assumes neither a versioned folder name nor an install directory.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>

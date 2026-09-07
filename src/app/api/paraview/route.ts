@@ -10,7 +10,7 @@ import {
   stopParaViewSession,
 } from '@/lib/paraview';
 import { createParaFoamMarker } from '@/lib/wsl';
-import { boundedInteger, validateCaseName } from '@/lib/wsl-input';
+import { boundedInteger, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 
 export const runtime = 'nodejs';
 
@@ -92,14 +92,17 @@ export async function POST(req: NextRequest) {
       const command = String(body.command || '');
       const allowed = new Set([
         'state', 'select', 'set_visibility', 'add_filter', 'delete', 'update', 'update_reader',
-        'update_view', 'set_manipulator', 'time', 'refresh',
+        'update_view', 'set_manipulator', 'list_case_files', 'open_case_file', 'time', 'refresh',
       ]);
       if (!allowed.has(command)) {
         return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
       }
-      const data = body.data && typeof body.data === 'object' && !Array.isArray(body.data)
+      let data = body.data && typeof body.data === 'object' && !Array.isArray(body.data)
         ? body.data as Record<string, unknown>
         : {};
+      if (command === 'open_case_file') {
+        data = { path: validateRelativePath(typeof data.path === 'string' ? data.path : '', 'File path') };
+      }
       const result = await sendParaViewCommand(command, data);
       return NextResponse.json(result);
     }

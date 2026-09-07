@@ -218,6 +218,7 @@ export interface ParaViewArrayInfo {
 
 export type ParaViewNodeType =
   | 'OpenFOAMReader'
+  | 'CaseFileReader'
   | 'Slice'
   | 'Clip'
   | 'Contour'
@@ -271,6 +272,7 @@ export interface ParaViewPipelineNode {
   lineWidth: number;
   pointSize: number;
   color: { association: 'SOLID' | 'BLOCKS' | 'CELLS' | 'POINTS'; name: string; preset: string; legend: boolean };
+  filePath?: string;
   origin?: [number, number, number];
   normal?: [number, number, number];
   invert?: boolean;
@@ -334,6 +336,7 @@ from paraview.simple import *
 
 PREFIX = '__OFSTUDIO_JSON__'
 marker, output_dir, case_name, pv_version = sys.argv[1:5]
+case_root = os.path.realpath(os.path.dirname(marker))
 nodes = OrderedDict()
 guides = {}
 selected_id = 'reader'
@@ -341,6 +344,12 @@ current_time = 0.0
 next_filter = 1
 background_name = 'ParaView Dark'
 manipulator_visible = False
+
+SUPPORTED_CASE_FILE_EXTENSIONS = {
+    '.stl', '.obj', '.ply', '.vtk', '.vtp', '.vtu', '.vti', '.vtr', '.vts',
+    '.pvd', '.vtm', '.vtmb', '.xmf', '.xdmf', '.case', '.csv', '.foam',
+    '.openfoam', '.ex2', '.e',
+}
 
 BACKGROUNDS = {
     'ParaView Dark': [0.18, 0.20, 0.24],
@@ -373,6 +382,47 @@ def vector(value, fallback):
     if not isinstance(value, list) or len(value) != 3:
         return list(fallback)
     return [clean_number(value[i], fallback[i]) for i in range(3)]
+
+def resolve_case_file(relative_path):
+    requested = str(relative_path or '')
+    if not requested or len(requested) > 1024 or '\\' in requested or requested.startswith('/'):
+        raise RuntimeError('Choose a file inside the active case.')
+    parts = requested.split('/')
+    if any(part in ('', '.', '..') for part in parts):
+        raise RuntimeError('The file path must remain inside the active case.')
+    candidate = os.path.realpath(os.path.join(case_root, *parts))
+    try:
+        inside = os.path.normcase(os.path.commonpath([case_root, candidate])) == os.path.normcase(case_root)
+    except Exception:
+        inside = False
+    if not inside or not os.path.isfile(candidate):
+        raise RuntimeError('The selected file is not inside the active case.')
+    extension = os.path.splitext(candidate)[1].lower()
+    if extension not in SUPPORTED_CASE_FILE_EXTENSIONS:
+        raise RuntimeError('That file type is not supported by the ParaView workbench.')
+    return candidate, '/'.join(parts)
+
+def list_case_files():
+    result = []
+    marker_real = os.path.normcase(os.path.realpath(marker))
+    for directory, directory_names, file_names in os.walk(case_root, followlinks=False):
+        directory_names[:] = [name for name in directory_names if not os.path.islink(os.path.join(directory, name))]
+        for name in file_names:
+            candidate = os.path.join(directory, name)
+            extension = os.path.splitext(name)[1].lower()
+            if extension not in SUPPORTED_CASE_FILE_EXTENSIONS: continue
+            try:
+                resolved = os.path.realpath(candidate)
+                if os.path.normcase(resolved) == marker_real: continue
+                if os.path.normcase(os.path.commonpath([case_root, resolved])) != os.path.normcase(case_root): continue
+                if not os.path.isfile(resolved): continue
+                relative = os.path.relpath(candidate, case_root).replace(os.sep, '/')
+                result.append({'path': relative, 'name': name, 'extension': extension[1:].upper(), 'size': int(os.path.getsize(resolved))})
+            except Exception:
+                continue
+            if len(result) >= 5000: break
+        if len(result) >= 5000: break
+    return sorted(result, key=lambda item: item['path'].lower())
 
 def available_values(proxy, property_name):
     try:
@@ -474,6 +524,7 @@ def node_state(identifier, node):
         'manipulatorAvailable': node['type'] in ('Slice', 'Clip', 'StreamTracer', 'PlotOverLine'),
         'manipulatorVisible': manipulator_visible and identifier == selected_id,
     }
+    if node.get('filePath'): state['filePath'] = node['filePath']
     proxy = node['proxy']
     if node['type'] == 'Slice':
         state['origin'] = list(proxy.SliceType.Origin)
@@ -820,6 +871,48 @@ def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
     ensure_guide(identifier)
     return identifier
 
+def open_case_file(relative_path):
+    global selected_id, next_filter
+    full_path, safe_relative = resolve_case_file(relative_path)
+    previous_selected = selected_id
+    try:
+        proxy = OpenDataFile(full_path)
+    except Exception:
+        raise RuntimeError('ParaView could not find a compatible reader for that file.')
+    if isinstance(proxy, (list, tuple)):
+        if len(proxy) != 1: raise RuntimeError('ParaView returned an unexpected reader group for that file.')
+        proxy = proxy[0]
+    if proxy is None: raise RuntimeError('ParaView could not find a reader for that file.')
+    label = os.path.basename(safe_relative)
+    identifier = None
+    try:
+        RenameSource(label, proxy)
+    except Exception:
+        pass
+    try:
+        proxy.UpdatePipelineInformation()
+        proxy.UpdatePipeline(time=current_time)
+        display = Show(proxy, view)
+        identifier = 'source-' + str(next_filter)
+        next_filter += 1
+        nodes[identifier] = {
+            'proxy': proxy, 'display': display, 'label': label,
+            'type': 'CaseFileReader', 'parent': None, 'filePath': safe_relative,
+            'visible': True, 'representation': 'Surface', 'opacity': 1.0,
+            'lineWidth': 1.0, 'pointSize': 3.0,
+            'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
+        }
+        selected_id = identifier
+        set_manipulator(False)
+        apply_display(nodes[identifier])
+        ResetCamera(view)
+    except Exception:
+        if identifier in nodes: del nodes[identifier]
+        selected_id = previous_selected
+        try: Delete(proxy)
+        except Exception: pass
+        raise RuntimeError('ParaView could not open that case file with a compatible reader.')
+
 def point_vector_for(parent_id, auto_convert):
     candidates = [a for a in arrays_for(nodes[parent_id]['proxy']) if a['association'] == 'POINTS' and a['components'] >= 2]
     if candidates: return parent_id, candidates[0]
@@ -1033,8 +1126,8 @@ def delete_selected():
     delete_guide(identifier)
     Delete(nodes[identifier]['proxy'])
     del nodes[identifier]
-    selected_id = parent_id
-    parent = nodes[parent_id]
+    selected_id = parent_id or 'reader'
+    parent = nodes[selected_id]
     parent['visible'] = True
     parent['display'].Visibility = 1
     ResetCamera(view)
@@ -1298,6 +1391,10 @@ for line in sys.__stdin__:
             update_view(data); emit(identifier, True, {'state': state()})
         elif action == 'set_manipulator':
             set_manipulator(data.get('enabled')); emit(identifier, True, {'state': state()})
+        elif action == 'list_case_files':
+            emit(identifier, True, {'files': list_case_files()})
+        elif action == 'open_case_file':
+            open_case_file(data.get('path')); emit(identifier, True, {'state': state()})
         elif action == 'time':
             set_time(data.get('time')); emit(identifier, True, {'state': state()})
         elif action == 'refresh':
@@ -1319,7 +1416,14 @@ for line in sys.__stdin__:
         emit(locals().get('identifier', -1), False, error=str(error))
 `;
 
-type WorkerResult = { state?: ParaViewWorkbenchState; image?: string };
+export interface ParaViewCaseFile {
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+}
+
+type WorkerResult = { state?: ParaViewWorkbenchState; image?: string; files?: ParaViewCaseFile[] };
 type Pending = {
   resolve: (value: WorkerResult) => void;
   reject: (error: Error) => void;

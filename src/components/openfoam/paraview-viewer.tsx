@@ -5,16 +5,17 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
-import type { ParaViewNodeType, ParaViewPipelineNode, ParaViewWorkbenchState } from '@/lib/paraview';
+import type { ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewWorkbenchState } from '@/lib/paraview';
 import {
   AlertTriangle, ArrowUpRight, Box, Calculator, ChevronLeft, ChevronRight, CircleDot,
-  Download, Eye, EyeOff, Filter, GitFork, Grid3X3, Info, Layers3, Loader2,
+  Download, Eye, EyeOff, FileBox, Filter, FolderOpen, GitFork, Grid3X3, Info, Layers3, Loader2,
   Maximize2, MousePointer2, Move3D, Network, Pause, Play, Power, RefreshCw,
   Rotate3D, Scissors, Search, Settings, SlidersHorizontal, Sparkles,
   SquareDashedMousePointer, Trash2, Waves,
@@ -22,7 +23,7 @@ import {
 import { toast } from 'sonner';
 
 type Vector3 = [number, number, number];
-type FilterType = Exclude<ParaViewNodeType, 'OpenFOAMReader'>;
+type FilterType = Exclude<ParaViewNodeType, 'OpenFOAMReader' | 'CaseFileReader'>;
 type CameraMode = 'rotate' | 'pan' | 'zoom';
 type ManipulatorMode = 'translate' | 'rotate' | 'scale' | 'point1' | 'point2';
 type ViewportTool = 'camera' | ManipulatorMode;
@@ -141,6 +142,7 @@ function filterLabel(type: FilterType): string {
 }
 
 function filterIcon(type: ParaViewNodeType) {
+  if (type === 'CaseFileReader') return <FileBox className="h-3.5 w-3.5" />;
   if (type === 'Slice') return <Scissors className="h-3.5 w-3.5" />;
   if (type === 'Clip') return <SquareDashedMousePointer className="h-3.5 w-3.5" />;
   if (type === 'Contour') return <CircleDot className="h-3.5 w-3.5" />;
@@ -155,6 +157,12 @@ function filterIcon(type: ParaViewNodeType) {
   if (type === 'Transform' || type === 'WarpByVector' || type === 'WarpByScalar') return <Move3D className="h-3.5 w-3.5" />;
   if (type === 'Gradient' || type === 'TemporalStatistics' || type === 'IntegrateVariables') return <Grid3X3 className="h-3.5 w-3.5" />;
   return <GitFork className="h-3.5 w-3.5" />;
+}
+
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function VectorInputs({ value, onChange }: { value: Vector3; onChange: (index: number, value: string) => void }) {
@@ -193,6 +201,11 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [playing, setPlaying] = useState(false);
   const [filterChoice, setFilterChoice] = useState<FilterType | undefined>();
   const [viewportTool, setViewportTool] = useState<ViewportTool>('camera');
+  const [fileDialogOpen, setFileDialogOpen] = useState(false);
+  const [caseFiles, setCaseFiles] = useState<ParaViewCaseFile[]>([]);
+  const [fileSearch, setFileSearch] = useState('');
+  const [selectedFile, setSelectedFile] = useState('');
+  const [filesLoading, setFilesLoading] = useState(false);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef('');
@@ -213,6 +226,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     () => workbench?.pipeline.find(node => node.id === workbench.selectedId) || null,
     [workbench],
   );
+  const visibleCaseFiles = useMemo(() => {
+    const query = fileSearch.trim().toLowerCase();
+    return query ? caseFiles.filter(file => file.path.toLowerCase().includes(query)) : caseFiles;
+  }, [caseFiles, fileSearch]);
 
   const imageSize = useCallback(() => {
     return {
@@ -269,6 +286,42 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       if (!options.quiet) setBusy(false);
     }
   }, [fetchRender]);
+
+  const loadCaseFiles = useCallback(async () => {
+    setFilesLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/paraview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'command', command: 'list_case_files', data: {} }),
+      });
+      if (!response.ok) throw new Error(await errorFrom(response));
+      const result = await response.json() as { files?: ParaViewCaseFile[] };
+      const files = result.files || [];
+      setCaseFiles(files);
+      setSelectedFile(current => files.some(file => file.path === current) ? current : '');
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Case files could not be listed.';
+      setError(message);
+      toast.error(message);
+    } finally {
+      setFilesLoading(false);
+    }
+  }, []);
+
+  const showFileBrowser = () => {
+    setFileDialogOpen(true);
+    setFileSearch('');
+    void loadCaseFiles();
+  };
+
+  const openSelectedFile = async () => {
+    if (!selectedFile) return;
+    setFilesLoading(true);
+    const loaded = await command('open_case_file', { path: selectedFile });
+    setFilesLoading(false);
+    if (loaded) setFileDialogOpen(false);
+  };
 
   const start = useCallback(async (force = false) => {
     if (!caseName || starting || !configLoaded) return;
@@ -723,7 +776,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[250px_minmax(360px,1fr)_310px]">
         <aside className="flex min-h-0 flex-col border-r bg-muted/15">
-          <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-3 text-xs font-semibold"><Layers3 className="h-3.5 w-3.5" /> Pipeline Browser</div>
+          <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-2 text-xs font-semibold"><Layers3 className="h-3.5 w-3.5" /> Pipeline Browser<Button size="sm" variant="ghost" className="ml-auto h-7 px-1.5 text-[9px]" disabled={busy} onClick={showFileBrowser} title="Open a data file from this case"><FolderOpen className="h-3.5 w-3.5" /> Open file</Button></div>
           <ScrollArea className="min-h-28 flex-1 border-b">
             <div className="p-1.5">{workbench.pipeline.map(node => (
               <div key={node.id} className={`group flex h-8 cursor-default items-center gap-1 rounded px-1 text-xs ${node.id === workbench.selectedId ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`} style={{ paddingLeft: `${4 + depthOf(node) * 15}px` }} onClick={() => void command('select', { id: node.id }, { render: false })}>
@@ -788,7 +841,16 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             onWheel={event => { event.preventDefault(); void cameraRequest('zoom', 0, event.deltaY); if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current); wheelTimerRef.current = setTimeout(requestStillRender, 140); }}
           >
             {imageUrl ? <img src={imageUrl} alt={`ParaView render of ${caseName}`} draggable={false} className="h-full w-full object-contain" /> : <Loader2 className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 animate-spin text-white/70" />}
-            {selected?.manipulatorVisible && <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-white/20 bg-black/65 p-1 shadow-lg backdrop-blur-sm">
+            {selected?.manipulatorVisible && <div
+              role="toolbar"
+              aria-label="3D manipulator mode"
+              className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 cursor-default items-center gap-1 rounded-lg border border-white/20 bg-black/65 p-1 shadow-lg backdrop-blur-sm"
+              onPointerDown={event => event.stopPropagation()}
+              onPointerMove={event => event.stopPropagation()}
+              onPointerUp={event => event.stopPropagation()}
+              onPointerCancel={event => event.stopPropagation()}
+              onWheel={event => event.stopPropagation()}
+            >
               <Button size="sm" variant={viewportTool === 'camera' ? 'secondary' : 'ghost'} className="h-7 text-[10px] text-white hover:text-white" onClick={() => setViewportTool('camera')}><MousePointer2 className="h-3.5 w-3.5" /> Navigate</Button>
               {manipulatorTools.map(tool => <Button key={tool.mode} size="sm" variant={viewportTool === tool.mode ? 'secondary' : 'ghost'} className="h-7 text-[10px] text-white hover:text-white" onClick={() => setViewportTool(tool.mode)}>{tool.mode === 'rotate' ? <Rotate3D className="h-3.5 w-3.5" /> : <Move3D className="h-3.5 w-3.5" />}{tool.label}</Button>)}
             </div>}
@@ -806,7 +868,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             </TabsList>
 
             <TabsContent value="properties" className="mt-0 min-h-0 flex-1"><ScrollArea className="h-full">{selected && <div className="space-y-4 p-3 text-xs">
-              <div><p className="font-semibold">{selected.label}</p><p className="text-[10px] text-muted-foreground">{selected.type}</p></div>
+              <div><p className="font-semibold">{selected.label}</p><p className="text-[10px] text-muted-foreground">{selected.type}</p>{selected.filePath && <p className="mt-1 break-all font-mono text-[9px] text-muted-foreground" title={selected.filePath}>{selected.filePath}</p>}</div>
               {selected.manipulatorAvailable && <Button size="sm" variant={selected.manipulatorVisible ? 'default' : 'outline'} className="h-8 w-full text-xs" disabled={busy} onClick={toggleManipulator}><Move3D className="h-4 w-4" />{selected.manipulatorVisible ? 'Hide 3D manipulator' : 'Edit graphically in 3D'}</Button>}
 
               <section className="space-y-2 border-t pt-3">
@@ -924,6 +986,40 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         <Badge variant="outline" className="min-w-20 justify-center font-mono text-[10px]">{workbench.time}</Badge>
         <span className="hidden max-w-44 truncate text-[10px] text-muted-foreground sm:inline" title={caseName}>{caseName}</span>
       </div>
+
+      <Dialog open={fileDialogOpen} onOpenChange={setFileDialogOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Open case data in ParaView</DialogTitle>
+            <DialogDescription>Only supported files physically contained in <span className="font-mono">{caseName}</span> are available. The selected file is added as a new pipeline source.</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2">
+            <Input value={fileSearch} onChange={event => setFileSearch(event.target.value)} placeholder="Filter by folder or file name…" autoFocus />
+            <Button size="icon" variant="outline" disabled={filesLoading} onClick={() => void loadCaseFiles()} title="Refresh case files"><RefreshCw className={`h-4 w-4 ${filesLoading ? 'animate-spin' : ''}`} /></Button>
+          </div>
+          <ScrollArea className="h-[340px] rounded-md border bg-muted/10">
+            <div className="space-y-1 p-2">
+              {filesLoading && caseFiles.length === 0 && <div className="flex h-28 items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Scanning the case…</div>}
+              {!filesLoading && visibleCaseFiles.length === 0 && <div className="flex h-28 flex-col items-center justify-center text-center text-sm text-muted-foreground"><FileBox className="mb-2 h-7 w-7 opacity-40" /><span>{caseFiles.length === 0 ? 'No supported ParaView data files were found in this case.' : 'No file matches this search.'}</span></div>}
+              {visibleCaseFiles.map(file => <button
+                type="button"
+                key={file.path}
+                className={`grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors ${selectedFile === file.path ? 'border-primary bg-primary/10' : 'border-transparent hover:bg-muted'}`}
+                onClick={() => setSelectedFile(file.path)}
+                onDoubleClick={() => { setSelectedFile(file.path); void command('open_case_file', { path: file.path }).then(loaded => { if (loaded) setFileDialogOpen(false); }); }}
+              >
+                <Badge variant="secondary" className="min-w-11 justify-center font-mono text-[9px]">{file.extension}</Badge>
+                <span className="min-w-0"><span className="block truncate text-xs font-medium" title={file.name}>{file.name}</span><span className="block truncate font-mono text-[9px] text-muted-foreground" title={file.path}>{file.path}</span></span>
+                <span className="font-mono text-[9px] text-muted-foreground">{fileSize(file.size)}</span>
+              </button>)}
+            </div>
+          </ScrollArea>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[10px] text-muted-foreground">STL, OBJ, PLY, VTK/XML, PVD, XDMF, EnSight, Exodus and CSV</p>
+            <div className="flex gap-2"><Button variant="outline" onClick={() => setFileDialogOpen(false)}>Cancel</Button><Button disabled={!selectedFile || filesLoading} onClick={() => void openSelectedFile()}><FolderOpen className="h-4 w-4" /> Open in pipeline</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
