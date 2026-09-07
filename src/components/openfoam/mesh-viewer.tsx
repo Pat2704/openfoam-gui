@@ -418,11 +418,16 @@ function readThemeColors(): { background: [number, number, number]; foregroundCs
   return { background: cssColorToRgb(bgCss, fallback), foregroundCss: fgCss, backgroundCss: bgCss };
 }
 
-export default function MeshViewer({ caseName, active = true }: {
+export default function MeshViewer({ caseName, active = true, source = 'mesh', sourcePath = '' }: {
   caseName: string;
   /** False while another tab is on screen — we skip resize work and redraws. */
   active?: boolean;
+  /** ParaView reuses the proven renderer but supplies its own extracted surface. */
+  source?: 'mesh' | 'paraview';
+  /** Optional pvpython/install path, already selected in the ParaView panel. */
+  sourcePath?: string;
 }) {
+  const isParaView = source === 'paraview';
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -837,7 +842,10 @@ export default function MeshViewer({ caseName, active = true }: {
     setShowAxes(false);
 
     try {
-      const res = await fetch(`/api/mesh?case=${encodeURIComponent(caseName)}`);
+      const endpoint = isParaView
+        ? `/api/paraview?case=${encodeURIComponent(caseName)}&path=${encodeURIComponent(sourcePath)}`
+        : `/api/mesh?case=${encodeURIComponent(caseName)}`;
+      const res = await fetch(endpoint);
       if (!res.ok) {
         const msg = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(msg.error || `HTTP ${res.status}`);
@@ -899,7 +907,11 @@ export default function MeshViewer({ caseName, active = true }: {
       setTriangles(header.triangles);
       setHasMesh(true);
       fitRef.current?.();
-      toast.success(`${header.triangles.toLocaleString()} triangles, ${built.length} patches`);
+      toast.success(
+        isParaView
+          ? `ParaView loaded ${header.triangles.toLocaleString()} triangles`
+          : `${header.triangles.toLocaleString()} triangles, ${built.length} patches`
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load the mesh';
       // Keep the stack: the failures here (buffer alignment, three.js limits)
@@ -910,7 +922,7 @@ export default function MeshViewer({ caseName, active = true }: {
     } finally {
       setLoading(false);
     }
-  }, [caseName, clearVertexLabels]);
+  }, [caseName, clearVertexLabels, isParaView, sourcePath]);
 
   // ── blockMeshDict vertex numbering ────────────────────────────────────────
   const loadVertexLabels = useCallback(async () => {
@@ -1060,7 +1072,7 @@ export default function MeshViewer({ caseName, active = true }: {
       <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
         <div className="text-center">
           <Box className="w-12 h-12 mx-auto mb-2 opacity-30" />
-          <p>Select a case from the Dashboard to view its mesh</p>
+          <p>Select a case from the Dashboard to view it in {isParaView ? 'ParaView' : 'the mesh viewer'}</p>
         </div>
       </div>
     );
@@ -1072,14 +1084,14 @@ export default function MeshViewer({ caseName, active = true }: {
         <CardHeader className="py-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Box className="w-4 h-4" /> Boundary Mesh
+              <Box className="w-4 h-4" /> {isParaView ? 'ParaView Scene' : 'Boundary Mesh'}
               {triangles > 0 && (
                 <>
                   <Badge variant="secondary" className="text-[10px] font-mono">
                     {triangles.toLocaleString()} tri
                   </Badge>
                   <Badge variant="secondary" className="text-[10px] font-mono">
-                    {patches.length} patches
+                    {isParaView ? 'processed surface' : `${patches.length} patches`}
                   </Badge>
                 </>
               )}
@@ -1088,8 +1100,8 @@ export default function MeshViewer({ caseName, active = true }: {
               <Button size="sm" variant="outline" className="h-7 text-xs"
                 onClick={loadMesh} disabled={loading}>
                 {loading
-                  ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Extracting…</>
-                  : <><RefreshCw className="w-3 h-3 mr-1" /> {hasMesh ? 'Reload' : 'Load mesh'}</>}
+                  ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> {isParaView ? 'Processing…' : 'Extracting…'}</>
+                  : <><RefreshCw className="w-3 h-3 mr-1" /> {hasMesh ? 'Reload' : isParaView ? 'Load case' : 'Load mesh'}</>}
               </Button>
               {hasMesh && (
                 <>
@@ -1101,13 +1113,15 @@ export default function MeshViewer({ caseName, active = true }: {
                     onClick={() => setShowAxes(a => !a)} title="Orientation triad in the corner — X red, Y green, Z blue">
                     <Move3d className="w-3 h-3 mr-1" /> Axes
                   </Button>
-                  <Button size="sm" variant={showLabels ? 'default' : 'outline'} className="h-7 text-xs"
-                    onClick={toggleLabels} disabled={labelsLoading}
-                    title="Vertex numbers from system/blockMeshDict">
-                    {labelsLoading
-                      ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Reading…</>
-                      : <><Hash className="w-3 h-3 mr-1" /> Vertices{labelCount > 0 ? ` (${labelCount})` : ''}</>}
-                  </Button>
+                  {!isParaView && (
+                    <Button size="sm" variant={showLabels ? 'default' : 'outline'} className="h-7 text-xs"
+                      onClick={toggleLabels} disabled={labelsLoading}
+                      title="Vertex numbers from system/blockMeshDict">
+                      {labelsLoading
+                        ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Reading…</>
+                        : <><Hash className="w-3 h-3 mr-1" /> Vertices{labelCount > 0 ? ` (${labelCount})` : ''}</>}
+                    </Button>
+                  )}
                   <Button size="sm" variant="outline" className="h-7 text-xs" onClick={fitToView}>
                     <Maximize2 className="w-3 h-3 mr-1" /> Fit
                   </Button>
@@ -1168,7 +1182,7 @@ export default function MeshViewer({ caseName, active = true }: {
               <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
                 <div className="text-center">
                   <Box className="w-10 h-10 mx-auto mb-2 opacity-20" />
-                  <p>Press <span className="font-medium">Load mesh</span> to extract and display the boundary patches</p>
+                  <p>Press <span className="font-medium">{isParaView ? 'Load case' : 'Load mesh'}</span> to {isParaView ? 'run paraFoam -touch and process the case with ParaView' : 'extract and display the boundary patches'}</p>
                   <p className="text-xs mt-1 opacity-70">Requires a meshed case — run blockMesh first</p>
                 </div>
               </div>
@@ -1198,8 +1212,8 @@ export default function MeshViewer({ caseName, active = true }: {
 
       {/* Mesh quality and boundary conditions live here rather than in the
           Monitor tab: both describe the mesh, not the running solve. */}
-      <CheckMeshPanel caseName={caseName} />
-      <BCValidationPanel caseName={caseName} />
+      {!isParaView && <CheckMeshPanel caseName={caseName} />}
+      {!isParaView && <BCValidationPanel caseName={caseName} />}
     </div>
   );
 }

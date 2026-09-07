@@ -727,7 +727,7 @@ function writeConfig(config) {
   // Write to a temp file and rename, rather than writing over the real one.
   //
   // writeFileSync opens with O_TRUNC, so the file is EMPTY between the open and
-  // the write. saveFoamyConfig in src/lib/foamy-store.ts sends all nine keys on
+  // the write. saveFoamyConfig in src/lib/foamy-store.ts sends all known keys on
   // every settings change, so this rewrite happens on each tweak of the model,
   // the effort or the provider — and a crash, a power loss or a full disk in
   // that window left the user with a zero-length config and no API key, which

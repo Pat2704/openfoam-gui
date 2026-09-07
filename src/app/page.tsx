@@ -9,7 +9,7 @@ import { useTheme } from 'next-themes';
 import {
   LayoutDashboard, Wand2, FileCode, Terminal, Activity,
   TerminalSquare, Waves, Cpu, X, Boxes, FolderTree,
-  Keyboard, Sun, Moon, Zap, Box
+  Keyboard, Sun, Moon, Zap, Box, Cuboid
 } from 'lucide-react';
 import Dashboard from '@/components/openfoam/dashboard';
 import CaseWizard from '@/components/openfoam/case-wizard';
@@ -17,6 +17,7 @@ import FileEditor from '@/components/openfoam/file-editor';
 import CommandPanel from '@/components/openfoam/command-panel';
 import Monitor from '@/components/openfoam/monitor';
 import MeshViewer from '@/components/openfoam/mesh-viewer';
+import ParaViewViewer from '@/components/openfoam/paraview-viewer';
 import OpenFoamBrowser from '@/components/openfoam/foam-browser';
 import { useCaseContext } from '@/lib/case-context';
 
@@ -27,6 +28,7 @@ const TABS = [
   { id: 'commands', label: 'Commands', icon: <Terminal className="w-4 h-4" /> },
   { id: 'monitor', label: 'Monitor', icon: <Activity className="w-4 h-4" /> },
   { id: 'mesh', label: 'Mesh', icon: <Box className="w-4 h-4" /> },
+  { id: 'paraview', label: 'ParaView', icon: <Cuboid className="w-4 h-4" /> },
   { id: 'applications', label: 'Applications', icon: <Boxes className="w-4 h-4" /> },
   { id: 'src', label: 'Src', icon: <FolderTree className="w-4 h-4" /> },
 ];
@@ -35,7 +37,7 @@ const SHORTCUTS = [
   { keys: 'Ctrl + S', desc: 'Save the open file in the editor' },
   { keys: 'Ctrl + Enter', desc: 'Send message in chat' },
   { keys: 'Ctrl + /', desc: 'Show/hide keyboard shortcuts' },
-  { keys: 'Ctrl + 1-7', desc: 'Switch tab (Dashboard, Wizard, Editor, ...)' },
+  { keys: 'Ctrl + 1-9', desc: 'Switch tab (Dashboard, Wizard, Editor, ...)' },
   { keys: '↑ / ↓', desc: 'Navigate command history in the terminal' },
   { keys: 'Ctrl + F', desc: 'Search in the file open in the editor' },
   { keys: 'Ctrl + B', desc: 'Switch light/dark theme' },
@@ -70,7 +72,7 @@ export default function Home() {
   // with CSS. Previously each tab was conditionally rendered, so every
   // switch unmounted the component and re-ran all of its WSL fetches —
   // which is what made changing section feel slow. Mounting lazily (rather
-  // than all seven up front) keeps startup cheap.
+  // than all tabs up front) keeps startup cheap.
   const [visitedTabs, setVisitedTabs] = useState<string[]>(['dashboard']);
   useEffect(() => {
     setVisitedTabs(prev => (prev.includes(activeTab) ? prev : [...prev, activeTab]));
@@ -183,8 +185,8 @@ export default function Home() {
         setShowShortcuts(d => !d);
         return;
       }
-      // Ctrl+1..7  →  switch tabs
-      if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '7') {
+      // Ctrl+1..9  →  switch tabs
+      if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '9') {
         e.preventDefault();
         const idx = parseInt(e.key) - 1;
         if (TABS[idx]) setActiveTab(TABS[idx].id);
@@ -383,6 +385,11 @@ export default function Home() {
         {visitedTabs.includes('mesh') && (
           <div className={paneClass('mesh')}>
             <MeshViewer key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'mesh'} />
+          </div>
+        )}
+        {visitedTabs.includes('paraview') && (
+          <div className={paneClass('paraview')}>
+            <ParaViewViewer key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'paraview'} />
           </div>
         )}
         {visitedTabs.includes('applications') && (

@@ -55,6 +55,7 @@ Windows SmartScreen will warn on first run because the executable is unsigned:
 | Windows | 10 (build 19041+) or 11, 64-bit |
 | WSL2 + Ubuntu | 22.04 or 24.04 — check with `wsl --list -v` |
 | OpenFOAM | v9 → v14, installed inside WSL |
+| ParaView | optional, for the integrated ParaView tab; installed on Windows |
 | LLM API key | optional, only for the FOAMy chat |
 | Claude desktop app | optional, only for the Claude agent — it runs on your subscription |
 | Codex CLI | optional, only for the Codex agent — it runs on your ChatGPT subscription |
@@ -100,6 +101,11 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   condition validation live here too.
 
   ![The Mesh tab: the boundary mesh of a T-junction case in wireframe, with its four patches listed above the view, each one able to be recoloured or hidden](screenshots/mesh.png)
+- **ParaView** — load the selected case through ParaView without opening its
+  desktop interface. The app runs `paraFoam -touch` in WSL, starts `pvpython`
+  invisibly, extracts the surface with ParaView's OpenFOAM reader and displays
+  the result in an interactive 3D view. Detection does not assume a versioned
+  folder name; portable or unusual installations can be selected by path.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>
@@ -126,7 +132,7 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
 
 ### Keyboard shortcuts
 
-`Ctrl+1…7` switch tab · `Ctrl+S` save file · `Ctrl+Enter` send to FOAMy ·
+`Ctrl+1…9` switch tab · `Ctrl+S` save file · `Ctrl+Enter` send to FOAMy ·
 `Ctrl+B` light/dark · `Ctrl+F` search in file · `Ctrl+/` show shortcuts
 
 ---
@@ -218,6 +224,20 @@ through the app's shared OpenFOAM policy.
 
 ---
 
+## Setting up ParaView (optional)
+
+Install a Windows build of ParaView, then open the **ParaView** tab. OpenFOAM
+Studio searches `PATH`, Windows installation records, Program Files and Local
+AppData, probes each `pvpython.exe` it finds, and selects the newest usable
+version. No fixed version or installation directory is assumed.
+
+For a portable copy or custom directory, enter the ParaView folder,
+`paraview.exe`, or `pvpython.exe` and click **Use path**. The choice is stored
+locally. ParaView is not bundled; it runs as a separate background process only
+when a case is loaded.
+
+---
+
 ## Troubleshooting
 
 **The WSL2 badge is red** — run `wsl --status`; if the distro hangs, `wsl --shutdown`
@@ -256,6 +276,11 @@ failed.
 then click **Look again** in the Codex panel. You can also enter the full path
 to `codex.exe`; the panel shows each attempted path and why it was rejected.
 
+**"ParaView is not ready"** — install the Windows build and click **Look
+again**. For a portable or non-standard copy, enter its directory or the full
+path to `pvpython.exe`. A first case load can take noticeably longer because
+ParaView initializes its OpenFOAM reader in a separate process.
+
 ---
 
 ## Building from source
@@ -292,6 +317,7 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
 | `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
+| `src/lib/paraview.ts` | version-independent discovery and fixed headless ParaView pipeline |
 | `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |
 | `src/app/api/**` | REST endpoints the UI talks to |
 | `src/components/openfoam/**` | the tabs |

@@ -39,6 +39,8 @@ export const FOAMY_KEYS = [
   'codex-agent-effort',
   'codex-agent-path',
   'codex-agent-unrestricted',
+  // Optional override for portable/non-standard ParaView installations.
+  'paraview-path',
 ] as const;
 
 export type FoamyConfig = Partial<Record<(typeof FOAMY_KEYS)[number], string>>;

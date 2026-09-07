@@ -3115,3 +3115,41 @@ export function cleanupCaseSurface(caseName: string): void {
     runInWsl(`rm -f ${shellQuote(`${casePath}/${SURFACE_STL_NAME}`)}`, 10000);
   } catch { /* best effort */ }
 }
+
+export interface ParaFoamMarker {
+  /** POSIX path inside WSL. */
+  linuxPath: string;
+  /** The same file through WSL's Windows UNC share, for native ParaView. */
+  windowsPath: string;
+}
+
+/**
+ * Ask OpenFOAM's own paraFoam wrapper to create/update the case marker.
+ *
+ * The marker is intentionally retained: it is the normal tiny `paraFoam
+ * -touch` artefact, can be reused by ParaView itself, and contains no generated
+ * mesh data. Unlike the Mesh tab's temporary STL, there is nothing bulky to
+ * clean up.
+ */
+export function createParaFoamMarker(caseName: string): ParaFoamMarker {
+  const casePath = getCasePath(caseName);
+  const src = foamSource();
+  const script = `
+${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 1; }
+[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 1; }
+paraFoam -touch 2>&1 || { echo "__PARAFOAM_FAILED__"; exit 1; }
+find . -maxdepth 1 -type f -name '*.OpenFOAM' -printf '__MARKER__%f\n' | head -1
+`;
+  const out = runInWslScript(Buffer.from(script).toString('base64'), 30_000);
+  if (out.includes('__NO_CASE__')) throw new Error(`Case not found: ${caseName}`);
+  if (out.includes('__NO_MESH__')) throw new Error('This case has no mesh yet — run blockMesh first.');
+  if (out.includes('__PARAFOAM_FAILED__')) {
+    throw new Error('paraFoam -touch failed. Check that paraFoam is available in the selected OpenFOAM installation.');
+  }
+  const match = out.match(/^__MARKER__([^\r\n]+\.OpenFOAM)$/m);
+  if (!match || !/^[^/\\\0\r\n]+\.OpenFOAM$/.test(match[1])) {
+    throw new Error('paraFoam -touch did not create a valid .OpenFOAM marker.');
+  }
+  const linuxPath = `${casePath}/${match[1]}`;
+  return { linuxPath, windowsPath: wslPathToWindows(linuxPath) };
+}

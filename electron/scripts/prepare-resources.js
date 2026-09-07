@@ -51,10 +51,32 @@ function fail(msg) {
  * the stale entries is what keeps that safe — without it the old hashed chunks
  * under .next/static would pile up inside the .exe.
  *
- * Files are compared on size and mtime. copyFileSync does not carry the mtime
- * across, so it is restored explicitly; otherwise every file would look newer
- * than its source and the next run would copy everything again.
+ * Size and mtime are the cheap first check, but equal metadata is not enough:
+ * a power loss once left a newly copied chunk full of NUL bytes while NTFS had
+ * already committed its final size and timestamp. Comparing bytes lets the
+ * next packaging run repair that state instead of preserving a broken server.
+ * Copies go through a flushed sibling temp file so replacement is atomic.
  */
+function sameFileContents(a, b) {
+  const left = fs.readFileSync(a);
+  const right = fs.readFileSync(b);
+  return left.equals(right);
+}
+
+function durableCopy(src, dest, stat) {
+  const tmp = dest + ".copying";
+  try {
+    fs.copyFileSync(src, tmp);
+    const fd = fs.openSync(tmp, "r+");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.utimesSync(tmp, stat.atime, stat.mtime);
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch (_) {}
+    throw err;
+  }
+}
+
 function mirrorDir(src, dest, stats) {
   fs.mkdirSync(dest, { recursive: true });
 
@@ -84,12 +106,12 @@ function mirrorDir(src, dest, stats) {
     let to = null;
     try { to = fs.statSync(d); } catch (_) {}
     // 2 ms of slack: FAT/NTFS timestamp rounding, not a real difference.
-    if (to && to.isFile() && to.size === from.size && Math.abs(to.mtimeMs - from.mtimeMs) < 2) {
+    if (to && to.isFile() && to.size === from.size &&
+        Math.abs(to.mtimeMs - from.mtimeMs) < 2 && sameFileContents(s, d)) {
       stats.kept++;
       continue;
     }
-    fs.copyFileSync(s, d);
-    fs.utimesSync(d, from.atime, from.mtime);
+    durableCopy(s, d, from);
     stats.copied++;
   }
 

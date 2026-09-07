@@ -120,6 +120,7 @@ Important modules:
 | `src/lib/foam-index.ts` | installed OpenFOAM vocabulary and keys |
 | `src/lib/foam-retrieval.ts` | tutorial retrieval and Italian glossary |
 | `src/lib/stl.ts` | STL parsing and Mesh API wire format |
+| `src/lib/paraview.ts` | ParaView discovery and fixed headless pipeline |
 | `src/components/openfoam/mesh-viewer.tsx` | three.js viewer |
 | `src/components/agent-launcher-provider.tsx` | shared assistant launcher |
 | `scripts/build-electron.js` | Next build, resources, Electron packaging |
@@ -137,6 +138,14 @@ Important modules:
   cached in WSL, and used to ground FOAMy and validate proposed dictionaries.
 - Tutorial retrieval uses BM25 plus an Italian-to-OpenFOAM glossary. This was a
   deliberate lightweight choice over shipping a large embedding runtime.
+- The ParaView tab is an optional local integration, not a bundled dependency.
+  It uses `paraFoam -touch`, a fixed app-owned `pvpython` pipeline, and the web
+  renderer; never embed ParaView's Qt UI or accept browser-supplied Python.
+  Discovery must not hard-code a version or install directory: check the saved
+  override, environment, PATH, registry and common roots, with a manual
+  folder/executable path as the universal fallback.
+- The reference end-to-end test is `claude_test`: ParaView 6.0.0 read its WSL
+  UNC marker and extracted 6,300 surface triangles on 2026-09-07.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.
@@ -288,7 +297,8 @@ Packaging expectations:
 - A normal portable executable is around 87 MB. A sudden multi-hundred-MB build
   usually means Next traced the project into itself.
 - `electron/scripts/prepare-resources.js` mirrors rather than wipes standalone
-  resources. It preserves mtimes and deletes stale destination entries.
+  resources. It verifies content even when size/mtime match, uses durable
+  atomic copies, preserves mtimes, and deletes stale destination entries.
 - `next.config.ts` must continue excluding `dist-electron`, `electron`,
   screenshots, development configuration, and docs from standalone tracing.
 - A nested path such as
