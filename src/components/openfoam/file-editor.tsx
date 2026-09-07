@@ -955,8 +955,17 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 <Button size="sm" variant="ghost" onClick={() => { navigator.clipboard.writeText(fileContent); toast.success('Copied'); }}>
                   <Copy className="w-3 h-3" />
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setWordWrap(w => !w)} title="Toggle word wrap">
+                <Button
+                  size="sm"
+                  variant={wordWrap ? 'secondary' : 'ghost'}
+                  className="h-8 px-2 gap-1 text-[11px]"
+                  onClick={() => setWordWrap(w => !w)}
+                  title={`Word wrap is ${wordWrap ? 'on' : 'off'}. Click to turn it ${wordWrap ? 'off' : 'on'}.`}
+                  aria-label={`Word wrap ${wordWrap ? 'on' : 'off'}`}
+                  aria-pressed={wordWrap}
+                >
                   <WrapText className="w-3 h-3" />
+                  Wrap {wordWrap ? 'On' : 'Off'}
                 </Button>
                 <Button size="sm" onClick={saveFile} disabled={saving || !isModified}>
                   <Save className="w-3 h-3 mr-1" /> Save

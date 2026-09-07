@@ -2,22 +2,21 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-07 — local, unpushed changes group the three assistant
-launchers, make the Mesh viewer independent of viewport and GPU limits, and fix
-manual Monitor refresh plus automatic File Editor tree refresh. v3.1.0 remains
-the published release.
+Last updated: 2026-09-07 — v3.2.0 packages the shared assistant launcher,
+viewport/GPU-independent Mesh viewer, reliable refresh controls and visible
+word-wrap state.
 
 ---
 
 ## Where things stand right now (read this first)
 
-**v3.1.0 is released on 2026-09-06.** It adds the Codex case agent alongside
-FOAMy and Claude, with the same scoped OpenFOAM tools and an isolated ChatGPT
-sign-in. Both artifacts are attached and the repository license is MIT.
+**v3.2.0 is released on 2026-09-07.** It groups the three assistant launchers,
+hardens the Mesh viewer across displays and graphics adapters, fixes Monitor and
+File Editor refresh, and makes word-wrap state explicit. Both artifacts are
+attached and the repository license is MIT.
 
-Everything through the v3.1.0 release is committed and pushed, and the
-`v3.1.0` tag is where those published artifacts were built. `main` also has the
-local follow-up commits described below; they are intentionally not pushed.
+Everything is committed and pushed: `main` is level with `origin/main`, and the
+`v3.2.0` tag is where the attached artifacts were built.
 
 The republish carried one fix: the Claude panel’s composer was drawing two
 overlapping focus rings instead of one (§2t). The user asked for the fix without
@@ -46,10 +45,10 @@ starts being an archaeology problem.
 
 | | |
 |---|---|
-| release commit | tagged `v3.1.0` — what the attached artifacts were built from |
-| tags | …`v2.3.0` at `1d01a85`, `v2.3.1` at `02302fc`, `v3.0.0` and `v3.1.0` on their respective release commits |
-| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v3.1.0 — both artifacts attached |
-| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v3.1.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
+| release commit | tagged `v3.2.0` — what the attached artifacts were built from |
+| tags | …`v3.0.0`, `v3.1.0` and `v3.2.0` on their respective release commits |
+| latest release | https://github.com/Pat2704/openfoam-gui/releases/tag/v3.2.0 — both artifacts attached |
+| in `Working/` | the checkout, `OpenFOAMStudio-source/`, the two artifacts `OpenFOAMStudio-v3.2.0-{portable.exe,folder.zip}`, and `OpenCFD-trademark-request.md` (§2l). Release notes live in the repo, `docs/releases/` (§4b) |
 
 **The `v2.1.0` tag builds the artifacts attached to the release.** It was
 force-moved on 2026-09-02, with the user's explicit approval, off `bcc851d` —
@@ -70,10 +69,7 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** the assistant-launcher, Mesh-viewer and refresh follow-ups of
-2026-09-07 are committed locally with refreshed v3.1.0 artifacts in `Working/`;
-do not push them until the user explicitly asks. Two things sit outside them: the trade mark
-request to OpenCFD is unanswered (§2l), and the repository's social preview image has yet to be
+**What is open:** the trade mark request to OpenCFD is unanswered (§2l), and the repository's social preview image has yet to be
 uploaded — the user is doing that one, and it can only be done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
 having launched the app successfully from that same folder beforehand, which
@@ -182,6 +178,10 @@ keeps identical listings by reference to avoid periodic rerenders. This refresh
 never changes the open file, text, dirty state, file cache, selection or expanded
 folders. The manual tree button and mutation follow-ups use the same safe path;
 the old force-refresh path could collapse the tree and discard unsaved text.
+
+The word-wrap button beside Copy now exposes its state as `Wrap On` / `Wrap Off`,
+uses the active button style while enabled and publishes `aria-pressed` for
+assistive technology. Wrapping remains visual only and never edits file text.
 
 ---
 
