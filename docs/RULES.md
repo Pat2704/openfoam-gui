@@ -3,8 +3,8 @@
 Last updated: 2026-09-07.
 
 **This is the single canonical file for every project-specific rule an AI must
-follow.** `AGENTS.md` and `CLAUDE.md` may route an AI here, but must not contain
-separate project rules. Other documents may describe the product, public
+follow.** The tiny tracked `AGENTS.md` only routes an AI here and must not
+contain separate project rules. Other documents may describe the product, public
 contribution process, security policy, releases, or historical evidence; when
 they reveal a durable AI instruction, record it here as well.
 
@@ -339,7 +339,9 @@ source-to-artifact verification.
    keyboard focus. Use `confirmDialog()` from `confirm-host.tsx`. Every WSL child
    must keep `windowsHide: true`. The server port changes every launch, so
    persistent state cannot live in origin-scoped `localStorage`.
-2. **Next 16 differs from older Next versions.** Read the relevant guide under
+2. **Next 16 differs from older Next versions.** Automatic `AGENTS.md` and
+   `CLAUDE.md` generation is disabled with `agentRules: false`; do not re-enable
+   it or duplicate rules outside this file. Read the relevant guide under
    `node_modules/next/dist/docs/`, resolved from this project directory, before
    changing APIs, conventions, or file structure. Heed deprecations; do not
    rely on remembered behavior from older Next versions. `proxy.ts` replaced
@@ -366,12 +368,11 @@ source-to-artifact verification.
 9. **Screenshots:** all files under `screenshots/` are referenced by README.
    Keep the set free of orphans. Automated sessions cannot produce the same
    full-window captures; ask the user for a saved image when one is needed.
-10. **Generated local files:** repository-root `AGENTS.md` and `CLAUDE.md` are
-    generated or updated by `next dev` and ignored by Git. Keep only a pointer
-    to this file plus Next's unavoidable managed warning; do not put project
-    rules there. `Working/.claude/launch.json` is the Browser pane's dev-server
-    configuration and depends on the stable checkout folder name
-    `OpenFOAMStudio-source`; do not delete or rename either casually.
+10. **AI routing files:** repository-root `AGENTS.md` is a tracked pointer to
+    this file. Keep it minimal. `CLAUDE.md` and the legacy
+    `Working/.claude/launch.json` were removed; Next must not regenerate them.
+    Start the development server explicitly with `npm run dev` from
+    `OpenFOAMStudio-source`.
 11. **Code style:** match the naming, idiom, and comment density of the file
     being edited. Comments should explain why a non-obvious choice exists or
     why an apparent alternative failed, rather than restating the code.

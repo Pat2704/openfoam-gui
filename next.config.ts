@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Project instructions live in docs/RULES.md. Keep the tiny tracked
+  // AGENTS.md as a pointer and do not let Next generate duplicate rules or a
+  // CLAUDE.md shim during development.
+  agentRules: false,
   output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
@@ -37,13 +41,12 @@ const nextConfig: NextConfig = {
       'src/**',
       // Development-only files that the tracer sweeps up because they sit in
       // the root. None is read at runtime, and docs/ — the AI rules and
-      // the release notes — along with the generated AGENTS.md and CLAUDE.md,
+      // the release notes — along with the AGENTS.md routing file,
       // has no business inside a user's copy of the app. The license texts
       // deliberately stay: LICENSE and THIRD-PARTY-NOTICES.md belong with the
       // binary.
       'docs/**',
       'AGENTS.md',
-      'CLAUDE.md',
       'eslint.config.mjs',
       'postcss.config.mjs',
       'components.json',
