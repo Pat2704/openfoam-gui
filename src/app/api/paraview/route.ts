@@ -1,97 +1,131 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { apiError } from '@/lib/api-response';
-import { findParaView, exportParaViewSurface } from '@/lib/paraview';
-import { encodeMeshPayload, parseAsciiStl } from '@/lib/stl';
+import {
+  findParaView,
+  getParaViewSession,
+  readParaViewRender,
+  sendParaViewCameraCommand,
+  sendParaViewCommand,
+  startParaViewSession,
+  stopParaViewSession,
+} from '@/lib/paraview';
 import { createParaFoamMarker } from '@/lib/wsl';
-import { validateCaseName } from '@/lib/wsl-input';
+import { boundedInteger, validateCaseName } from '@/lib/wsl-input';
 
 export const runtime = 'nodejs';
 
-// ParaView startup and OpenFOAMReader can both be memory-heavy. Serialising
-// jobs prevents repeated clicks or two open windows from starting competing
-// pvpython processes. A failed job cannot poison the next one.
-let queue: Promise<void> = Promise.resolve();
+let lifecycleQueue: Promise<void> = Promise.resolve();
 
-function enqueue<T>(job: () => Promise<T>): Promise<T> {
-  const result = queue.then(job, job);
-  queue = result.then(() => undefined, () => undefined);
+function enqueueLifecycle<T>(job: () => Promise<T>): Promise<T> {
+  const result = lifecycleQueue.then(job, job);
+  lifecycleQueue = result.then(() => undefined, () => undefined);
   return result;
 }
 
-function customPath(req: NextRequest): string {
-  const value = new URL(req.url).searchParams.get('path')?.trim() || '';
-  if (value.length > 2_000 || /[\0\r\n]/.test(value)) throw new Error('Invalid ParaView path.');
-  return value;
+function requestedPath(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string' || value.length > 2_000 || /[\0\r\n]/.test(value)) {
+    throw new Error('Invalid ParaView path.');
+  }
+  return value.trim();
 }
 
-// GET /api/paraview?action=status[&path=C:\...] — installation discovery
-// GET /api/paraview?case=NAME[&path=C:\...]      — ParaView-powered surface
+function renderResponse(image: Buffer): NextResponse {
+  return new NextResponse(new Uint8Array(image), {
+    headers: {
+      'Content-Type': 'image/jpeg',
+      'Content-Length': String(image.length),
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
+// Discovery lives here because the Dashboard and packaged server share it.
+// The workbench itself uses POST commands against one persistent pvpython.
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
-  let requestedPath: string;
+  const action = url.searchParams.get('action') || 'status';
   try {
-    requestedPath = customPath(req);
-  } catch (error) {
-    return apiError(error);
-  }
-
-  if (url.searchParams.get('action') === 'status') {
-    try {
-      const refresh = url.searchParams.get('refresh') === '1';
-      const status = await findParaView(requestedPath, refresh);
+    if (action === 'status') {
+      const status = await findParaView(
+        requestedPath(url.searchParams.get('path')),
+        url.searchParams.get('refresh') === '1',
+      );
       return NextResponse.json(status, { headers: { 'Cache-Control': 'no-store' } });
-    } catch (error) {
-      return apiError(error);
     }
-  }
-
-  let caseName: string;
-  try {
-    caseName = validateCaseName(url.searchParams.get('case') || '');
+    if (action === 'session') {
+      return NextResponse.json({ session: getParaViewSession() }, { headers: { 'Cache-Control': 'no-store' } });
+    }
+    if (action === 'render') {
+      const width = boundedInteger(url.searchParams.get('width'), 1000, 320, 1920);
+      const height = boundedInteger(url.searchParams.get('height'), 700, 240, 1200);
+      return renderResponse(await readParaViewRender(width, height));
+    }
+    return NextResponse.json({ error: 'Unknown ParaView action.' }, { status: 400 });
   } catch (error) {
     return apiError(error);
   }
+}
 
+export async function POST(req: NextRequest) {
   try {
-    return await enqueue(async () => {
-      const installation = await findParaView(requestedPath);
-      if (!installation.found || !installation.pvpythonPath) {
-        return NextResponse.json({ error: installation.error || 'ParaView was not found.' }, { status: 424 });
-      }
+    const body = await req.json() as Record<string, unknown>;
+    const action = body.action;
 
-      // This is deliberately paraFoam -touch, not a marker file synthesized by
-      // the Windows side: the selected OpenFOAM environment remains the source
-      // of truth for the case ParaView is asked to load.
-      const marker = createParaFoamMarker(caseName);
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-'));
-      const outputPath = path.join(tempDir, 'surface.stl');
-      try {
-        await exportParaViewSurface(installation.pvpythonPath, marker.windowsPath, outputPath);
-        const parsed = parseAsciiStl(await fs.readFile(outputPath, 'utf-8'));
-        if (parsed.triangles === 0) {
-          return NextResponse.json({ error: 'ParaView loaded the case but extracted an empty surface.' }, { status: 422 });
-        }
-        // VTK's STL writer emits one generic solid after merging the composite
-        // OpenFOAM dataset. Give the UI a meaningful, stable label.
-        parsed.patches = [{ name: 'ParaView surface', start: 0, count: parsed.positions.length / 3 }];
-        const payload = encodeMeshPayload(parsed);
-        return new NextResponse(new Uint8Array(payload), {
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Content-Length': String(payload.length),
-            'Cache-Control': 'no-store',
-            'X-ParaView-Version': installation.version || 'unknown',
-            'X-ParaView-Marker': path.basename(marker.windowsPath),
-            'X-Mesh-Triangles': String(parsed.triangles),
-          },
-        });
-      } finally {
-        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    if (action === 'start') {
+      const caseName = validateCaseName(typeof body.case === 'string' ? body.case : '');
+      const path = requestedPath(body.path);
+      return await enqueueLifecycle(async () => {
+        const marker = createParaFoamMarker(caseName);
+        const state = await startParaViewSession(caseName, marker.windowsPath, path);
+        return NextResponse.json({ state });
+      });
+    }
+
+    if (action === 'stop') {
+      await enqueueLifecycle(stopParaViewSession);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === 'command') {
+      const command = String(body.command || '');
+      const allowed = new Set(['state', 'select', 'add_filter', 'delete', 'update', 'time', 'refresh']);
+      if (!allowed.has(command)) {
+        return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
       }
-    });
+      const data = body.data && typeof body.data === 'object' && !Array.isArray(body.data)
+        ? body.data as Record<string, unknown>
+        : {};
+      const result = await sendParaViewCommand(command, data);
+      return NextResponse.json(result);
+    }
+
+    if (action === 'camera') {
+      const cameraAction = String(body.cameraAction || 'camera');
+      if (!['camera', 'reset_camera', 'standard_view'].includes(cameraAction)) {
+        return NextResponse.json({ error: 'Unsupported camera command.' }, { status: 400 });
+      }
+      const mode = String(body.mode || 'rotate');
+      if (cameraAction === 'camera' && !['rotate', 'pan', 'zoom'].includes(mode)) {
+        return NextResponse.json({ error: 'Unsupported camera interaction.' }, { status: 400 });
+      }
+      const view = String(body.view || 'Iso');
+      if (cameraAction === 'standard_view' && !['+X', '-X', '+Y', '-Y', '+Z', '-Z', 'Iso'].includes(view)) {
+        return NextResponse.json({ error: 'Unsupported standard view.' }, { status: 400 });
+      }
+      const image = await sendParaViewCameraCommand({
+        action: cameraAction,
+        mode,
+        dx: boundedInteger(body.dx, 0, -2_000, 2_000),
+        dy: boundedInteger(body.dy, 0, -2_000, 2_000),
+        width: boundedInteger(body.width, 1000, 320, 1920),
+        height: boundedInteger(body.height, 700, 240, 1200),
+        view,
+      });
+      return renderResponse(image);
+    }
+
+    return NextResponse.json({ error: 'Unknown ParaView action.' }, { status: 400 });
   } catch (error) {
     return apiError(error);
   }

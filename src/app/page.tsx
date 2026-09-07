@@ -81,7 +81,7 @@ export default function Home() {
   /**
    * Tabs whose content is a WORKSPACE rather than a document.
    *
-   * These four are two-pane layouts — a tree or a list beside an editor, a
+   * These are workspace layouts — a tree or a list beside an editor, a
    * terminal or a viewport — and they should fill the window and scroll their
    * own panes, the way an IDE does. The others (Dashboard, the wizard, the
    * Monitor) read top to bottom and scroll normally inside `main`.
@@ -95,7 +95,7 @@ export default function Home() {
    * user-draggable height and the checkMesh and boundary-condition reports stack
    * below it, so that tab is a column that scrolls, not a pane that fills.
    */
-  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'applications', 'src']);
+  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'paraview', 'applications', 'src']);
   const paneClass = (id: string) =>
     activeTab !== id ? 'hidden' : FILL_HEIGHT_TABS.has(id) ? 'h-full' : undefined;
   // Open cases: array of names. First element is the active one.
@@ -389,7 +389,12 @@ export default function Home() {
         )}
         {visitedTabs.includes('paraview') && (
           <div className={paneClass('paraview')}>
-            <ParaViewViewer key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'paraview'} />
+            <ParaViewViewer
+              key={selectedCase || 'none'}
+              caseName={selectedCase || ''}
+              active={activeTab === 'paraview'}
+              onConfigure={() => setActiveTab('dashboard')}
+            />
           </div>
         )}
         {visitedTabs.includes('applications') && (

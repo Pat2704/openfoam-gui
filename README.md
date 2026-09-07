@@ -101,11 +101,12 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   condition validation live here too.
 
   ![The Mesh tab: the boundary mesh of a T-junction case in wireframe, with its four patches listed above the view, each one able to be recoloured or hidden](screenshots/mesh.png)
-- **ParaView** — load the selected case through ParaView without opening its
-  desktop interface. The app runs `paraFoam -touch` in WSL, starts `pvpython`
-  invisibly, extracts the surface with ParaView's OpenFOAM reader and displays
-  the result in an interactive 3D view. Detection does not assume a versioned
-  folder name; portable or unusual installations can be selected by path.
+- **ParaView** — use a ParaView-style workbench without leaving the app. A real
+  background `pvpython` session owns the OpenFOAM reader, filter pipeline and
+  offscreen renderer; the tab exposes pipeline visibility and selection,
+  Slice, Clip, Contour, Cell Data to Point Data, representations, opacity,
+  field colouring, presets, scalar legend, timesteps and camera controls.
+  Detection does not assume a versioned folder name or install directory.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>
@@ -226,15 +227,15 @@ through the app's shared OpenFOAM policy.
 
 ## Setting up ParaView (optional)
 
-Install a Windows build of ParaView, then open the **ParaView** tab. OpenFOAM
-Studio searches `PATH`, Windows installation records, Program Files and Local
-AppData, probes each `pvpython.exe` it finds, and selects the newest usable
-version. No fixed version or installation directory is assumed.
+Install a Windows build of ParaView. The **Dashboard** reports its status beside
+Ubuntu/OpenFOAM; OpenFOAM Studio searches `PATH`, Windows installation records,
+Program Files and Local AppData, probes each `pvpython.exe` it finds, and selects
+the newest usable version. No fixed version or installation directory is assumed.
 
-For a portable copy or custom directory, enter the ParaView folder,
-`paraview.exe`, or `pvpython.exe` and click **Use path**. The choice is stored
-locally. ParaView is not bundled; it runs as a separate background process only
-when a case is loaded.
+For a portable copy or custom directory, open the Dashboard settings, enter the
+ParaView folder, `paraview.exe`, or `pvpython.exe`, and click **Save path**. The
+choice is stored locally. ParaView is not bundled; it runs as a separate
+background process only when a case is opened in its workbench.
 
 ---
 
@@ -276,10 +277,11 @@ failed.
 then click **Look again** in the Codex panel. You can also enter the full path
 to `codex.exe`; the panel shows each attempted path and why it was rejected.
 
-**"ParaView is not ready"** — install the Windows build and click **Look
-again**. For a portable or non-standard copy, enter its directory or the full
-path to `pvpython.exe`. A first case load can take noticeably longer because
-ParaView initializes its OpenFOAM reader in a separate process.
+**"ParaView workbench is not available"** — check the ParaView status on the
+Dashboard and click **Look again**. For a portable or non-standard copy, open
+Dashboard settings and enter its directory or the full path to `pvpython.exe`.
+A first case load can take noticeably longer because ParaView initializes its
+OpenFOAM reader and renderer in a separate process.
 
 ---
 
@@ -317,7 +319,7 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
 | `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
-| `src/lib/paraview.ts` | version-independent discovery and fixed headless ParaView pipeline |
+| `src/lib/paraview.ts` | version-independent discovery and persistent headless ParaView workbench |
 | `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |
 | `src/app/api/**` | REST endpoints the UI talks to |
 | `src/components/openfoam/**` | the tabs |

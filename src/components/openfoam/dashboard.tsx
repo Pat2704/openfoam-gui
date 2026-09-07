@@ -15,9 +15,10 @@ import {
   Box, Trash2, FolderOpen, RefreshCw, Settings, Play, Terminal as TerminalIcon,
   CheckCircle2, XCircle, Activity, Terminal, ChevronRight,
   AlertTriangle, Copy, BookOpen, FolderTree, HardDrive, Clock,
-  FileText, Zap, GitBranch, Pencil, Loader2
+  FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
+import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 
 interface WslStatus {
   running: boolean; name: string; error?: string;
@@ -37,6 +38,15 @@ interface CaseSummary {
 
 interface TutorialCategory { name: string; path: string; }
 interface TutorialCase { name: string; fullPath: string; }
+
+interface ParaViewStatus {
+  found: boolean;
+  pvpythonPath?: string;
+  version?: string;
+  source?: string;
+  searched?: string[];
+  error?: string;
+}
 
 export default function Dashboard({
   selectedCase, onSelectCase, onRefresh, refreshSignal = 0
@@ -65,6 +75,9 @@ export default function Dashboard({
   const [creating, setCreating] = useState(false);
   const [newCaseName, setNewCaseName] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [paraViewStatus, setParaViewStatus] = useState<ParaViewStatus | null>(null);
+  const [paraViewPath, setParaViewPath] = useState('');
+  const [checkingParaView, setCheckingParaView] = useState(true);
 
   // Tutorials state
   const [tutCategories, setTutCategories] = useState<TutorialCategory[]>([]);
@@ -110,6 +123,36 @@ export default function Dashboard({
     }
   }, []);
 
+  const detectParaView = useCallback(async (pathOverride: string, refresh = false, save = false) => {
+    setCheckingParaView(true);
+    try {
+      const query = new URLSearchParams({ action: 'status' });
+      if (pathOverride.trim()) query.set('path', pathOverride.trim());
+      if (refresh) query.set('refresh', '1');
+      const response = await fetch(`/api/paraview?${query}`);
+      const data = await response.json() as ParaViewStatus;
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setParaViewStatus(data);
+      if (save) {
+        if (pathOverride.trim() && data.source !== 'Custom path') {
+          toast.error('The selected path is not usable. ParaView was detected elsewhere, but this path was not saved.');
+          return;
+        }
+        const saved = await patchFoamyConfig({ 'paraview-path': pathOverride.trim() });
+        if (!saved) throw new Error('The ParaView path could not be saved.');
+        window.dispatchEvent(new CustomEvent('paraview-config-changed'));
+        if (data.found) toast.success(`ParaView ${data.version || ''} is ready.`.trim());
+      }
+    } catch (error) {
+      setParaViewStatus({
+        found: false,
+        error: error instanceof Error ? error.message : 'ParaView detection failed.',
+      });
+    } finally {
+      setCheckingParaView(false);
+    }
+  }, []);
+
   const fetchTutorials = useCallback(async () => {
     try {
       const res = await fetch('/api/tutorials?action=categories');
@@ -138,6 +181,17 @@ export default function Dashboard({
     };
     init();
   }, [fetchAll]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadFoamyConfig().then(config => {
+      if (cancelled) return;
+      const savedPath = config['paraview-path'] || '';
+      setParaViewPath(savedPath);
+      return detectParaView(savedPath);
+    });
+    return () => { cancelled = true; };
+  }, [detectParaView]);
 
   useEffect(() => {
     if (status?.running) fetchTutorials();
@@ -355,6 +409,7 @@ export default function Dashboard({
     setLoading(true);
     await fetchAll(true);
     await fetchTutorials();
+    await detectParaView(paraViewPath, true);
     setLoading(false);
     onRefresh();
   };
@@ -363,14 +418,10 @@ export default function Dashboard({
   if (loading && !status) {
     return (
       <div className="space-y-3">
-        {/* WSL Status skeleton */}
-        <Card className="p-3">
-          <div className="flex items-center gap-3">
-            <Skeleton className="w-5 h-5 rounded-full" />
-            <Skeleton className="h-4 w-28" />
-            <Skeleton className="h-4 w-32 ml-auto" />
-          </div>
-        </Card>
+        {/* Runtime status skeletons */}
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {[0, 1].map(item => <Card key={item} className="p-3"><div className="flex items-center gap-3"><Skeleton className="w-5 h-5 rounded-full" /><Skeleton className="h-4 w-28" /><Skeleton className="h-4 w-32 ml-auto" /></div></Card>)}
+        </div>
         {/* Cases grid skeleton */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -403,12 +454,13 @@ export default function Dashboard({
 
   return (
     <div className="space-y-3">
-      {/* ══ WSL Status Bar (compact) ══ */}
+      {/* ══ Runtime status (compact) ══ */}
       {/* Same green when healthy, same red when not — but from tokens, which
           have a value per theme. `bg-green-950/20` is a DARK-mode green applied
           in both, so in light mode this strip was a dark green at 20% over
           white: a washed-out sage that read as "slightly unwell" rather than
           "connected". */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
       <Card className={status?.running ? 'border-success/40 bg-success-soft' : 'border-danger/40 bg-danger-soft'}>
         <CardContent className="p-3">
           <div className="flex items-center justify-between gap-2">
@@ -440,11 +492,33 @@ export default function Dashboard({
         </CardContent>
       </Card>
 
-      {/* Settings Dialog — OpenFOAM version selection */}
+      <Card className={paraViewStatus?.found ? 'border-info/40 bg-info-soft' : 'border-warning/40 bg-warning-soft'}>
+        <CardContent className="p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              {checkingParaView ? <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin text-info" /> : paraViewStatus?.found ? <Cuboid className="h-5 w-5 flex-shrink-0 text-info" /> : <XCircle className="h-5 w-5 flex-shrink-0 text-warning" />}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><span className="text-sm font-semibold">ParaView</span>{paraViewStatus?.found && <span className="text-xs text-muted-foreground">v{paraViewStatus.version || 'unknown'}</span>}</div>
+                <p className="truncate text-[10px] text-muted-foreground" title={paraViewStatus?.pvpythonPath || paraViewStatus?.error}>{checkingParaView ? 'Detecting the local installation…' : paraViewStatus?.found ? paraViewStatus.pvpythonPath : paraViewStatus?.error || 'Not detected'}</p>
+              </div>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-1.5">
+              {paraViewStatus?.source && <Badge variant="secondary" className="hidden max-w-36 truncate text-[10px] xl:inline-flex">{paraViewStatus.source}</Badge>}
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => void detectParaView(paraViewPath, true)} disabled={checkingParaView}><RefreshCw className={`mr-1 h-3 w-3 ${checkingParaView ? 'animate-spin' : ''}`} /> Look again</Button>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setShowSettings(true); fetchFoamVersions(); }}><Settings className="h-3 w-3" /></Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      </div>
+
+      {/* Settings Dialog — all runtime configuration lives in the Dashboard. */}
       <Dialog open={showSettings} onOpenChange={setShowSettings}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Settings</DialogTitle></DialogHeader>
           <div className="space-y-4 pt-2">
+            <div>
+              <h3 className="text-sm font-semibold">OpenFOAM</h3>
             <p className="text-sm text-muted-foreground">
               Select which version of OpenFOAM to use. All paths (installation, cases, tutorials) will be updated automatically.
             </p>
@@ -472,6 +546,28 @@ export default function Dashboard({
                 No OpenFOAM version found. Verify that OpenFOAM is installed in /opt, /usr/lib or /usr/local.
               </p>
             )}
+            </div>
+
+            <div className="space-y-3 border-t pt-4">
+              <div>
+                <h3 className="text-sm font-semibold">ParaView</h3>
+                <p className="text-xs text-muted-foreground">Discovery supports any version and install folder. Set a path only for a portable or unusually located copy.</p>
+              </div>
+              <div className={`rounded-md border px-3 py-2 text-xs ${paraViewStatus?.found ? 'border-info/30 bg-info-soft' : 'border-warning/30 bg-warning-soft'}`}>
+                <div className="flex items-start gap-2">
+                  {checkingParaView ? <Loader2 className="mt-0.5 h-4 w-4 animate-spin" /> : paraViewStatus?.found ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-info" /> : <AlertTriangle className="mt-0.5 h-4 w-4 text-warning" />}
+                  <div className="min-w-0"><p className="font-medium">{checkingParaView ? 'Detecting…' : paraViewStatus?.found ? `ParaView ${paraViewStatus.version || ''} is ready` : 'ParaView was not found'}</p><p className="mt-0.5 break-all font-mono text-[10px] text-muted-foreground">{paraViewStatus?.pvpythonPath || paraViewStatus?.error}</p></div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[280px] flex-1">
+                  <FolderSearch className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input value={paraViewPath} onChange={event => setParaViewPath(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void detectParaView(paraViewPath, true, true); }} className="pl-9 font-mono text-xs" placeholder="Folder, paraview.exe, or pvpython.exe (optional)" spellCheck={false} />
+                </div>
+                <Button variant="outline" size="sm" disabled={checkingParaView} onClick={() => { setParaViewPath(''); void detectParaView('', true, true); }}><RefreshCw className="h-3.5 w-3.5" /> Auto-detect</Button>
+                <Button size="sm" disabled={checkingParaView} onClick={() => void detectParaView(paraViewPath, true, true)}>Save path</Button>
+              </div>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

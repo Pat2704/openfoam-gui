@@ -120,7 +120,7 @@ Important modules:
 | `src/lib/foam-index.ts` | installed OpenFOAM vocabulary and keys |
 | `src/lib/foam-retrieval.ts` | tutorial retrieval and Italian glossary |
 | `src/lib/stl.ts` | STL parsing and Mesh API wire format |
-| `src/lib/paraview.ts` | ParaView discovery and fixed headless pipeline |
+| `src/lib/paraview.ts` | ParaView discovery and persistent headless workbench |
 | `src/components/openfoam/mesh-viewer.tsx` | three.js viewer |
 | `src/components/agent-launcher-provider.tsx` | shared assistant launcher |
 | `scripts/build-electron.js` | Next build, resources, Electron packaging |
@@ -139,13 +139,25 @@ Important modules:
 - Tutorial retrieval uses BM25 plus an Italian-to-OpenFOAM glossary. This was a
   deliberate lightweight choice over shipping a large embedding runtime.
 - The ParaView tab is an optional local integration, not a bundled dependency.
-  It uses `paraFoam -touch`, a fixed app-owned `pvpython` pipeline, and the web
-  renderer; never embed ParaView's Qt UI or accept browser-supplied Python.
+  It uses `paraFoam -touch` and one persistent app-owned `pvpython` worker. Real
+  `paraview.simple` proxies own the reader, filters, displays, time and offscreen
+  render; the browser presents the pipeline/properties workbench and receives
+  rendered frames. Never embed ParaView's Qt UI or accept browser-supplied
+  Python, proxy names, or arbitrary property names: every operation is an
+  explicit API/worker allowlist.
   Discovery must not hard-code a version or install directory: check the saved
   override, environment, PATH, registry and common roots, with a manual
-  folder/executable path as the universal fallback.
-- The reference end-to-end test is `claude_test`: ParaView 6.0.0 read its WSL
-  UNC marker and extracted 6,300 surface triangles on 2026-09-07.
+  folder/executable path as the universal fallback. Detection and path settings
+  belong on the Dashboard beside Ubuntu/OpenFOAM; keep the ParaView tab focused
+  on the workbench itself.
+- The ParaView worker currently supports pipeline selection/visibility, Slice,
+  Clip, Contour, Cell Data to Point Data, delete-leaf, representation, opacity,
+  field colouring, presets, scalar legend, timesteps, refresh and camera/view
+  controls. Extend this allowlist deliberately as the workbench grows.
+- `claude_test` is the destructive ParaView case. A read-only `cavity` probe on
+  2026-09-07 validated 20 timesteps, the U/epsilon/k/nut/p arrays, Cell Data to
+  Point Data, Contour, colour mapping, legend, and real JPEG renders with
+  ParaView 6.0.0.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.
