@@ -31,7 +31,23 @@ interface FileItem {
   isDir: boolean;
 }
 
-export default function FileEditor({ caseName }: { caseName: string }) {
+function sameItems(a: FileItem[] | undefined, b: FileItem[] | undefined) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((item, index) => {
+    const other = b[index];
+    return item.name === other.name && item.path === other.path && item.isDir === other.isDir;
+  });
+}
+
+function sameDirectoryMap(a: Record<string, FileItem[]>, b: Record<string, FileItem[]>) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  return aKeys.length === bKeys.length
+    && aKeys.every(key => Object.prototype.hasOwnProperty.call(b, key) && sameItems(a[key], b[key]));
+}
+
+export default function FileEditor({ caseName, active = true }: { caseName: string; active?: boolean }) {
   const { setActiveFile } = useCaseContext();
   // directories maps a relative dir path to its contents (array of FileItem).
   // First-level dirs: key = dir name (e.g. '0', 'system', 'constant', '0.5')
@@ -57,9 +73,8 @@ export default function FileEditor({ caseName }: { caseName: string }) {
   // Cache of already-read files — avoids refetching from WSL when reopening a file.
   // The cache is invalidated when the file is saved (because the content changes).
   const fileCacheRef = useRef<Map<string, string>>(new Map());
-  // Ref to loadFile so fetchCaseInfo's forced-refresh path can call it without a
-  // forward-reference / dependency cycle (loadFile is defined below fetchCaseInfo).
-  const loadFileRef = useRef<(filePath: string) => Promise<void>>(async () => {});
+  const treeFetchRef = useRef<Promise<void> | null>(null);
+  const expandedDirsRef = useRef(expandedDirs);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
   const saveFileRef = useRef<() => Promise<void>>(async () => {});
   const toggleSelectionRef = useRef<(path: string) => void>(() => {});
@@ -139,67 +154,109 @@ export default function FileEditor({ caseName }: { caseName: string }) {
     setSearchMatches(count);
   }, [searchTerm, fileContent]);
 
-  // ── Initial case info fetch (first-level only) ──
-  // `force`: when true, wipes ALL client-side state (file content cache, lazy-loaded
-  // subdirs, expanded dirs) so the tree is rebuilt from scratch on the next render.
-  // This is what the "Refresh" button calls — a plain fetchCaseInfo() without force
-  // would leave stale subdir listings and cached file contents in place, which is
-  // why the button "didn't work well" (the tree visually didn't change).
-  const fetchCaseInfo = useCallback(async (force = false) => {
-    if (!caseName) return;
-    if (force) {
-      // Wipe everything so the next render refetches from WSL:
-      //  - fileCacheRef: cached file CONTENTS (must be invalidated or reopening a
-      //    file would show the old content even after an external edit)
-      //  - loadedDirs: which subdirs have already been lazy-loaded (so they reload)
-      //  - expandedDirs: collapse the tree to a clean state
-      fileCacheRef.current.clear();
-      setLoadedDirs(new Set());
-      setExpandedDirs(new Set(['0', 'system', 'constant']));
-      // If the currently-open file was edited externally, reload it from WSL too.
-      if (currentFile) {
-        fileCacheRef.current.delete(currentFile);
-      }
-    }
-    setLoading(true);
-    try {
-      // cache: 'no-store' defeats any browser/intermediate HTTP cache so we always
-      // hit the server (and thus WSL) on a forced refresh.
-      const res = await fetch(`/api/cases?action=info&name=${encodeURIComponent(caseName)}`, {
-        cache: force ? 'no-store' : 'default',
-      });
-      const data = await res.json();
-      if (data.exists) {
-        setDirectories(data.files || {});
-        // Mark all first-level directories as loaded (they come from getCaseInfo)
-        const topLevelKeys = Object.keys(data.files || {}).filter(k => k !== '_root');
-        setLoadedDirs(new Set(topLevelKeys));
-      }
-    } catch { /* silent */ }
-    setLoading(false);
-    // On a forced refresh, also reload the currently-open file from WSL so the
-    // textarea reflects any external edits (the cache was wiped above, so loadFile
-    // will fetch fresh content instead of serving the stale cached version).
-    if (force && currentFile) {
-      // Reset the visible content first so the user sees the refresh happening.
-      setFileContent('');
-      setOriginalContent('');
-      await loadFileRef.current(currentFile);
-    }
-  }, [caseName, currentFile]);
+  useEffect(() => { expandedDirsRef.current = expandedDirs; }, [expandedDirs]);
 
+  // Refresh only the directory structure. File contents, the open file, cursor,
+  // dirty state and expansion state stay untouched, so background refreshes never
+  // interrupt editing. Expanded nested directories are refreshed as well as the
+  // first level returned by getCaseInfo.
+  const fetchCaseInfo = useCallback(async (manual = false) => {
+    if (!caseName) return;
+    if (manual) setLoading(true);
+    const pending = treeFetchRef.current;
+    if (pending) {
+      if (!manual) return;
+      await pending;
+    }
+
+    const request = (async () => {
+      try {
+        const res = await fetch(`/api/cases?action=info&name=${encodeURIComponent(caseName)}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data.exists) return;
+
+        const rootListings: Record<string, FileItem[]> = data.files || {};
+        const nestedPaths = Array.from(expandedDirsRef.current).filter(path => path.includes('/'));
+        const nestedResults = await Promise.all(nestedPaths.map(async path => {
+          try {
+            const nestedRes = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=ls&path=${encodeURIComponent(path)}`, {
+              cache: 'no-store',
+            });
+            if (!nestedRes.ok) return null;
+            const nestedData = await nestedRes.json();
+            return Array.isArray(nestedData.items) ? [path, nestedData.items] as const : null;
+          } catch {
+            return null;
+          }
+        }));
+
+        const nestedListings = nestedResults.filter((entry): entry is readonly [string, FileItem[]] => entry !== null);
+        const topLevelDirs = new Set(Object.keys(rootListings).filter(key => key !== '_root'));
+
+        setDirectories(previous => {
+          const next = { ...previous };
+          for (const key of Object.keys(next)) {
+            if (key === '_root') {
+              if (!Object.prototype.hasOwnProperty.call(rootListings, '_root')) delete next[key];
+              continue;
+            }
+            if (!topLevelDirs.has(key.split('/')[0])) delete next[key];
+          }
+          for (const [path, items] of Object.entries(rootListings)) next[path] = items;
+          for (const [path, items] of nestedListings) next[path] = items;
+          return sameDirectoryMap(previous, next) ? previous : next;
+        });
+
+        setLoadedDirs(previous => {
+          const next = new Set(previous);
+          for (const path of topLevelDirs) next.add(path);
+          for (const [path] of nestedListings) next.add(path);
+          return next.size === previous.size && Array.from(next).every(path => previous.has(path))
+            ? previous
+            : next;
+        });
+      } catch { /* silent */ }
+    })();
+    treeFetchRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (treeFetchRef.current === request) treeFetchRef.current = null;
+      if (manual) setLoading(false);
+    }
+  }, [caseName]);
+
+  // Poll only while the File Editor is on screen. Returning to the tab triggers
+  // an immediate refresh; hidden windows do no WSL work. Four seconds keeps
+  // agent/terminal-created files current without making the tree flicker.
   useEffect(() => {
-    fetchCaseInfo();
-  }, [fetchCaseInfo]);
+    if (!active || !caseName) return;
+    const refreshWhenVisible = () => {
+      if (!document.hidden) void fetchCaseInfo();
+    };
+    refreshWhenVisible();
+    const interval = window.setInterval(refreshWhenVisible, 4000);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [active, caseName, fetchCaseInfo]);
 
   // ── Lazy-load directory contents on demand ──
   const loadDirectory = useCallback(async (dirPath: string) => {
     if (!caseName) return;
     try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=ls&path=${encodeURIComponent(dirPath)}`);
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=ls&path=${encodeURIComponent(dirPath)}`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.items) {
-        setDirectories(prev => ({ ...prev, [dirPath]: data.items }));
+        setDirectories(prev => sameItems(prev[dirPath], data.items) ? prev : ({ ...prev, [dirPath]: data.items }));
         setLoadedDirs(prev => new Set(prev).add(dirPath));
       }
     } catch { /* silent */ }
@@ -248,12 +305,6 @@ export default function FileEditor({ caseName }: { caseName: string }) {
     }
     setLoading(false);
   };
-
-  // Keep loadFileRef in sync with loadFile on every render, so fetchCaseInfo's
-  // forced-refresh path can call the latest loadFile without a forward reference.
-  useEffect(() => {
-    loadFileRef.current = loadFile;
-  });
 
   const saveFile = async () => {
     if (!currentFile) return;
@@ -400,8 +451,8 @@ export default function FileEditor({ caseName }: { caseName: string }) {
 
       closeRename();
       toast.success(`Renamed: ${from} → ${to}`);
-      // Forced refresh: both the old and the new parent listing changed, and a
-      // renamed folder invalidates every cached path under it.
+      // Both the old and new parent listings may have changed. Refresh the
+      // structure immediately while leaving the editor state alone.
       await fetchCaseInfo(true);
     } catch {
       toast.error('Rename failed');
@@ -674,8 +725,9 @@ export default function FileEditor({ caseName }: { caseName: string }) {
             <FolderTree className="w-4 h-4" /> <span className="truncate">{caseName}</span>
             <button
               className="ml-auto p-0.5 rounded hover:bg-accent transition-colors"
-              onClick={() => fetchCaseInfo(true)}
-              title="Refresh files (force reload)"
+              onClick={() => void fetchCaseInfo(true)}
+              title="Refresh file tree"
+              aria-label="Refresh file tree"
             >
               <RefreshCw className={`w-3.5 h-3.5 text-muted-foreground hover:text-foreground ${loading ? 'animate-spin' : ''}`} />
             </button>

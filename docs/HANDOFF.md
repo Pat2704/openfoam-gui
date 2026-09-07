@@ -2,9 +2,10 @@
 
 Written for whoever (or whichever session) picks this up next.
 
-Last updated: 2026-09-07 — a local, unpushed change groups the three assistant
-launchers and makes the Mesh viewer reframe reliably after laptop-sized or
-initially hidden layouts. v3.1.0 remains the published release.
+Last updated: 2026-09-07 — local, unpushed changes group the three assistant
+launchers, make the Mesh viewer independent of viewport and GPU limits, and fix
+manual Monitor refresh plus automatic File Editor tree refresh. v3.1.0 remains
+the published release.
 
 ---
 
@@ -14,9 +15,9 @@ initially hidden layouts. v3.1.0 remains the published release.
 FOAMy and Claude, with the same scoped OpenFOAM tools and an isolated ChatGPT
 sign-in. Both artifacts are attached and the repository license is MIT.
 
-Everything is committed and pushed: `main` is level with `origin/main`, and the
-`v3.1.0` tag is where the artifacts were built. The next session starts on a
-finished release, not in the middle of it.
+Everything through the v3.1.0 release is committed and pushed, and the
+`v3.1.0` tag is where those published artifacts were built. `main` also has the
+local follow-up commits described below; they are intentionally not pushed.
 
 The republish carried one fix: the Claude panel’s composer was drawing two
 overlapping focus rings instead of one (§2t). The user asked for the fix without
@@ -69,9 +70,9 @@ difference between the build commit and the tag is this file. If you ever move a
 published tag again, re-check that same way; a tag that does not build the
 shipped binaries is worse than no tag.
 
-**What is open:** the assistant-launcher and Mesh-viewer follow-up of 2026-09-07
-is committed locally with refreshed v3.1.0 artifacts in `Working/`; do not push
-it until the user explicitly asks. Two things sit outside it: the trade mark
+**What is open:** the assistant-launcher, Mesh-viewer and refresh follow-ups of
+2026-09-07 are committed locally with refreshed v3.1.0 artifacts in `Working/`;
+do not push them until the user explicitly asks. Two things sit outside them: the trade mark
 request to OpenCFD is unanswered (§2l), and the repository's social preview image has yet to be
 uploaded — the user is doing that one, and it can only be done from Settings. The one unexplained thing is the
 folder build that lost `resources/standalone` (§2i, §2j) — the user reports
@@ -164,6 +165,23 @@ cannot create an antialiased WebGL2 buffer, reports a clear error if WebGL2 is
 unavailable, and remeasures/refits after a lost context is restored.
 `tests/webgl-sizing.test.ts` covers ordinary HiDPI, pixel-budget and lower-limit
 adapter cases.
+
+### 2026-09-07 — Monitor and File Editor refresh
+
+The two always-visible Monitor refresh controls no longer lose clicks to the
+automatic polling timers. Each data source tracks the promise already in flight:
+polling still deduplicates calls, while a manual refresh waits for that call and
+then performs a fresh one. The full refresh covers logs, log names, processes,
+timesteps and the visible residual chart; both buttons disable and spin until
+their requested work is complete.
+
+The File Editor now refreshes its tree every four seconds while its tab and the
+window are visible, and immediately when the user returns. It refreshes the
+case root plus every expanded nested directory with `cache: 'no-store'`, and
+keeps identical listings by reference to avoid periodic rerenders. This refresh
+never changes the open file, text, dirty state, file cache, selection or expanded
+folders. The manual tree button and mutation follow-ups use the same safe path;
+the old force-refresh path could collapse the tree and discard unsaved text.
 
 ---
 

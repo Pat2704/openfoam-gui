@@ -358,7 +358,7 @@ export default function Home() {
         {visitedTabs.includes('editor') && (
           <div className={paneClass('editor')}>
             {selectedCase ? (
-              <FileEditor key={selectedCase} caseName={selectedCase} />
+              <FileEditor key={selectedCase} caseName={selectedCase} active={activeTab === 'editor'} />
             ) : (
               <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
                 <div className="text-center">

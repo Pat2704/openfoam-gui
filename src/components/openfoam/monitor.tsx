@@ -212,10 +212,12 @@ export default function Monitor({ caseName, active = true }: {
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Request deduplication: prevent overlapping fetches ──
-  const fetchingLogsRef = useRef(false);
-  const fetchingProcsRef = useRef(false);
-  const fetchingTsRef = useRef(false);
-  const fetchingLogListRef = useRef(false);
+  const fetchingLogsRef = useRef<Promise<void> | null>(null);
+  const fetchingProcsRef = useRef<Promise<void> | null>(null);
+  const fetchingTsRef = useRef<Promise<void> | null>(null);
+  const fetchingLogListRef = useRef<Promise<void> | null>(null);
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  const [refreshingProcesses, setRefreshingProcesses] = useState(false);
   // ── Visibility tracking: pause polling when tab is hidden ──
   const [documentVisible, setDocumentVisible] = useState(true);
   // Poll only when the window is visible AND this tab is the active one.
@@ -313,17 +315,27 @@ export default function Monitor({ caseName, active = true }: {
     residualFetchRef.current(selectedLog);
   }, [selectedLog, showResidualChart, caseName]);
 
-  const fetchLogs = useCallback(async () => {
-    if (!caseName || !selectedLog || fetchingLogsRef.current) return;
-    fetchingLogsRef.current = true;
-    try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=logs&log=${encodeURIComponent(selectedLog)}&tail=${tailLines}`);
-      const data = await res.json();
-      setLogContent(data.content || '');
-      const logs: string[] = data.availableLogs || [];
-      setAvailableLogs(logs);
-    } catch { /* silent */ }
-    fetchingLogsRef.current = false;
+  const fetchLogs = useCallback(async (force = false) => {
+    if (!caseName || !selectedLog) return;
+    const pending = fetchingLogsRef.current;
+    if (pending) {
+      if (!force) return;
+      await pending;
+    }
+    const request = (async () => {
+      try {
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=logs&log=${encodeURIComponent(selectedLog)}&tail=${tailLines}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setLogContent(data.content || '');
+        const logs: string[] = data.availableLogs || [];
+        setAvailableLogs(logs);
+      } catch { /* silent */ }
+    })();
+    fetchingLogsRef.current = request;
+    try { await request; } finally {
+      if (fetchingLogsRef.current === request) fetchingLogsRef.current = null;
+    }
   }, [caseName, selectedLog, tailLines]);
 
   // Fetch available log file list (without content).
@@ -331,44 +343,98 @@ export default function Monitor({ caseName, active = true }: {
   // timer, and handing back a new array every tick would change the identity
   // of every callback that depends on availableLogs, re-firing their effects
   // for nothing.
-  const fetchLogList = useCallback(async () => {
-    if (!caseName || fetchingLogListRef.current) return;
-    fetchingLogListRef.current = true;
-    try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=listLogs`);
-      const data = await res.json();
-      const logs: string[] = data.availableLogs || [];
-      setAvailableLogs(prev =>
-        prev.length === logs.length && prev.every((l, i) => l === logs[i]) ? prev : logs
-      );
-    } catch { /* silent */ }
-    fetchingLogListRef.current = false;
+  const fetchLogList = useCallback(async (force = false) => {
+    if (!caseName) return;
+    const pending = fetchingLogListRef.current;
+    if (pending) {
+      if (!force) return;
+      await pending;
+    }
+    const request = (async () => {
+      try {
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=listLogs`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const logs: string[] = data.availableLogs || [];
+        setAvailableLogs(prev =>
+          prev.length === logs.length && prev.every((l, i) => l === logs[i]) ? prev : logs
+        );
+      } catch { /* silent */ }
+    })();
+    fetchingLogListRef.current = request;
+    try { await request; } finally {
+      if (fetchingLogListRef.current === request) fetchingLogListRef.current = null;
+    }
   }, [caseName]);
 
-  const fetchProcesses = useCallback(async () => {
-    if (!caseName || fetchingProcsRef.current) return;
-    fetchingProcsRef.current = true;
-    try {
-      const res = await fetch('/api/wsl?action=processes');
-      const data = await res.json();
-      setProcesses(data.processes || []);
-    } catch { /* silent */ }
-    fetchingProcsRef.current = false;
+  const fetchProcesses = useCallback(async (force = false) => {
+    if (!caseName) return;
+    const pending = fetchingProcsRef.current;
+    if (pending) {
+      if (!force) return;
+      await pending;
+    }
+    const request = (async () => {
+      try {
+        const res = await fetch('/api/wsl?action=processes');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setProcesses(data.processes || []);
+      } catch { /* silent */ }
+    })();
+    fetchingProcsRef.current = request;
+    try { await request; } finally {
+      if (fetchingProcsRef.current === request) fetchingProcsRef.current = null;
+    }
   }, [caseName]);
 
-  const fetchTimeSteps = useCallback(async () => {
-    if (!caseName || fetchingTsRef.current) return;
-    fetchingTsRef.current = true;
-    try {
-      const res = await fetch(`/api/cases?action=timesteps&name=${encodeURIComponent(caseName)}`, {
-        cache: 'no-store',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setTimeSteps(data.timeSteps || []);
-    } catch { /* silent */ }
-    fetchingTsRef.current = false;
+  const fetchTimeSteps = useCallback(async (force = false) => {
+    if (!caseName) return;
+    const pending = fetchingTsRef.current;
+    if (pending) {
+      if (!force) return;
+      await pending;
+    }
+    const request = (async () => {
+      try {
+        const res = await fetch(`/api/cases?action=timesteps&name=${encodeURIComponent(caseName)}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setTimeSteps(data.timeSteps || []);
+      } catch { /* silent */ }
+    })();
+    fetchingTsRef.current = request;
+    try { await request; } finally {
+      if (fetchingTsRef.current === request) fetchingTsRef.current = null;
+    }
   }, [caseName]);
+
+  // Polling requests are deliberately deduplicated, but a user click must not
+  // disappear just because it lands during the 750 ms / 1 s polling window.
+  // A forced fetch waits for the current request, then performs a fresh one.
+  const refreshAll = async () => {
+    if (refreshingAll) return;
+    setRefreshingAll(true);
+    try {
+      await Promise.all([
+        fetchLogs(true),
+        fetchProcesses(true),
+        fetchTimeSteps(true),
+        fetchLogList(true),
+        showResidualChart ? fetchResidualChart(residualLog || undefined) : Promise.resolve(),
+      ]);
+    } finally {
+      setRefreshingAll(false);
+    }
+  };
+
+  const refreshProcesses = async () => {
+    if (refreshingProcesses) return;
+    setRefreshingProcesses(true);
+    try { await fetchProcesses(true); } finally { setRefreshingProcesses(false); }
+  };
 
   const killProcess = async (pid: string) => {
     setKillingPid(pid);
@@ -661,8 +727,8 @@ export default function Monitor({ caseName, active = true }: {
                 {isRunning ? formatElapsed(elapsedSeconds) : '0:00'}
               </span>
             </div>
-            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { fetchLogs(); fetchProcesses(); fetchTimeSteps(); fetchLogList(); }}>
-              <RefreshCw className="w-3 h-3 mr-1" /> Refresh
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void refreshAll()} disabled={refreshingAll}>
+              <RefreshCw className={`w-3 h-3 mr-1 ${refreshingAll ? 'animate-spin' : ''}`} /> Refresh
             </Button>
           </div>
         </div>
@@ -744,8 +810,8 @@ export default function Monitor({ caseName, active = true }: {
               )}
             </CardTitle>
             <div className="flex items-center gap-1.5">
-              <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={fetchProcesses}>
-                <RefreshCw className="w-3 h-3" />
+              <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => void refreshProcesses()} disabled={refreshingProcesses} title="Refresh processes" aria-label="Refresh processes">
+                <RefreshCw className={`w-3 h-3 ${refreshingProcesses ? 'animate-spin' : ''}`} />
               </Button>
               {processes.length > 0 && (
                 <Button size="sm" variant="destructive" className="h-6 text-[10px] px-2"
