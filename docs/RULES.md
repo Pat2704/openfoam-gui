@@ -151,22 +151,32 @@ Important modules:
   belong on the Dashboard beside Ubuntu/OpenFOAM; keep the ParaView tab focused
   on the workbench itself.
 - The ParaView worker supports pipeline selection/visibility, mesh-region and
-  patch selection, reconstructed/decomposed readers, Slice, Clip, Contour,
-  Threshold, Stream Tracer, Tube, Cell Data to Point Data, Extract Surface,
-  delete-leaf, all common surface representations, edge/point sizing, opacity,
-  field/block colouring, presets, scalar legend, timesteps, refresh, projection,
-  backgrounds, axes and camera controls. Stream Tracer and Contour insert a
-  Cell Data to Point Data filter when their point data is absent. Extend the
-  explicit API/worker allowlists deliberately as the workbench grows.
+  patch selection, reconstructed/decomposed readers and a capability-detected
+  catalogue of 23 filters: Slice, Clip, Contour, Threshold, Stream Tracer,
+  Glyph, Transform, Reflect, both Warp variants, Shrink, Plot Over Line, Cell
+  Centers, Tube, Calculator, Gradient, Temporal Statistics, Integrate Variables,
+  both cell/point conversions, Extract Surface, Extract Edges and Connectivity.
+  Keep API/worker allowlists explicit. Insert Cell Data to Point Data when a
+  point-field filter needs it, and only offer Tube for line-producing inputs to
+  avoid native ParaView crashes.
+- Slice/Clip planes, Stream Tracer point-cloud spheres/lines and Plot Over Line
+  lines use real ParaView guide geometry. Browser drag actions are allowlisted,
+  converted through the camera basis and update both the active proxy and guide;
+  do not substitute a cosmetic 2D overlay. Preserve numeric property editing as
+  an exact alternative and hide inactive guides.
+- Camera and timestep interaction render at full viewport resolution. Coalesce
+  pending motion/time requests and discard stale intermediate timesteps instead
+  of reducing image dimensions. The Information panel must report reader-level
+  bounds, centre and colour-coded X/Y/Z dimensions independently of filter output.
 - Do not key ParaView compatibility to a version number. Inspect property
   domains/capabilities and keep aliases for renamed properties or proxy values
   (for example Point Cloud/Point Source and old/new Threshold ranges). An
   OpenFOAM `0` directory alone is input, not a result timestep: label it mesh
   only and keep non-scalar representations working without `ColorBy(None)`.
 - Real ParaView 6.0.0 probes on 2026-09-07 validated `cavity_test` reconstructed
-  and four-way decomposed, six regions, 20 result times, all fields and display
-  representations, every supported filter including both Stream Tracer seed
-  types and Tube, plus mesh-only `claude_test` renders.
+  and four-way decomposed, six regions, 20 result times, all representations and
+  all 23 catalogue filters, including both Stream Tracer seeds, guarded Tube and
+  plane/sphere/line manipulation, plus mesh-only `claude_test` renders.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.

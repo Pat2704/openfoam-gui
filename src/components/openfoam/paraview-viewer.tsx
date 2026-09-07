@@ -8,14 +8,15 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
 import type { ParaViewNodeType, ParaViewPipelineNode, ParaViewWorkbenchState } from '@/lib/paraview';
 import {
-  AlertTriangle, Box, ChevronLeft, ChevronRight, CircleDot, Download, Eye, EyeOff,
-  Filter, GitFork, Info, Layers3, Loader2, Maximize2, Network, Pause, Play, Power,
-  RefreshCw, Rotate3D, Scissors, Settings, SlidersHorizontal,
+  AlertTriangle, ArrowUpRight, Box, Calculator, ChevronLeft, ChevronRight, CircleDot,
+  Download, Eye, EyeOff, Filter, GitFork, Grid3X3, Info, Layers3, Loader2,
+  Maximize2, MousePointer2, Move3D, Network, Pause, Play, Power, RefreshCw,
+  Rotate3D, Scissors, Search, Settings, SlidersHorizontal, Sparkles,
   SquareDashedMousePointer, Trash2, Waves,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -23,6 +24,8 @@ import { toast } from 'sonner';
 type Vector3 = [number, number, number];
 type FilterType = Exclude<ParaViewNodeType, 'OpenFOAMReader'>;
 type CameraMode = 'rotate' | 'pan' | 'zoom';
+type ManipulatorMode = 'translate' | 'rotate' | 'scale' | 'point1' | 'point2';
+type ViewportTool = 'camera' | ManipulatorMode;
 
 interface PropertyDraft {
   origin: Vector3;
@@ -47,6 +50,30 @@ interface PropertyDraft {
   streamMaximumLength: number;
   tubeRadius: number;
   tubeSides: number;
+  calculatorAssociation: 'CELLS' | 'POINTS';
+  calculatorExpression: string;
+  calculatorResultName: string;
+  gradientAssociation: 'CELLS' | 'POINTS';
+  gradientName: string;
+  gradientResultName: string;
+  glyphName: string;
+  glyphScaleFactor: number;
+  glyphMaxPoints: number;
+  warpAssociation: 'CELLS' | 'POINTS';
+  warpName: string;
+  warpScaleFactor: number;
+  warpNormal: Vector3;
+  warpUseNormal: boolean;
+  transformTranslate: Vector3;
+  transformRotate: Vector3;
+  transformScale: Vector3;
+  reflectOrigin: Vector3;
+  reflectNormal: Vector3;
+  reflectCopyInput: boolean;
+  shrinkFactor: number;
+  plotPoint1: Vector3;
+  plotPoint2: Vector3;
+  plotResolution: number;
 }
 
 interface DisplayDraft {
@@ -56,8 +83,13 @@ interface DisplayDraft {
 }
 
 const REPRESENTATIONS = ['Surface', 'Surface With Edges', 'Wireframe', 'Points', 'Outline'];
-const COMMON_FILTERS: FilterType[] = ['Slice', 'Clip', 'Contour', 'StreamTracer'];
-const MORE_FILTERS: FilterType[] = ['Threshold', 'Tube', 'CellDatatoPointData', 'ExtractSurface'];
+const FILTER_GROUPS: { label: string; filters: FilterType[] }[] = [
+  { label: 'Common', filters: ['Slice', 'Clip', 'Contour', 'Threshold', 'StreamTracer', 'Glyph'] },
+  { label: 'Geometry', filters: ['Transform', 'Reflect', 'WarpByVector', 'WarpByScalar', 'Shrink'] },
+  { label: 'Sampling and lines', filters: ['PlotOverLine', 'CellCenters', 'Tube'] },
+  { label: 'Data analysis', filters: ['Calculator', 'Gradient', 'TemporalStatistics', 'IntegrateVariables', 'CellDatatoPointData', 'PointDatatoCellData'] },
+  { label: 'Extraction and topology', filters: ['ExtractSurface', 'ExtractEdges', 'Connectivity'] },
+];
 const STARTUP_STAGES = [
   'Creating the paraFoam marker…',
   'Starting the ParaView Python engine…',
@@ -73,6 +105,13 @@ const EMPTY_DRAFT: PropertyDraft = {
   streamRadius: 1, streamPoints: 50, streamPoint1: [0, 0, 0], streamPoint2: [1, 0, 0],
   streamResolution: 50, streamDirection: 'BOTH', streamMaximumLength: 1,
   tubeRadius: 0.01, tubeSides: 8,
+  calculatorAssociation: 'POINTS', calculatorExpression: '', calculatorResultName: 'Result',
+  gradientAssociation: 'POINTS', gradientName: '', gradientResultName: 'Gradient',
+  glyphName: '', glyphScaleFactor: 1, glyphMaxPoints: 1200,
+  warpAssociation: 'POINTS', warpName: '', warpScaleFactor: 1, warpNormal: [0, 0, 1], warpUseNormal: false,
+  transformTranslate: [0, 0, 0], transformRotate: [0, 0, 0], transformScale: [1, 1, 1],
+  reflectOrigin: [0, 0, 0], reflectNormal: [1, 0, 0], reflectCopyInput: true,
+  shrinkFactor: 0.8, plotPoint1: [0, 0, 0], plotPoint2: [1, 1, 1], plotResolution: 200,
 };
 
 async function errorFrom(response: Response): Promise<string> {
@@ -87,8 +126,16 @@ async function errorFrom(response: Response): Promise<string> {
 function filterLabel(type: FilterType): string {
   const labels: Partial<Record<FilterType, string>> = {
     CellDatatoPointData: 'Cell Data to Point Data',
+    PointDatatoCellData: 'Point Data to Cell Data',
     StreamTracer: 'Stream Tracer',
     ExtractSurface: 'Extract Surface',
+    CellCenters: 'Cell Centers',
+    WarpByVector: 'Warp By Vector',
+    WarpByScalar: 'Warp By Scalar',
+    ExtractEdges: 'Extract Edges',
+    IntegrateVariables: 'Integrate Variables',
+    PlotOverLine: 'Plot Over Line',
+    TemporalStatistics: 'Temporal Statistics',
   };
   return labels[type] || type;
 }
@@ -102,6 +149,11 @@ function filterIcon(type: ParaViewNodeType) {
   if (type === 'Tube') return <Network className="h-3.5 w-3.5" />;
   if (type === 'ExtractSurface') return <Box className="h-3.5 w-3.5" />;
   if (type === 'CellDatatoPointData') return <Layers3 className="h-3.5 w-3.5" />;
+  if (type === 'Calculator') return <Calculator className="h-3.5 w-3.5" />;
+  if (type === 'Glyph') return <Sparkles className="h-3.5 w-3.5" />;
+  if (type === 'PlotOverLine' || type === 'ExtractEdges') return <ArrowUpRight className="h-3.5 w-3.5" />;
+  if (type === 'Transform' || type === 'WarpByVector' || type === 'WarpByScalar') return <Move3D className="h-3.5 w-3.5" />;
+  if (type === 'Gradient' || type === 'TemporalStatistics' || type === 'IntegrateVariables') return <Grid3X3 className="h-3.5 w-3.5" />;
   return <GitFork className="h-3.5 w-3.5" />;
 }
 
@@ -139,15 +191,19 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [draft, setDraft] = useState<PropertyDraft>(EMPTY_DRAFT);
   const [displayDraft, setDisplayDraft] = useState<DisplayDraft>({ opacity: 1, lineWidth: 1, pointSize: 3 });
   const [playing, setPlaying] = useState(false);
-  const [moreFilter, setMoreFilter] = useState<FilterType | undefined>();
+  const [filterChoice, setFilterChoice] = useState<FilterType | undefined>();
+  const [viewportTool, setViewportTool] = useState<ViewportTool>('camera');
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef('');
   const startedCaseRef = useRef('');
-  const dragRef = useRef<{ x: number; y: number; mode: CameraMode } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; action: 'camera' | 'manipulate'; mode: CameraMode | ManipulatorMode } | null>(null);
   const cameraInFlightRef = useRef(false);
-  const pendingCameraRef = useRef<{ mode: CameraMode; dx: number; dy: number } | null>(null);
+  const pendingCameraRef = useRef<{ action: 'camera' | 'manipulate'; mode: CameraMode | ManipulatorMode; dx: number; dy: number } | null>(null);
   const stillRequestedRef = useRef(false);
+  const stateSyncRequestedRef = useRef(false);
+  const timeInFlightRef = useRef(false);
+  const pendingTimeRef = useRef<number | null>(null);
   const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disposedRef = useRef(false);
   const nextImageSequenceRef = useRef(0);
@@ -158,11 +214,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     [workbench],
   );
 
-  const imageSize = useCallback((interactive = false) => {
-    const scale = interactive ? 0.58 : 1;
+  const imageSize = useCallback(() => {
     return {
-      width: Math.max(320, Math.min(1920, Math.round((viewportRef.current?.clientWidth || 1000) * scale))),
-      height: Math.max(240, Math.min(1200, Math.round((viewportRef.current?.clientHeight || 700) * scale))),
+      width: Math.max(320, Math.min(1920, Math.round(viewportRef.current?.clientWidth || 1000))),
+      height: Math.max(240, Math.min(1200, Math.round(viewportRef.current?.clientHeight || 700))),
     };
   }, []);
 
@@ -177,8 +232,8 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
 
   const fetchRender = useCallback(async (interactive = false) => {
     const sequence = ++nextImageSequenceRef.current;
-    const size = imageSize(interactive);
-    const quality = interactive ? 58 : 92;
+    const size = imageSize();
+    const quality = interactive ? 90 : 94;
     const response = await fetch(
       `/api/paraview?action=render&width=${size.width}&height=${size.height}&quality=${quality}`,
       { cache: 'no-store' },
@@ -329,9 +384,35 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       streamMaximumLength: stream?.maximumLength || 1,
       tubeRadius: selected.tube?.radius || 0.01,
       tubeSides: selected.tube?.sides || 8,
+      calculatorAssociation: selected.calculator?.association || 'POINTS',
+      calculatorExpression: selected.calculator?.expression || '',
+      calculatorResultName: selected.calculator?.resultName || 'Result',
+      gradientAssociation: selected.gradient?.association || 'POINTS',
+      gradientName: selected.gradient?.name || '',
+      gradientResultName: selected.gradient?.resultName || 'Gradient',
+      glyphName: selected.glyph?.name || '',
+      glyphScaleFactor: selected.glyph?.scaleFactor || 1,
+      glyphMaxPoints: selected.glyph?.maxPoints || 1200,
+      warpAssociation: selected.warp?.association || 'POINTS',
+      warpName: selected.warp?.name || '',
+      warpScaleFactor: selected.warp?.scaleFactor ?? 1,
+      warpNormal: selected.warp?.normal || [0, 0, 1],
+      warpUseNormal: selected.warp?.useNormal || false,
+      transformTranslate: selected.transform?.translate || [0, 0, 0],
+      transformRotate: selected.transform?.rotate || [0, 0, 0],
+      transformScale: selected.transform?.scale || [1, 1, 1],
+      reflectOrigin: selected.reflect?.origin || [0, 0, 0],
+      reflectNormal: selected.reflect?.normal || [1, 0, 0],
+      reflectCopyInput: selected.reflect?.copyInput ?? true,
+      shrinkFactor: selected.shrink?.factor ?? 0.8,
+      plotPoint1: selected.plotOverLine?.point1 || [0, 0, 0],
+      plotPoint2: selected.plotOverLine?.point2 || [1, 1, 1],
+      plotResolution: selected.plotOverLine?.resolution || 200,
     });
     setDisplayDraft({ opacity: selected.opacity, lineWidth: selected.lineWidth, pointSize: selected.pointSize });
   }, [selected]);
+
+  useEffect(() => setViewportTool('camera'), [selected?.id]);
 
   const requestStillRender = useCallback(() => {
     stillRequestedRef.current = true;
@@ -341,15 +422,15 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     }
   }, [fetchRender]);
 
-  const cameraRequest = useCallback(async (mode: CameraMode, dx: number, dy: number) => {
+  const viewportRequest = useCallback(async (action: 'camera' | 'manipulate', mode: CameraMode | ManipulatorMode, dx: number, dy: number) => {
     if (!workbench) return;
     if (cameraInFlightRef.current) {
       const queued = pendingCameraRef.current;
-      if (queued && queued.mode === mode) {
+      if (queued && queued.action === action && queued.mode === mode) {
         queued.dx += dx;
         queued.dy += dy;
       } else {
-        pendingCameraRef.current = { mode, dx, dy };
+        pendingCameraRef.current = { action, mode, dx, dy };
       }
       return;
     }
@@ -357,12 +438,12 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     setCameraBusy(true);
     const sequence = ++nextImageSequenceRef.current;
     try {
-      const size = imageSize(true);
+      const size = imageSize();
       const response = await fetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'camera', cameraAction: 'camera', mode, dx, dy,
-          quality: 55, ...size,
+          action: 'camera', cameraAction: action, mode, dx, dy,
+          quality: 92, ...size,
         }),
       });
       if (!response.ok) throw new Error(await errorFrom(response));
@@ -374,26 +455,53 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       const queued = pendingCameraRef.current;
       pendingCameraRef.current = null;
       if (queued) {
-        void cameraRequest(queued.mode, queued.dx, queued.dy);
+        void viewportRequest(queued.action, queued.mode, queued.dx, queued.dy);
       } else {
         setCameraBusy(false);
-        if (stillRequestedRef.current) {
-          stillRequestedRef.current = false;
-          void fetchRender(false);
-        }
+        const needsState = stateSyncRequestedRef.current;
+        const needsStill = stillRequestedRef.current;
+        stateSyncRequestedRef.current = false;
+        stillRequestedRef.current = false;
+        if (needsState || needsStill) void (async () => {
+          if (needsState) await command('state', {}, { render: false, quiet: true });
+          if (needsStill) await fetchRender(false);
+        })();
       }
     }
-  }, [fetchRender, imageSize, showImage, workbench]);
+  }, [command, fetchRender, imageSize, showImage, workbench]);
+
+  const cameraRequest = useCallback((mode: CameraMode, dx: number, dy: number) => {
+    void viewportRequest('camera', mode, dx, dy);
+  }, [viewportRequest]);
+
+  const manipulatorRequest = useCallback((mode: ManipulatorMode, dx: number, dy: number) => {
+    void viewportRequest('manipulate', mode, dx, dy);
+  }, [viewportRequest]);
+
+  const finishViewportInteraction = useCallback(() => {
+    if (dragRef.current?.action === 'manipulate') stateSyncRequestedRef.current = true;
+    dragRef.current = null;
+    stillRequestedRef.current = true;
+    if (!cameraInFlightRef.current) {
+      const needsState = stateSyncRequestedRef.current;
+      stateSyncRequestedRef.current = false;
+      stillRequestedRef.current = false;
+      void (async () => {
+        if (needsState) await command('state', {}, { render: false, quiet: true });
+        await fetchRender(false);
+      })();
+    }
+  }, [command, fetchRender]);
 
   const cameraAction = useCallback(async (cameraActionName: 'reset_camera' | 'standard_view', view?: string) => {
     if (!workbench) return;
     setCameraBusy(true);
     const sequence = ++nextImageSequenceRef.current;
     try {
-      const size = imageSize(false);
+      const size = imageSize();
       const response = await fetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'camera', cameraAction: cameraActionName, view, quality: 92, ...size }),
+        body: JSON.stringify({ action: 'camera', cameraAction: cameraActionName, view, quality: 94, ...size }),
       });
       if (!response.ok) throw new Error(await errorFrom(response));
       showImage(await response.blob(), sequence);
@@ -404,22 +512,38 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     }
   }, [imageSize, showImage, workbench]);
 
+  const requestTime = useCallback(async (time: number) => {
+    if (timeInFlightRef.current) {
+      pendingTimeRef.current = time;
+      return;
+    }
+    timeInFlightRef.current = true;
+    try {
+      await command('time', { time }, { interactive: true, quiet: true });
+    } finally {
+      timeInFlightRef.current = false;
+      const pending = pendingTimeRef.current;
+      pendingTimeRef.current = null;
+      if (pending !== null && pending !== time) void requestTime(pending);
+    }
+  }, [command]);
+
   useEffect(() => {
     if (!playing || !workbench || workbench.times.length < 2) return;
     const index = Math.max(0, workbench.times.findIndex(value => value === workbench.time));
     const timer = window.setTimeout(() => {
       const next = workbench.times[(index + 1) % workbench.times.length];
-      void command('time', { time: next }, { interactive: true, quiet: true });
-    }, 520);
+      void requestTime(next);
+    }, 240);
     return () => window.clearTimeout(timer);
-  }, [playing, workbench, command]);
+  }, [playing, workbench, requestTime]);
 
   useEffect(() => {
     if (!playing && workbench) void fetchRender(false).catch(() => undefined);
     // A still frame is useful when playback stops, not on every state update.
   }, [playing]);
 
-  const updateVector = (field: keyof Pick<PropertyDraft, 'origin' | 'normal' | 'streamCenter' | 'streamPoint1' | 'streamPoint2'>, index: number, value: string) => {
+  const updateVector = (field: keyof Pick<PropertyDraft, 'origin' | 'normal' | 'streamCenter' | 'streamPoint1' | 'streamPoint2' | 'warpNormal' | 'transformTranslate' | 'transformRotate' | 'transformScale' | 'reflectOrigin' | 'reflectNormal' | 'plotPoint1' | 'plotPoint2'>, index: number, value: string) => {
     const parsed = Number(value);
     setDraft(current => {
       const next = [...current[field]] as Vector3;
@@ -441,6 +565,14 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       direction: draft.streamDirection, maximumLength: draft.streamMaximumLength,
     } });
     else if (selected.type === 'Tube') void command('update', { tube: { radius: draft.tubeRadius, sides: draft.tubeSides } });
+    else if (selected.type === 'Calculator') void command('update', { calculator: { association: draft.calculatorAssociation, expression: draft.calculatorExpression, resultName: draft.calculatorResultName } });
+    else if (selected.type === 'Gradient') void command('update', { gradient: { association: draft.gradientAssociation, name: draft.gradientName, resultName: draft.gradientResultName } });
+    else if (selected.type === 'Glyph') void command('update', { glyph: { name: draft.glyphName, scaleFactor: draft.glyphScaleFactor, maxPoints: draft.glyphMaxPoints } });
+    else if (selected.type === 'WarpByVector' || selected.type === 'WarpByScalar') void command('update', { warp: { association: draft.warpAssociation, name: draft.warpName, scaleFactor: draft.warpScaleFactor, normal: draft.warpNormal, useNormal: draft.warpUseNormal } });
+    else if (selected.type === 'Transform') void command('update', { transform: { translate: draft.transformTranslate, rotate: draft.transformRotate, scale: draft.transformScale } });
+    else if (selected.type === 'Reflect') void command('update', { reflect: { origin: draft.reflectOrigin, normal: draft.reflectNormal, copyInput: draft.reflectCopyInput } });
+    else if (selected.type === 'Shrink') void command('update', { shrink: { factor: draft.shrinkFactor } });
+    else if (selected.type === 'PlotOverLine') void command('update', { plotOverLine: { point1: draft.plotPoint1, point2: draft.plotPoint2, resolution: draft.plotResolution } });
   };
 
   const applyDisplay = () => void command('update', { ...displayDraft });
@@ -459,8 +591,15 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   };
 
   const addFilter = (filter: FilterType) => {
-    setMoreFilter(undefined);
+    setFilterChoice(undefined);
     void command('add_filter', { filter });
+  };
+
+  const toggleManipulator = () => {
+    if (!selected?.manipulatorAvailable) return;
+    const enabled = !selected.manipulatorVisible;
+    setViewportTool(enabled ? 'translate' : 'camera');
+    void command('set_manipulator', { enabled });
   };
 
   const updateRegions = (regions: string[]) => {
@@ -535,6 +674,22 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const pointVectorArrays = workbench.arrays.filter(array => array.association === 'POINTS' && array.components >= 2);
   const patchRegions = workbench.reader.regions.filter(region => region.startsWith('patch/'));
   const internalRegion = workbench.reader.regions.find(region => region === 'internalMesh');
+  const meshAxes = (['X', 'Y', 'Z'] as const).map((axis, index) => ({
+    axis,
+    min: workbench.reader.bounds[index * 2],
+    max: workbench.reader.bounds[index * 2 + 1],
+    length: workbench.reader.bounds[index * 2 + 1] - workbench.reader.bounds[index * 2],
+    color: index === 0 ? 'text-red-500' : index === 1 ? 'text-emerald-500' : 'text-blue-500',
+  }));
+  const meshCenter = meshAxes.map(item => (item.min + item.max) / 2);
+  const tubeReady = selected ? ['StreamTracer', 'PlotOverLine', 'ExtractEdges', 'Contour'].includes(selected.type) : false;
+  const manipulatorTools: { mode: ManipulatorMode; label: string }[] = selected?.type === 'Slice' || selected?.type === 'Clip'
+    ? [{ mode: 'translate', label: 'Move plane' }, { mode: 'rotate', label: 'Rotate plane' }]
+    : selected?.type === 'StreamTracer' && selected.streamTracer?.seedType === 'Point Cloud'
+      ? [{ mode: 'translate', label: 'Move sphere' }, { mode: 'scale', label: 'Resize sphere' }]
+      : selected?.type === 'StreamTracer' || selected?.type === 'PlotOverLine'
+        ? [{ mode: 'translate', label: 'Move line' }, { mode: 'point1', label: 'Point 1' }, { mode: 'point2', label: 'Point 2' }]
+        : [];
 
   return (
     <div className="flex h-full min-h-[680px] flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
@@ -542,14 +697,14 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={starting || busy} onClick={() => void start(true)} title="Reload the OpenFOAM case"><RefreshCw className={`h-3.5 w-3.5 ${starting ? 'animate-spin' : ''}`} /> Reload</Button>
         <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => void command('refresh')} title="Refresh fields and timesteps"><RefreshCw className="h-3.5 w-3.5" /></Button>
         <span className="mx-1 h-6 w-px bg-border" />
-        {COMMON_FILTERS.map(filter => (
-          <Button key={filter} size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy} onClick={() => addFilter(filter)} title={`Apply ${filterLabel(filter)}`}>
-            {filterIcon(filter)}<span className="hidden xl:inline">{filterLabel(filter)}</span>
-          </Button>
-        ))}
-        <Select value={moreFilter} onValueChange={value => addFilter(value as FilterType)}>
-          <SelectTrigger size="sm" className="h-7 w-[118px] text-xs"><Filter className="h-3.5 w-3.5" /><SelectValue placeholder="More filters" /></SelectTrigger>
-          <SelectContent>{MORE_FILTERS.map(filter => <SelectItem key={filter} value={filter}>{filterLabel(filter)}</SelectItem>)}</SelectContent>
+        <Select value={filterChoice} onValueChange={value => addFilter(value as FilterType)} disabled={busy}>
+          <SelectTrigger size="sm" className="h-7 w-[178px] text-xs"><Search className="h-3.5 w-3.5" /><SelectValue placeholder="Add filter…" /></SelectTrigger>
+          <SelectContent className="max-h-[520px] min-w-[260px]">
+            {FILTER_GROUPS.map((group, groupIndex) => <React.Fragment key={group.label}>
+              {groupIndex > 0 && <SelectSeparator />}
+              <SelectGroup><SelectLabel className="font-semibold uppercase tracking-wide">{group.label}</SelectLabel>{group.filters.map(filter => <SelectItem key={filter} value={filter} disabled={!workbench.availableFilters.includes(filter) || (filter === 'Tube' && !tubeReady)}>{filterIcon(filter)}{filterLabel(filter)}</SelectItem>)}</SelectGroup>
+            </React.Fragment>)}
+          </SelectContent>
         </Select>
         <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy || selected?.id === 'reader'} onClick={() => void command('delete')} title="Delete selected filter"><Trash2 className="h-3.5 w-3.5" /></Button>
         <span className="mx-1 h-6 w-px bg-border" />
@@ -608,14 +763,36 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             ref={viewportRef}
             className="absolute inset-0 cursor-grab select-none overflow-hidden active:cursor-grabbing"
             onContextMenu={event => event.preventDefault()}
-            onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); dragRef.current = { x: event.clientX, y: event.clientY, mode: event.button === 2 || event.shiftKey ? 'pan' : 'rotate' }; }}
-            onPointerMove={event => { const drag = dragRef.current; if (!drag) return; const dx = event.clientX - drag.x; const dy = event.clientY - drag.y; drag.x = event.clientX; drag.y = event.clientY; if (Math.abs(dx) + Math.abs(dy) > 1) void cameraRequest(drag.mode, dx, dy); }}
-            onPointerUp={() => { dragRef.current = null; requestStillRender(); }}
-            onPointerCancel={() => { dragRef.current = null; requestStillRender(); }}
+            onPointerDown={event => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              const editing = selected?.manipulatorVisible && viewportTool !== 'camera';
+              dragRef.current = {
+                x: event.clientX, y: event.clientY,
+                action: editing ? 'manipulate' : 'camera',
+                mode: editing ? viewportTool : event.button === 2 || event.shiftKey ? 'pan' : 'rotate',
+              };
+            }}
+            onPointerMove={event => {
+              const drag = dragRef.current;
+              if (!drag) return;
+              const dx = event.clientX - drag.x;
+              const dy = event.clientY - drag.y;
+              drag.x = event.clientX;
+              drag.y = event.clientY;
+              if (Math.abs(dx) + Math.abs(dy) <= 1) return;
+              if (drag.action === 'manipulate') manipulatorRequest(drag.mode as ManipulatorMode, dx, dy);
+              else cameraRequest(drag.mode as CameraMode, dx, dy);
+            }}
+            onPointerUp={finishViewportInteraction}
+            onPointerCancel={finishViewportInteraction}
             onWheel={event => { event.preventDefault(); void cameraRequest('zoom', 0, event.deltaY); if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current); wheelTimerRef.current = setTimeout(requestStillRender, 140); }}
           >
             {imageUrl ? <img src={imageUrl} alt={`ParaView render of ${caseName}`} draggable={false} className="h-full w-full object-contain" /> : <Loader2 className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 animate-spin text-white/70" />}
-            <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/45 px-2 py-1 text-[10px] text-white/80">Left drag: rotate · Shift/right drag: pan · Wheel: zoom</div>
+            {selected?.manipulatorVisible && <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-white/20 bg-black/65 p-1 shadow-lg backdrop-blur-sm">
+              <Button size="sm" variant={viewportTool === 'camera' ? 'secondary' : 'ghost'} className="h-7 text-[10px] text-white hover:text-white" onClick={() => setViewportTool('camera')}><MousePointer2 className="h-3.5 w-3.5" /> Navigate</Button>
+              {manipulatorTools.map(tool => <Button key={tool.mode} size="sm" variant={viewportTool === tool.mode ? 'secondary' : 'ghost'} className="h-7 text-[10px] text-white hover:text-white" onClick={() => setViewportTool(tool.mode)}>{tool.mode === 'rotate' ? <Rotate3D className="h-3.5 w-3.5" /> : <Move3D className="h-3.5 w-3.5" />}{tool.label}</Button>)}
+            </div>}
+            <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/45 px-2 py-1 text-[10px] text-white/80">{selected?.manipulatorVisible && viewportTool !== 'camera' ? `Drag to ${manipulatorTools.find(tool => tool.mode === viewportTool)?.label.toLowerCase()}` : 'Left drag: rotate · Shift/right drag: pan · Wheel: zoom'} · full resolution</div>
             <div className="pointer-events-none absolute left-2 top-2 flex gap-1"><Badge className="bg-black/45 text-[9px] text-white hover:bg-black/45">{workbench.reader.caseType}</Badge>{!workbench.reader.hasTimeSteps && <Badge className="bg-amber-500/80 text-[9px] text-black hover:bg-amber-500/80">mesh only · time 0</Badge>}</div>
             {cameraBusy && <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/45 p-1.5"><Rotate3D className="h-4 w-4 animate-pulse text-white" /></div>}
           </div>
@@ -630,6 +807,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
 
             <TabsContent value="properties" className="mt-0 min-h-0 flex-1"><ScrollArea className="h-full">{selected && <div className="space-y-4 p-3 text-xs">
               <div><p className="font-semibold">{selected.label}</p><p className="text-[10px] text-muted-foreground">{selected.type}</p></div>
+              {selected.manipulatorAvailable && <Button size="sm" variant={selected.manipulatorVisible ? 'default' : 'outline'} className="h-8 w-full text-xs" disabled={busy} onClick={toggleManipulator}><Move3D className="h-4 w-4" />{selected.manipulatorVisible ? 'Hide 3D manipulator' : 'Edit graphically in 3D'}</Button>}
 
               <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Display</p>
@@ -657,20 +835,92 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
 
               {selected.type === 'Tube' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Tube</p><Label className="text-[10px]">Radius</Label><Input type="number" step="any" min="0" className="h-7 font-mono text-xs" value={draft.tubeRadius} onChange={event => setDraft(current => ({ ...current, tubeRadius: Number(event.target.value) }))} /><Label className="text-[10px]">Sides</Label><Input type="number" min="3" max="64" className="h-7 font-mono text-xs" value={draft.tubeSides} onChange={event => setDraft(current => ({ ...current, tubeSides: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
 
+              {selected.type === 'Calculator' && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">Calculator</p>
+                <Select value={draft.calculatorAssociation} onValueChange={value => setDraft(current => ({ ...current, calculatorAssociation: value as 'CELLS' | 'POINTS' }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="POINTS">Point data</SelectItem><SelectItem value="CELLS">Cell data</SelectItem></SelectContent></Select>
+                <Label className="text-[10px]">Expression</Label><Input className="h-7 font-mono text-xs" value={draft.calculatorExpression} onChange={event => setDraft(current => ({ ...current, calculatorExpression: event.target.value }))} placeholder="mag(U)" />
+                <Label className="text-[10px]">Result array</Label><Input className="h-7 font-mono text-xs" value={draft.calculatorResultName} onChange={event => setDraft(current => ({ ...current, calculatorResultName: event.target.value }))} />
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.calculatorExpression.trim()} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
+              {selected.type === 'Gradient' && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">Gradient</p>
+                <Select value={`${draft.gradientAssociation}:${draft.gradientName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); setDraft(current => ({ ...current, gradientAssociation: association as 'CELLS' | 'POINTS', gradientName: parts.join(':') })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{scalarArrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name} ({array.association.toLowerCase()})</SelectItem>)}</SelectContent></Select>
+                <Label className="text-[10px]">Result array</Label><Input className="h-7 font-mono text-xs" value={draft.gradientResultName} onChange={event => setDraft(current => ({ ...current, gradientResultName: event.target.value }))} />
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.gradientName} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
+              {selected.type === 'Glyph' && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">Glyph vectors</p>
+                <Select value={draft.glyphName} onValueChange={glyphName => setDraft(current => ({ ...current, glyphName }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{pointVectorArrays.map(array => <SelectItem key={array.name} value={array.name}>{array.name}</SelectItem>)}</SelectContent></Select>
+                <div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Scale factor</Label><Input type="number" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.glyphScaleFactor} onChange={event => setDraft(current => ({ ...current, glyphScaleFactor: Number(event.target.value) }))} /></div><div><Label className="text-[10px]">Max glyphs</Label><Input type="number" min="1" max="50000" className="mt-1 h-7 font-mono text-xs" value={draft.glyphMaxPoints} onChange={event => setDraft(current => ({ ...current, glyphMaxPoints: Number(event.target.value) }))} /></div></div>
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.glyphName} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
+              {(selected.type === 'WarpByVector' || selected.type === 'WarpByScalar') && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">{filterLabel(selected.type)}</p>
+                <Select value={`${draft.warpAssociation}:${draft.warpName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); setDraft(current => ({ ...current, warpAssociation: association as 'CELLS' | 'POINTS', warpName: parts.join(':') })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{workbench.arrays.filter(array => selected.type === 'WarpByVector' ? array.components >= 2 : array.components === 1).map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name}</SelectItem>)}</SelectContent></Select>
+                <Label className="text-[10px]">Scale factor</Label><Input type="number" step="any" className="h-7 font-mono text-xs" value={draft.warpScaleFactor} onChange={event => setDraft(current => ({ ...current, warpScaleFactor: Number(event.target.value) }))} />
+                {selected.type === 'WarpByScalar' && <><div className="flex items-center gap-2"><Checkbox id="pv-warp-normal" checked={draft.warpUseNormal} onCheckedChange={value => setDraft(current => ({ ...current, warpUseNormal: value === true }))} /><Label htmlFor="pv-warp-normal" className="text-xs">Use explicit normal</Label></div><VectorInputs value={draft.warpNormal} onChange={(index, value) => updateVector('warpNormal', index, value)} /></>}
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.warpName} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
+              {selected.type === 'Transform' && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">Transform geometry</p>
+                <Label className="text-[10px]">Translate X, Y, Z</Label><VectorInputs value={draft.transformTranslate} onChange={(index, value) => updateVector('transformTranslate', index, value)} />
+                <Label className="text-[10px]">Rotate X, Y, Z (degrees)</Label><VectorInputs value={draft.transformRotate} onChange={(index, value) => updateVector('transformRotate', index, value)} />
+                <Label className="text-[10px]">Scale X, Y, Z</Label><VectorInputs value={draft.transformScale} onChange={(index, value) => updateVector('transformScale', index, value)} />
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
+              {selected.type === 'Reflect' && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">Reflection plane</p>
+                <Label className="text-[10px]">Origin X, Y, Z</Label><VectorInputs value={draft.reflectOrigin} onChange={(index, value) => updateVector('reflectOrigin', index, value)} />
+                <Label className="text-[10px]">Normal X, Y, Z</Label><VectorInputs value={draft.reflectNormal} onChange={(index, value) => updateVector('reflectNormal', index, value)} />
+                <div className="flex items-center gap-2"><Checkbox id="pv-reflect-copy" checked={draft.reflectCopyInput} onCheckedChange={value => setDraft(current => ({ ...current, reflectCopyInput: value === true }))} /><Label htmlFor="pv-reflect-copy" className="text-xs">Keep original geometry</Label></div>
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
+              {selected.type === 'Shrink' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Shrink cells</p><div className="flex items-center justify-between"><Label className="text-[10px]">Factor</Label><span className="font-mono text-[10px]">{draft.shrinkFactor.toFixed(2)}</span></div><input className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={draft.shrinkFactor} onChange={event => setDraft(current => ({ ...current, shrinkFactor: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
+
+              {selected.type === 'PlotOverLine' && <section className="space-y-2 border-t pt-3">
+                <p className="font-semibold">Sampling line</p>
+                <Label className="text-[10px]">Point 1</Label><VectorInputs value={draft.plotPoint1} onChange={(index, value) => updateVector('plotPoint1', index, value)} />
+                <Label className="text-[10px]">Point 2</Label><VectorInputs value={draft.plotPoint2} onChange={(index, value) => updateVector('plotPoint2', index, value)} />
+                <Label className="text-[10px]">Resolution</Label><Input type="number" min="1" max="10000" className="h-7 font-mono text-xs" value={draft.plotResolution} onChange={event => setDraft(current => ({ ...current, plotResolution: Number(event.target.value) }))} />
+                <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
+              </section>}
+
               <section className="space-y-2 border-t pt-3"><p className="font-semibold">Render view</p><div className="flex items-center gap-2"><Checkbox id="pv-orientation" checked={workbench.view.orientationAxes} onCheckedChange={value => void command('update_view', { orientationAxes: value === true })} /><Label htmlFor="pv-orientation" className="text-xs">Orientation axes</Label></div><div className="flex items-center gap-2"><Checkbox id="pv-center-axes" checked={workbench.view.centerAxes} onCheckedChange={value => void command('update_view', { centerAxes: value === true })} /><Label htmlFor="pv-center-axes" className="text-xs">Center axes</Label></div><div className="flex items-center gap-2"><Checkbox id="pv-parallel" checked={workbench.view.parallelProjection} onCheckedChange={value => void command('update_view', { parallelProjection: value === true })} /><Label htmlFor="pv-parallel" className="text-xs">Parallel projection</Label></div><Label className="text-[10px]">Background</Label><Select value={workbench.view.background} onValueChange={background => void command('update_view', { background })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{['ParaView Dark', 'Midnight', 'Slate', 'White'].map(background => <SelectItem key={background} value={background}>{background}</SelectItem>)}</SelectContent></Select></section>
             </div>}</ScrollArea></TabsContent>
 
-            <TabsContent value="information" className="mt-0 min-h-0 flex-1"><ScrollArea className="h-full"><div className="space-y-4 p-3 text-xs"><div><p className="font-semibold">{selected?.label}</p><p className="text-[10px] text-muted-foreground">Selected pipeline output</p></div><section className="space-y-1 border-t pt-3 text-[10px] text-muted-foreground"><div className="flex justify-between"><span>Points</span><span className="font-mono text-foreground">{workbench.points.toLocaleString()}</span></div><div className="flex justify-between"><span>Cells</span><span className="font-mono text-foreground">{workbench.cells.toLocaleString()}</span></div><div className="pt-1"><p className="mb-1 font-medium text-foreground">Bounds</p><p className="break-words font-mono">{workbench.bounds.map(value => Number(value).toPrecision(4)).join(', ')}</p></div></section><section className="space-y-2 border-t pt-3"><div className="flex items-center justify-between"><p className="font-semibold">Data arrays</p><Badge variant="outline" className="text-[9px]">{workbench.arrays.length}</Badge></div>{workbench.arrays.length === 0 ? <p className="text-[10px] text-muted-foreground">No result arrays at this pipeline output. Mesh-only representations remain available.</p> : workbench.arrays.map(array => <div key={`${array.association}:${array.name}`} className="rounded border bg-background/60 p-2"><div className="flex items-center justify-between gap-2"><span className="font-mono font-medium">{array.name}</span><Badge variant="secondary" className="text-[8px]">{array.association}</Badge></div><div className="mt-1 flex justify-between text-[9px] text-muted-foreground"><span>{array.components} component{array.components === 1 ? '' : 's'}</span><span className="font-mono">{array.range[0].toPrecision(4)} → {array.range[1].toPrecision(4)}</span></div></div>)}</section></div></ScrollArea></TabsContent>
+            <TabsContent value="information" className="mt-0 min-h-0 flex-1"><ScrollArea className="h-full"><div className="space-y-4 p-3 text-xs">
+              <div><p className="font-semibold">{selected?.label}</p><p className="text-[10px] text-muted-foreground">Selected pipeline output</p></div>
+              <section className="space-y-2 border-t pt-3">
+                <div className="flex items-center justify-between"><p className="font-semibold">Case mesh extents</p><span className="text-[9px] text-muted-foreground">case units</span></div>
+                <div className="overflow-hidden rounded border bg-background/60">
+                  {meshAxes.map(item => <div key={item.axis} className="grid grid-cols-[24px_1fr_auto] items-center gap-2 border-b px-2 py-1.5 last:border-0"><span className={`font-mono text-sm font-bold ${item.color}`}>{item.axis}</span><span className="font-mono text-[9px] text-muted-foreground">{item.min.toPrecision(5)} → {item.max.toPrecision(5)}</span><span className="font-mono text-[10px] font-semibold">Δ {item.length.toPrecision(5)}</span></div>)}
+                </div>
+                <div className="grid grid-cols-[auto_1fr] gap-x-2 text-[10px]"><span className="text-muted-foreground">Center XYZ</span><span className="text-right font-mono">{meshCenter.map(value => value.toPrecision(5)).join(', ')}</span></div>
+                <p className="text-[9px] leading-relaxed text-muted-foreground"><span className="font-semibold text-red-500">X</span> red · <span className="font-semibold text-emerald-500">Y</span> green · <span className="font-semibold text-blue-500">Z</span> blue. Δ is the mesh size along each direction.</p>
+              </section>
+              <section className="space-y-1 border-t pt-3 text-[10px] text-muted-foreground">
+                <div className="flex justify-between"><span>Output points</span><span className="font-mono text-foreground">{workbench.points.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span>Output cells</span><span className="font-mono text-foreground">{workbench.cells.toLocaleString()}</span></div>
+                <div className="pt-1"><p className="mb-1 font-medium text-foreground">Selected output bounds</p><p className="break-words font-mono">{workbench.bounds.map(value => Number(value).toPrecision(4)).join(', ')}</p></div>
+              </section>
+              <section className="space-y-2 border-t pt-3"><div className="flex items-center justify-between"><p className="font-semibold">Data arrays</p><Badge variant="outline" className="text-[9px]">{workbench.arrays.length}</Badge></div>{workbench.arrays.length === 0 ? <p className="text-[10px] text-muted-foreground">No result arrays at this pipeline output. Mesh-only representations remain available.</p> : workbench.arrays.map(array => <div key={`${array.association}:${array.name}`} className="rounded border bg-background/60 p-2"><div className="flex items-center justify-between gap-2"><span className="font-mono font-medium">{array.name}</span><Badge variant="secondary" className="text-[8px]">{array.association}</Badge></div><div className="mt-1 flex justify-between text-[9px] text-muted-foreground"><span>{array.components} component{array.components === 1 ? '' : 's'}</span><span className="font-mono">{array.range[0].toPrecision(4)} → {array.range[1].toPrecision(4)}</span></div></div>)}</section>
+            </div></ScrollArea></TabsContent>
           </Tabs>
         </aside>
       </div>
 
       <div className="flex min-h-11 items-center gap-2 border-t bg-muted/25 px-3 py-1.5">
-        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={timeIndex <= 0 || busy || !workbench.reader.hasTimeSteps} onClick={() => void command('time', { time: workbench.times[timeIndex - 1] })}><ChevronLeft className="h-4 w-4" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={timeIndex <= 0 || busy || !workbench.reader.hasTimeSteps} onClick={() => void requestTime(workbench.times[timeIndex - 1])}><ChevronLeft className="h-4 w-4" /></Button>
         <Button size="icon" variant="outline" className="h-7 w-7" disabled={workbench.times.length < 2 || !workbench.reader.hasTimeSteps} onClick={() => setPlaying(value => !value)}>{playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}</Button>
-        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={timeIndex >= workbench.times.length - 1 || busy || !workbench.reader.hasTimeSteps} onClick={() => void command('time', { time: workbench.times[timeIndex + 1] })}><ChevronRight className="h-4 w-4" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={timeIndex >= workbench.times.length - 1 || busy || !workbench.reader.hasTimeSteps} onClick={() => void requestTime(workbench.times[timeIndex + 1])}><ChevronRight className="h-4 w-4" /></Button>
         <span className="text-[10px] text-muted-foreground">Time</span>
-        <input className="min-w-24 flex-1 accent-primary" type="range" min="0" max={Math.max(0, workbench.times.length - 1)} step="1" value={timeIndex} disabled={workbench.times.length < 2 || busy || !workbench.reader.hasTimeSteps} onChange={event => void command('time', { time: workbench.times[Number(event.target.value)] })} />
+        <input className="min-w-24 flex-1 accent-primary" type="range" min="0" max={Math.max(0, workbench.times.length - 1)} step="1" value={timeIndex} disabled={workbench.times.length < 2 || busy || !workbench.reader.hasTimeSteps} onChange={event => void requestTime(workbench.times[Number(event.target.value)])} />
         <Badge variant="outline" className="min-w-20 justify-center font-mono text-[10px]">{workbench.time}</Badge>
         <span className="hidden max-w-44 truncate text-[10px] text-muted-foreground sm:inline" title={caseName}>{caseName}</span>
       </div>

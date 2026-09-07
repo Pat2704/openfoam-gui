@@ -222,10 +222,25 @@ export type ParaViewNodeType =
   | 'Clip'
   | 'Contour'
   | 'CellDatatoPointData'
+  | 'PointDatatoCellData'
   | 'Threshold'
   | 'StreamTracer'
   | 'Tube'
-  | 'ExtractSurface';
+  | 'ExtractSurface'
+  | 'CellCenters'
+  | 'Calculator'
+  | 'Gradient'
+  | 'Glyph'
+  | 'WarpByVector'
+  | 'WarpByScalar'
+  | 'Transform'
+  | 'Reflect'
+  | 'ExtractEdges'
+  | 'Connectivity'
+  | 'Shrink'
+  | 'IntegrateVariables'
+  | 'PlotOverLine'
+  | 'TemporalStatistics';
 
 export interface ParaViewReaderState {
   caseType: string;
@@ -235,6 +250,7 @@ export interface ParaViewReaderState {
   regions: string[];
   selectedRegions: string[];
   hasTimeSteps: boolean;
+  bounds: [number, number, number, number, number, number];
 }
 
 export interface ParaViewViewState {
@@ -273,6 +289,22 @@ export interface ParaViewPipelineNode {
     maximumLength: number;
   };
   tube?: { radius: number; sides: number };
+  calculator?: { association: 'CELLS' | 'POINTS'; expression: string; resultName: string };
+  gradient?: { association: 'CELLS' | 'POINTS'; name: string; resultName: string };
+  glyph?: { name: string; scaleFactor: number; maxPoints: number };
+  warp?: {
+    association: 'CELLS' | 'POINTS';
+    name: string;
+    scaleFactor: number;
+    normal?: [number, number, number];
+    useNormal?: boolean;
+  };
+  transform?: { translate: [number, number, number]; rotate: [number, number, number]; scale: [number, number, number] };
+  reflect?: { origin: [number, number, number]; normal: [number, number, number]; copyInput: boolean };
+  shrink?: { factor: number };
+  plotOverLine?: { point1: [number, number, number]; point2: [number, number, number]; resolution: number };
+  manipulatorAvailable: boolean;
+  manipulatorVisible: boolean;
 }
 
 export interface ParaViewWorkbenchState {
@@ -287,6 +319,7 @@ export interface ParaViewWorkbenchState {
   cells: number;
   bounds: [number, number, number, number, number, number];
   presets: string[];
+  availableFilters: ParaViewNodeType[];
   reader: ParaViewReaderState;
   view: ParaViewViewState;
 }
@@ -302,10 +335,12 @@ from paraview.simple import *
 PREFIX = '__OFSTUDIO_JSON__'
 marker, output_dir, case_name, pv_version = sys.argv[1:5]
 nodes = OrderedDict()
+guides = {}
 selected_id = 'reader'
 current_time = 0.0
 next_filter = 1
 background_name = 'ParaView Dark'
+manipulator_visible = False
 
 BACKGROUNDS = {
     'ParaView Dark': [0.18, 0.20, 0.24],
@@ -388,6 +423,7 @@ def reader_metadata():
         # It is input data, not a solver result, so mesh-only cases should not
         # present animation controls as if a transient result existed.
         'hasTimeSteps': any(abs(value) > 1e-12 for value in raw_times),
+        'bounds': bounds_for(reader),
     }
 
 def view_metadata():
@@ -435,6 +471,8 @@ def node_state(identifier, node):
         'representation': node['representation'], 'opacity': node['opacity'],
         'lineWidth': node['lineWidth'], 'pointSize': node['pointSize'],
         'color': node['color'],
+        'manipulatorAvailable': node['type'] in ('Slice', 'Clip', 'StreamTracer', 'PlotOverLine'),
+        'manipulatorVisible': manipulator_visible and identifier == selected_id,
     }
     proxy = node['proxy']
     if node['type'] == 'Slice':
@@ -452,6 +490,22 @@ def node_state(identifier, node):
         state['streamTracer'] = node['streamTracer']
     elif node['type'] == 'Tube':
         state['tube'] = node['tube']
+    elif node['type'] == 'Calculator':
+        state['calculator'] = node['calculator']
+    elif node['type'] == 'Gradient':
+        state['gradient'] = node['gradient']
+    elif node['type'] == 'Glyph':
+        state['glyph'] = node['glyph']
+    elif node['type'] in ('WarpByVector', 'WarpByScalar'):
+        state['warp'] = node['warp']
+    elif node['type'] == 'Transform':
+        state['transform'] = node['transform']
+    elif node['type'] == 'Reflect':
+        state['reflect'] = node['reflect']
+    elif node['type'] == 'Shrink':
+        state['shrink'] = node['shrink']
+    elif node['type'] == 'PlotOverLine':
+        state['plotOverLine'] = node['plotOverLine']
     return state
 
 def state():
@@ -464,6 +518,7 @@ def state():
         'arrays': arrays_for(active), 'times': times, 'time': current_time,
         'points': int(info.GetNumberOfPoints()), 'cells': int(info.GetNumberOfCells()),
         'bounds': bounds_for(active), 'presets': available_presets,
+        'availableFilters': filter_capabilities(),
         'reader': reader_metadata(), 'view': view_metadata(),
     }
 
@@ -578,15 +633,164 @@ def update_view(data):
         requested = str(data['background'])
         if requested not in BACKGROUNDS: raise RuntimeError('Unsupported background preset.')
         background_name = requested
+        set_if_supported(view, 'UseColorPaletteForBackground', 0)
         view.Background = BACKGROUNDS[requested]
 
 def selected_node():
     return nodes[selected_id]
 
+def vec_add(a, b): return [a[i] + b[i] for i in range(3)]
+def vec_sub(a, b): return [a[i] - b[i] for i in range(3)]
+def vec_scale(a, scale): return [a[i] * scale for i in range(3)]
+def vec_dot(a, b): return sum(a[i] * b[i] for i in range(3))
+def vec_cross(a, b): return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+
+def vec_normalize(value, fallback=(1.0, 0.0, 0.0)):
+    length = math.sqrt(vec_dot(value, value))
+    return [component / length for component in value] if length > 1e-15 else list(fallback)
+
+def rotate_vector(value, axis, degrees):
+    axis = vec_normalize(axis)
+    radians = math.radians(degrees)
+    cosine, sine = math.cos(radians), math.sin(radians)
+    return vec_add(vec_add(vec_scale(value, cosine), vec_scale(vec_cross(axis, value), sine)), vec_scale(axis, vec_dot(axis, value) * (1.0 - cosine)))
+
+def camera_basis():
+    cam = view.GetActiveCamera()
+    position, focal = list(cam.GetPosition()), list(cam.GetFocalPoint())
+    forward = vec_normalize(vec_sub(focal, position), (0.0, 0.0, -1.0))
+    right = vec_normalize(vec_cross(forward, list(cam.GetViewUp())), (1.0, 0.0, 0.0))
+    up = vec_normalize(vec_cross(right, forward), (0.0, 1.0, 0.0))
+    return right, up, forward, math.sqrt(vec_dot(vec_sub(focal, position), vec_sub(focal, position)))
+
+def screen_shift(dx, dy, height):
+    right, up, unused, distance = camera_basis()
+    cam = view.GetActiveCamera()
+    if bool(property_value(view, 'CameraParallelProjection', False)):
+        world_per_pixel = 2.0 * clean_number(cam.GetParallelScale(), 1.0) / max(240.0, clean_number(height, 700.0))
+    else:
+        world_per_pixel = 2.0 * max(distance, 1e-9) * math.tan(math.radians(cam.GetViewAngle()) / 2.0) / max(240.0, clean_number(height, 700.0))
+    return vec_add(vec_scale(right, clean_number(dx) * world_per_pixel), vec_scale(up, -clean_number(dy) * world_per_pixel))
+
+def delete_guide(identifier):
+    guide = guides.pop(identifier, None)
+    if guide:
+        try: Delete(guide['proxy'])
+        except Exception: pass
+
+def hide_guides():
+    for guide in guides.values():
+        try: guide['display'].Visibility = 0
+        except Exception: pass
+
+def guide_kind(node):
+    if node['type'] in ('Slice', 'Clip'): return 'plane'
+    if node['type'] == 'StreamTracer': return 'sphere' if node['streamTracer']['seedType'] == 'Point Cloud' else 'line'
+    if node['type'] == 'PlotOverLine': return 'line'
+    return ''
+
+def ensure_guide(identifier):
+    hide_guides()
+    if not manipulator_visible or identifier not in nodes: return
+    node = nodes[identifier]
+    kind = guide_kind(node)
+    if not kind: return
+    guide = guides.get(identifier)
+    if guide and guide['kind'] != kind:
+        delete_guide(identifier); guide = None
+    if not guide:
+        if kind == 'plane': proxy = Plane(registrationName='3D plane manipulator')
+        elif kind == 'sphere': proxy = Sphere(registrationName='3D seed manipulator')
+        else: proxy = Line(registrationName='3D line manipulator')
+        display = Show(proxy, view)
+        display.Visibility = 1
+        set_if_supported(display, 'Pickable', 0)
+        if kind == 'plane':
+            display.Representation = 'Surface With Edges'; display.Opacity = 0.28
+            set_if_supported(display, 'DiffuseColor', [0.05, 0.85, 1.0]); set_if_supported(display, 'EdgeColor', [1.0, 0.78, 0.08]); set_if_supported(display, 'LineWidth', 2.5)
+        elif kind == 'sphere':
+            display.Representation = 'Wireframe'; display.Opacity = 0.9
+            set_if_supported(display, 'DiffuseColor', [1.0, 0.55, 0.05]); set_if_supported(display, 'LineWidth', 3.0)
+        else:
+            display.Representation = 'Surface'; display.Opacity = 1.0
+            set_if_supported(display, 'DiffuseColor', [1.0, 0.55, 0.05]); set_if_supported(display, 'LineWidth', 5.0)
+        guide = {'proxy': proxy, 'display': display, 'kind': kind}
+        guides[identifier] = guide
+    guide['display'].Visibility = 1
+    proxy = guide['proxy']
+    if kind == 'plane':
+        target = node['proxy'].SliceType if node['type'] == 'Slice' else node['proxy'].ClipType
+        center, normal = list(target.Origin), vec_normalize(list(target.Normal))
+        bounds = bounds_for(nodes[node['parent']]['proxy'])
+        diagonal = math.sqrt((bounds[1]-bounds[0])**2 + (bounds[3]-bounds[2])**2 + (bounds[5]-bounds[4])**2) or 1.0
+        reference = [0.0, 0.0, 1.0] if abs(normal[2]) < 0.88 else [0.0, 1.0, 0.0]
+        axis1 = vec_normalize(vec_cross(normal, reference)); axis2 = vec_normalize(vec_cross(normal, axis1))
+        half = diagonal * 0.55
+        proxy.Origin = vec_sub(vec_sub(center, vec_scale(axis1, half)), vec_scale(axis2, half))
+        proxy.Point1 = vec_add(proxy.Origin, vec_scale(axis1, half * 2.0))
+        proxy.Point2 = vec_add(proxy.Origin, vec_scale(axis2, half * 2.0))
+    elif kind == 'sphere':
+        settings = node['streamTracer']; proxy.Center = settings['center']; proxy.Radius = max(settings['radius'], 1e-12)
+        set_if_supported(proxy, 'ThetaResolution', 24); set_if_supported(proxy, 'PhiResolution', 16)
+    else:
+        settings = node['streamTracer'] if node['type'] == 'StreamTracer' else node['plotOverLine']
+        proxy.Point1 = settings['point1']; proxy.Point2 = settings['point2']
+        set_if_supported(proxy, 'Resolution', max(1, min(200, int(settings['resolution']))))
+    proxy.UpdatePipeline()
+
+def set_manipulator(enabled):
+    global manipulator_visible
+    manipulator_visible = bool(enabled) and guide_kind(selected_node()) != ''
+    ensure_guide(selected_id)
+
+def manipulate(data):
+    node = selected_node()
+    if not manipulator_visible or not guide_kind(node): raise RuntimeError('Select a filter with an enabled 3D manipulator first.')
+    mode = str(data.get('mode', 'translate'))
+    dx, dy = clean_number(data.get('dx')), clean_number(data.get('dy'))
+    shift = screen_shift(dx, dy, data.get('height'))
+    right, up, unused, unused_distance = camera_basis()
+    if node['type'] in ('Slice', 'Clip'):
+        target = node['proxy'].SliceType if node['type'] == 'Slice' else node['proxy'].ClipType
+        if mode == 'translate': target.Origin = vec_add(list(target.Origin), shift)
+        elif mode == 'rotate': target.Normal = vec_normalize(rotate_vector(rotate_vector(list(target.Normal), up, -dx * 0.45), right, -dy * 0.45))
+        else: raise RuntimeError('Unsupported plane manipulator mode.')
+    elif node['type'] == 'StreamTracer':
+        settings = dict(node['streamTracer'])
+        if settings['seedType'] == 'Point Cloud':
+            if mode == 'translate': settings['center'] = vec_add(settings['center'], shift)
+            elif mode == 'scale': settings['radius'] = max(1e-12, settings['radius'] * math.exp((dx - dy) * 0.01))
+            else: raise RuntimeError('Unsupported sphere manipulator mode.')
+        else:
+            if mode == 'translate':
+                settings['point1'] = vec_add(settings['point1'], shift); settings['point2'] = vec_add(settings['point2'], shift)
+            elif mode == 'point1': settings['point1'] = vec_add(settings['point1'], shift)
+            elif mode == 'point2': settings['point2'] = vec_add(settings['point2'], shift)
+            else: raise RuntimeError('Unsupported line manipulator mode.')
+        node['streamTracer'] = settings; apply_stream(node['proxy'], settings)
+    elif node['type'] == 'PlotOverLine':
+        settings = dict(node['plotOverLine'])
+        if mode == 'translate':
+            settings['point1'] = vec_add(settings['point1'], shift); settings['point2'] = vec_add(settings['point2'], shift)
+        elif mode == 'point1': settings['point1'] = vec_add(settings['point1'], shift)
+        elif mode == 'point2': settings['point2'] = vec_add(settings['point2'], shift)
+        else: raise RuntimeError('Unsupported line manipulator mode.')
+        node['plotOverLine'] = settings; node['proxy'].Point1 = settings['point1']; node['proxy'].Point2 = settings['point2']
+    node['proxy'].UpdatePipeline(time=current_time)
+    apply_display(node); ensure_guide(selected_id)
+
 FILTER_LABELS = {
     'CellDatatoPointData': 'Cell Data to Point Data',
+    'PointDatatoCellData': 'Point Data to Cell Data',
     'StreamTracer': 'Stream Tracer',
     'ExtractSurface': 'Extract Surface',
+    'CellCenters': 'Cell Centers',
+    'WarpByVector': 'Warp By Vector',
+    'WarpByScalar': 'Warp By Scalar',
+    'ExtractEdges': 'Extract Edges',
+    'IntegrateVariables': 'Integrate Variables',
+    'PlotOverLine': 'Plot Over Line',
+    'TemporalStatistics': 'Temporal Statistics',
 }
 
 def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
@@ -601,8 +805,8 @@ def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
         parent['visible'] = False
         parent['display'].Visibility = 0
     display = Show(proxy, view)
-    representation = 'Surface'
-    line_width = 3.0 if kind == 'StreamTracer' else 1.0
+    line_width = 3.0 if kind in ('StreamTracer', 'PlotOverLine', 'ExtractEdges') else 1.0
+    representation = 'Points' if kind in ('CellCenters', 'IntegrateVariables') else 'Surface'
     node = {
         'proxy': proxy, 'display': display, 'label': label, 'type': kind,
         'parent': parent_id, 'visible': True, 'representation': representation,
@@ -613,6 +817,7 @@ def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
     nodes[identifier] = node
     selected_id = identifier
     apply_display(node)
+    ensure_guide(identifier)
     return identifier
 
 def point_vector_for(parent_id, auto_convert):
@@ -673,17 +878,46 @@ def apply_stream(proxy, settings):
     set_if_supported(proxy, 'IntegrationDirection', settings['direction'])
     set_if_supported(proxy, 'MaximumStreamlineLength', settings['maximumLength'])
 
+def make_filter(names, kwargs):
+    for name in names:
+        constructor = globals().get(name)
+        if constructor is not None: return constructor(**kwargs)
+    raise RuntimeError('This ParaView build does not expose ' + names[0] + '.')
+
+def filter_capabilities():
+    candidates = OrderedDict([
+        ('Slice', ('Slice',)), ('Clip', ('Clip',)), ('Contour', ('Contour',)),
+        ('CellDatatoPointData', ('CellDatatoPointData',)), ('PointDatatoCellData', ('PointDatatoCellData',)),
+        ('Threshold', ('Threshold',)), ('StreamTracer', ('StreamTracer',)), ('Tube', ('Tube',)),
+        ('ExtractSurface', ('ExtractSurface',)), ('CellCenters', ('CellCenters',)),
+        ('Calculator', ('Calculator',)), ('Gradient', ('Gradient', 'GradientOfUnstructuredDataSet')),
+        ('Glyph', ('Glyph',)), ('WarpByVector', ('WarpByVector',)), ('WarpByScalar', ('WarpByScalar',)),
+        ('Transform', ('Transform',)), ('Reflect', ('Reflect',)), ('ExtractEdges', ('ExtractEdges',)),
+        ('Connectivity', ('Connectivity',)), ('Shrink', ('Shrink',)), ('IntegrateVariables', ('IntegrateVariables',)),
+        ('PlotOverLine', ('PlotOverLine',)), ('TemporalStatistics', ('TemporalStatistics',)),
+    ])
+    return [kind for kind, names in candidates.items() if any(globals().get(name) is not None for name in names)]
+
 def add_filter(kind):
     global selected_id
-    allowed = ('Slice', 'Clip', 'Contour', 'CellDatatoPointData', 'Threshold', 'StreamTracer', 'Tube', 'ExtractSurface')
+    allowed = (
+        'Slice', 'Clip', 'Contour', 'CellDatatoPointData', 'PointDatatoCellData',
+        'Threshold', 'StreamTracer', 'Tube', 'ExtractSurface', 'CellCenters',
+        'Calculator', 'Gradient', 'Glyph', 'WarpByVector', 'WarpByScalar',
+        'Transform', 'Reflect', 'ExtractEdges', 'Connectivity', 'Shrink',
+        'IntegrateVariables', 'PlotOverLine', 'TemporalStatistics',
+    )
     if kind not in allowed: raise RuntimeError('Unsupported ParaView filter: ' + str(kind))
     parent_id = selected_id
     parent = nodes[parent_id]
+    if kind == 'Tube' and parent['type'] not in ('StreamTracer', 'PlotOverLine', 'ExtractEdges', 'Contour'):
+        raise RuntimeError('Tube needs a line-producing input such as Stream Tracer, Plot Over Line, Extract Edges or Contour.')
     kwargs = {'registrationName': FILTER_LABELS.get(kind, kind), 'Input': parent['proxy']}
     extra = {}
     if kind == 'Slice': proxy = Slice(**kwargs)
     elif kind == 'Clip': proxy = Clip(**kwargs)
     elif kind == 'CellDatatoPointData': proxy = CellDatatoPointData(**kwargs)
+    elif kind == 'PointDatatoCellData': proxy = PointDatatoCellData(**kwargs)
     elif kind == 'ExtractSurface': proxy = ExtractSurface(**kwargs)
     elif kind == 'Contour':
         parent_id, chosen = point_scalar_for(parent_id, True)
@@ -718,7 +952,7 @@ def add_filter(kind):
         proxy = StreamTracer(**kwargs)
         apply_stream(proxy, settings)
         extra['streamTracer'] = settings
-    else:
+    elif kind == 'Tube':
         b = bounds_for(parent['proxy'])
         diagonal = math.sqrt((b[1]-b[0])**2 + (b[3]-b[2])**2 + (b[5]-b[4])**2) or 1.0
         settings = {'radius': diagonal * 0.005, 'sides': 8}
@@ -726,6 +960,66 @@ def add_filter(kind):
         set_if_supported(proxy, 'Radius', settings['radius'])
         set_if_supported(proxy, 'NumberofSides', settings['sides'])
         extra['tube'] = settings
+    elif kind == 'CellCenters':
+        proxy = make_filter(('CellCenters',), kwargs); set_if_supported(proxy, 'VertexCells', 1)
+    elif kind == 'Calculator':
+        candidates = arrays_for(parent['proxy'])
+        if not candidates: raise RuntimeError('Calculator needs at least one data array.')
+        chosen = candidates[0]
+        settings = {'association': chosen['association'], 'expression': chosen['name'], 'resultName': chosen['name'] + '_calculated'}
+        proxy = make_filter(('Calculator',), kwargs)
+        set_if_supported(proxy, 'AttributeType', 'Point Data' if chosen['association'] == 'POINTS' else 'Cell Data')
+        proxy.Function = settings['expression']; proxy.ResultArrayName = settings['resultName']
+        extra['calculator'] = settings
+    elif kind == 'Gradient':
+        parent_id, chosen = point_scalar_for(parent_id, True); parent = nodes[parent_id]
+        kwargs = {'registrationName': 'Gradient', 'Input': parent['proxy']}
+        settings = {'association': 'POINTS', 'name': chosen['name'], 'resultName': chosen['name'] + 'Gradient'}
+        proxy = make_filter(('Gradient', 'GradientOfUnstructuredDataSet'), kwargs)
+        set_if_supported(proxy, 'ScalarArray', ['POINTS', chosen['name']]); set_if_supported(proxy, 'ResultArrayName', settings['resultName'])
+        extra['gradient'] = settings
+    elif kind == 'Glyph':
+        parent_id, chosen = point_vector_for(parent_id, True); parent = nodes[parent_id]
+        kwargs = {'registrationName': 'Glyph', 'Input': parent['proxy']}
+        b = bounds_for(parent['proxy']); diagonal = math.sqrt((b[1]-b[0])**2 + (b[3]-b[2])**2 + (b[5]-b[4])**2) or 1.0
+        settings = {'name': chosen['name'], 'scaleFactor': diagonal * 0.05, 'maxPoints': 1200}
+        proxy = make_filter(('Glyph',), kwargs)
+        set_if_supported(proxy, 'OrientationArray', ['POINTS', chosen['name']]); set_if_supported(proxy, 'ScaleArray', ['POINTS', chosen['name']])
+        set_if_supported(proxy, 'ScaleFactor', settings['scaleFactor']); set_if_supported(proxy, 'MaximumNumberOfSamplePoints', settings['maxPoints'])
+        extra['glyph'] = settings
+    elif kind == 'WarpByVector':
+        parent_id, chosen = point_vector_for(parent_id, True); parent = nodes[parent_id]
+        kwargs = {'registrationName': 'Warp By Vector', 'Input': parent['proxy']}
+        settings = {'association': 'POINTS', 'name': chosen['name'], 'scaleFactor': 1.0}
+        proxy = make_filter(('WarpByVector',), kwargs); set_if_supported(proxy, 'Vectors', ['POINTS', chosen['name']]); set_if_supported(proxy, 'ScaleFactor', 1.0)
+        extra['warp'] = settings
+    elif kind == 'WarpByScalar':
+        parent_id, chosen = point_scalar_for(parent_id, True); parent = nodes[parent_id]
+        kwargs = {'registrationName': 'Warp By Scalar', 'Input': parent['proxy']}
+        settings = {'association': 'POINTS', 'name': chosen['name'], 'scaleFactor': 1.0, 'normal': [0.0, 0.0, 1.0], 'useNormal': False}
+        proxy = make_filter(('WarpByScalar',), kwargs); set_if_supported(proxy, 'Scalars', ['POINTS', chosen['name']]); set_if_supported(proxy, 'ScaleFactor', 1.0)
+        extra['warp'] = settings
+    elif kind == 'Transform':
+        settings = {'translate': [0.0, 0.0, 0.0], 'rotate': [0.0, 0.0, 0.0], 'scale': [1.0, 1.0, 1.0]}
+        proxy = make_filter(('Transform',), kwargs); extra['transform'] = settings
+    elif kind == 'Reflect':
+        b = bounds_for(parent['proxy']); settings = {'origin': [(b[0]+b[1])/2, (b[2]+b[3])/2, (b[4]+b[5])/2], 'normal': [1.0, 0.0, 0.0], 'copyInput': True}
+        proxy = make_filter(('Reflect',), kwargs)
+        plane = property_value(proxy, 'ReflectionPlane', None)
+        if plane is not None:
+            set_if_supported(plane, 'Origin', settings['origin']); set_if_supported(plane, 'Normal', settings['normal'])
+        set_if_supported(proxy, 'CopyInput', 1)
+        extra['reflect'] = settings
+    elif kind == 'ExtractEdges': proxy = make_filter(('ExtractEdges',), kwargs)
+    elif kind == 'Connectivity':
+        proxy = make_filter(('Connectivity',), kwargs); set_if_supported(proxy, 'ColorRegions', 1)
+    elif kind == 'Shrink':
+        settings = {'factor': 0.8}; proxy = make_filter(('Shrink',), kwargs); set_if_supported(proxy, 'ShrinkFactor', settings['factor']); extra['shrink'] = settings
+    elif kind == 'IntegrateVariables': proxy = make_filter(('IntegrateVariables',), kwargs)
+    elif kind == 'PlotOverLine':
+        b = bounds_for(parent['proxy']); settings = {'point1': [b[0], b[2], b[4]], 'point2': [b[1], b[3], b[5]], 'resolution': 200}
+        proxy = make_filter(('PlotOverLine',), kwargs); proxy.Point1 = settings['point1']; proxy.Point2 = settings['point2']; set_if_supported(proxy, 'Resolution', settings['resolution']); extra['plotOverLine'] = settings
+    elif kind == 'TemporalStatistics': proxy = make_filter(('TemporalStatistics',), kwargs)
     register_filter(kind, proxy, parent_id, extra)
     ResetCamera(view)
 
@@ -736,6 +1030,7 @@ def delete_selected():
         raise RuntimeError('Delete child filters first.')
     identifier = selected_id
     parent_id = nodes[identifier]['parent']
+    delete_guide(identifier)
     Delete(nodes[identifier]['proxy'])
     del nodes[identifier]
     selected_id = parent_id
@@ -827,8 +1122,66 @@ def update_selected(data):
         node['tube'] = settings
         set_if_supported(node['proxy'], 'Radius', settings['radius'])
         set_if_supported(node['proxy'], 'NumberofSides', settings['sides'])
+    if node['type'] == 'Calculator' and 'calculator' in data:
+        requested = data['calculator'] if isinstance(data['calculator'], dict) else {}
+        settings = dict(node['calculator'])
+        association = str(requested.get('association', settings['association']))
+        expression = str(requested.get('expression', settings['expression'])).strip()[:500]
+        result_name = ''.join(character for character in str(requested.get('resultName', settings['resultName'])) if character.isalnum() or character == '_')[:80]
+        if association not in ('CELLS', 'POINTS') or not expression or not result_name: raise RuntimeError('Calculator needs a valid association, expression and result array name.')
+        settings = {'association': association, 'expression': expression, 'resultName': result_name}
+        set_if_supported(node['proxy'], 'AttributeType', 'Point Data' if association == 'POINTS' else 'Cell Data')
+        node['proxy'].Function = expression; node['proxy'].ResultArrayName = result_name; node['calculator'] = settings
+    if node['type'] == 'Gradient' and 'gradient' in data:
+        requested = data['gradient'] if isinstance(data['gradient'], dict) else {}
+        settings = dict(node['gradient']); association = str(requested.get('association', settings['association'])); name = str(requested.get('name', settings['name']))
+        parent_arrays = arrays_for(nodes[node['parent']]['proxy'])
+        if not any(a['association'] == association and a['name'] == name and a['components'] == 1 for a in parent_arrays): raise RuntimeError('Gradient needs a scalar array from its input.')
+        result_name = ''.join(character for character in str(requested.get('resultName', settings['resultName'])) if character.isalnum() or character == '_')[:80]
+        if not result_name: raise RuntimeError('Gradient needs a result array name.')
+        settings = {'association': association, 'name': name, 'resultName': result_name}
+        set_if_supported(node['proxy'], 'ScalarArray', [association, name]); set_if_supported(node['proxy'], 'ResultArrayName', result_name); node['gradient'] = settings
+    if node['type'] == 'Glyph' and 'glyph' in data:
+        requested = data['glyph'] if isinstance(data['glyph'], dict) else {}; settings = dict(node['glyph']); name = str(requested.get('name', settings['name']))
+        parent_arrays = arrays_for(nodes[node['parent']]['proxy'])
+        if not any(a['association'] == 'POINTS' and a['name'] == name and a['components'] >= 2 for a in parent_arrays): raise RuntimeError('Glyph needs a point-vector array.')
+        settings['name'] = name; settings['scaleFactor'] = max(0.0, clean_number(requested.get('scaleFactor'), settings['scaleFactor'])); settings['maxPoints'] = max(1, min(50000, int(clean_number(requested.get('maxPoints'), settings['maxPoints']))))
+        set_if_supported(node['proxy'], 'OrientationArray', ['POINTS', name]); set_if_supported(node['proxy'], 'ScaleArray', ['POINTS', name]); set_if_supported(node['proxy'], 'ScaleFactor', settings['scaleFactor']); set_if_supported(node['proxy'], 'MaximumNumberOfSamplePoints', settings['maxPoints']); node['glyph'] = settings
+    if node['type'] in ('WarpByVector', 'WarpByScalar') and 'warp' in data:
+        requested = data['warp'] if isinstance(data['warp'], dict) else {}; settings = dict(node['warp'])
+        association = str(requested.get('association', settings['association'])); name = str(requested.get('name', settings['name']))
+        parent_arrays = arrays_for(nodes[node['parent']]['proxy'])
+        if node['type'] == 'WarpByVector': valid = any(a['association'] == association and a['name'] == name and a['components'] >= 2 for a in parent_arrays)
+        else: valid = any(a['association'] == association and a['name'] == name and a['components'] == 1 for a in parent_arrays)
+        if not valid: raise RuntimeError('The selected warp array is not available.')
+        settings['association'] = association; settings['name'] = name; settings['scaleFactor'] = clean_number(requested.get('scaleFactor'), settings['scaleFactor'])
+        set_if_supported(node['proxy'], 'Vectors' if node['type'] == 'WarpByVector' else 'Scalars', [association, name]); set_if_supported(node['proxy'], 'ScaleFactor', settings['scaleFactor'])
+        if node['type'] == 'WarpByScalar':
+            settings['normal'] = vector(requested.get('normal'), settings.get('normal', [0.0, 0.0, 1.0])); settings['useNormal'] = bool(requested.get('useNormal', settings.get('useNormal', False)))
+            set_if_supported(node['proxy'], 'Normal', settings['normal']); set_if_supported(node['proxy'], 'UseNormal', 1 if settings['useNormal'] else 0)
+        node['warp'] = settings
+    if node['type'] == 'Transform' and 'transform' in data:
+        requested = data['transform'] if isinstance(data['transform'], dict) else {}; settings = dict(node['transform'])
+        settings['translate'] = vector(requested.get('translate'), settings['translate']); settings['rotate'] = vector(requested.get('rotate'), settings['rotate']); settings['scale'] = vector(requested.get('scale'), settings['scale'])
+        settings['scale'] = [value if abs(value) > 1e-12 else 1e-12 for value in settings['scale']]
+        transform = node['proxy'].Transform; set_if_supported(transform, 'Translate', settings['translate']); set_if_supported(transform, 'Rotate', settings['rotate']); set_if_supported(transform, 'Scale', settings['scale']); node['transform'] = settings
+    if node['type'] == 'Reflect' and 'reflect' in data:
+        requested = data['reflect'] if isinstance(data['reflect'], dict) else {}; settings = dict(node['reflect'])
+        settings['origin'] = vector(requested.get('origin'), settings['origin']); settings['normal'] = vec_normalize(vector(requested.get('normal'), settings['normal'])); settings['copyInput'] = bool(requested.get('copyInput', settings['copyInput']))
+        plane = property_value(node['proxy'], 'ReflectionPlane', None)
+        if plane is not None:
+            set_if_supported(plane, 'Origin', settings['origin']); set_if_supported(plane, 'Normal', settings['normal'])
+        set_if_supported(node['proxy'], 'CopyInput', 1 if settings['copyInput'] else 0); node['reflect'] = settings
+    if node['type'] == 'Shrink' and 'shrink' in data:
+        requested = data['shrink'] if isinstance(data['shrink'], dict) else {}; factor = max(0.0, min(1.0, clean_number(requested.get('factor'), node['shrink']['factor'])))
+        node['shrink'] = {'factor': factor}; set_if_supported(node['proxy'], 'ShrinkFactor', factor)
+    if node['type'] == 'PlotOverLine' and 'plotOverLine' in data:
+        requested = data['plotOverLine'] if isinstance(data['plotOverLine'], dict) else {}; settings = dict(node['plotOverLine'])
+        settings['point1'] = vector(requested.get('point1'), settings['point1']); settings['point2'] = vector(requested.get('point2'), settings['point2']); settings['resolution'] = max(1, min(10000, int(clean_number(requested.get('resolution'), settings['resolution']))))
+        node['proxy'].Point1 = settings['point1']; node['proxy'].Point2 = settings['point2']; set_if_supported(node['proxy'], 'Resolution', settings['resolution']); node['plotOverLine'] = settings
     node['proxy'].UpdatePipeline(time=current_time)
     apply_display(node)
+    ensure_guide(selected_id)
 
 def camera(data):
     mode = data.get('mode', 'rotate')
@@ -890,6 +1243,7 @@ reader.UpdatePipeline(time=current_time)
 
 view = CreateRenderView()
 view.ViewSize = [1000, 700]
+set_if_supported(view, 'UseColorPaletteForBackground', 0)
 view.Background = BACKGROUNDS[background_name]
 view.OrientationAxesVisibility = 1
 set_if_supported(view, 'CenterAxesVisibility', 0)
@@ -923,6 +1277,7 @@ for line in sys.__stdin__:
             candidate = str(data.get('id', ''))
             if candidate not in nodes: raise RuntimeError('Pipeline item not found.')
             selected_id = candidate
+            set_manipulator(False)
             emit(identifier, True, {'state': state()})
         elif action == 'set_visibility':
             candidate = str(data.get('id', ''))
@@ -941,6 +1296,8 @@ for line in sys.__stdin__:
             update_reader(data); emit(identifier, True, {'state': state()})
         elif action == 'update_view':
             update_view(data); emit(identifier, True, {'state': state()})
+        elif action == 'set_manipulator':
+            set_manipulator(data.get('enabled')); emit(identifier, True, {'state': state()})
         elif action == 'time':
             set_time(data.get('time')); emit(identifier, True, {'state': state()})
         elif action == 'refresh':
@@ -951,6 +1308,8 @@ for line in sys.__stdin__:
             standard_view(str(data.get('view', 'Iso'))); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'camera':
             camera(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
+        elif action == 'manipulate':
+            manipulate(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'render':
             emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'quit':

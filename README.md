@@ -104,13 +104,14 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between
-  reconstructed and decomposed cases; build Slice, Clip, Contour, Threshold,
-  Stream Tracer, Tube, Cell Data to Point Data and Extract Surface pipelines;
-  and control representations, edge/point size, opacity, field or block
-  colouring, presets, legend, timesteps, projection, axes and camera. Mesh-only
-  cases remain usable, and interactive low-resolution frames keep navigation
-  responsive before a full-quality still render. Detection does not assume a
-  versioned folder name or install directory.
+  reconstructed and decomposed cases; and build a capability-detected catalogue
+  of slicing, clipping, tracing, geometry, sampling and analysis filters. Slice,
+  Clip, Stream Tracer and Plot Over Line also expose draggable 3D plane, sphere
+  and line manipulators. The Information panel reports the case extents, centre
+  and dimensions along colour-coded X/Y/Z axes. Camera movement and timestep
+  scrubbing remain at full viewport resolution, with coalesced requests keeping
+  interaction responsive. Mesh-only cases remain usable, and detection assumes
+  neither a versioned folder name nor an install directory.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>

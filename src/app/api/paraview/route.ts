@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
       const command = String(body.command || '');
       const allowed = new Set([
         'state', 'select', 'set_visibility', 'add_filter', 'delete', 'update', 'update_reader',
-        'update_view', 'time', 'refresh',
+        'update_view', 'set_manipulator', 'time', 'refresh',
       ]);
       if (!allowed.has(command)) {
         return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
@@ -106,12 +106,15 @@ export async function POST(req: NextRequest) {
 
     if (action === 'camera') {
       const cameraAction = String(body.cameraAction || 'camera');
-      if (!['camera', 'reset_camera', 'standard_view'].includes(cameraAction)) {
+      if (!['camera', 'reset_camera', 'standard_view', 'manipulate'].includes(cameraAction)) {
         return NextResponse.json({ error: 'Unsupported camera command.' }, { status: 400 });
       }
       const mode = String(body.mode || 'rotate');
       if (cameraAction === 'camera' && !['rotate', 'pan', 'zoom'].includes(mode)) {
         return NextResponse.json({ error: 'Unsupported camera interaction.' }, { status: 400 });
+      }
+      if (cameraAction === 'manipulate' && !['translate', 'rotate', 'scale', 'point1', 'point2'].includes(mode)) {
+        return NextResponse.json({ error: 'Unsupported 3D manipulator interaction.' }, { status: 400 });
       }
       const view = String(body.view || 'Iso');
       if (cameraAction === 'standard_view' && !['+X', '-X', '+Y', '-Y', '+Z', '-Z', 'Iso'].includes(view)) {
