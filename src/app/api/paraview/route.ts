@@ -59,7 +59,8 @@ export async function GET(req: NextRequest) {
     if (action === 'render') {
       const width = boundedInteger(url.searchParams.get('width'), 1000, 320, 1920);
       const height = boundedInteger(url.searchParams.get('height'), 700, 240, 1200);
-      return renderResponse(await readParaViewRender(width, height));
+      const quality = boundedInteger(url.searchParams.get('quality'), 92, 35, 95);
+      return renderResponse(await readParaViewRender(width, height, quality));
     }
     return NextResponse.json({ error: 'Unknown ParaView action.' }, { status: 400 });
   } catch (error) {
@@ -89,7 +90,10 @@ export async function POST(req: NextRequest) {
 
     if (action === 'command') {
       const command = String(body.command || '');
-      const allowed = new Set(['state', 'select', 'add_filter', 'delete', 'update', 'time', 'refresh']);
+      const allowed = new Set([
+        'state', 'select', 'set_visibility', 'add_filter', 'delete', 'update', 'update_reader',
+        'update_view', 'time', 'refresh',
+      ]);
       if (!allowed.has(command)) {
         return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
       }
@@ -120,6 +124,7 @@ export async function POST(req: NextRequest) {
         dy: boundedInteger(body.dy, 0, -2_000, 2_000),
         width: boundedInteger(body.width, 1000, 320, 1920),
         height: boundedInteger(body.height, 700, 240, 1200),
+        quality: boundedInteger(body.quality, 92, 35, 95),
         view,
       });
       return renderResponse(image);

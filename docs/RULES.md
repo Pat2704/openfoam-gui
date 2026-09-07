@@ -30,7 +30,7 @@ second file.
   `OpenFOAMStudio-v3.2.0-folder.zip`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.
-- The latest full local check passed on 2026-09-07: typecheck, lint, and 103
+- The latest full local check passed on 2026-09-07: typecheck, lint, and 107
   tests; the real Codex contract test was correctly skipped because it is
   opt-in.
 
@@ -68,8 +68,8 @@ These are standing user instructions:
    Each subagent must update `docs/agent-log/<task>.md` after every step with
    completed work, findings, next action, and touched files. The directory is
    ignored by Git.
-7. Never run destructive tests against the user's real WSL cases. Use
-   `claude_test`.
+7. Never run destructive tests against the user's real WSL cases. Use only the
+   disposable `claude_test` and `cavity_test` cases described in section 6.
 8. The user writes in Italian; repository prose, UI copy, and comments remain
    in English.
 9. Keep all durable AI instructions in this file. Update it when the user makes
@@ -150,14 +150,23 @@ Important modules:
   folder/executable path as the universal fallback. Detection and path settings
   belong on the Dashboard beside Ubuntu/OpenFOAM; keep the ParaView tab focused
   on the workbench itself.
-- The ParaView worker currently supports pipeline selection/visibility, Slice,
-  Clip, Contour, Cell Data to Point Data, delete-leaf, representation, opacity,
-  field colouring, presets, scalar legend, timesteps, refresh and camera/view
-  controls. Extend this allowlist deliberately as the workbench grows.
-- `claude_test` is the destructive ParaView case. A read-only `cavity` probe on
-  2026-09-07 validated 20 timesteps, the U/epsilon/k/nut/p arrays, Cell Data to
-  Point Data, Contour, colour mapping, legend, and real JPEG renders with
-  ParaView 6.0.0.
+- The ParaView worker supports pipeline selection/visibility, mesh-region and
+  patch selection, reconstructed/decomposed readers, Slice, Clip, Contour,
+  Threshold, Stream Tracer, Tube, Cell Data to Point Data, Extract Surface,
+  delete-leaf, all common surface representations, edge/point sizing, opacity,
+  field/block colouring, presets, scalar legend, timesteps, refresh, projection,
+  backgrounds, axes and camera controls. Stream Tracer and Contour insert a
+  Cell Data to Point Data filter when their point data is absent. Extend the
+  explicit API/worker allowlists deliberately as the workbench grows.
+- Do not key ParaView compatibility to a version number. Inspect property
+  domains/capabilities and keep aliases for renamed properties or proxy values
+  (for example Point Cloud/Point Source and old/new Threshold ranges). An
+  OpenFOAM `0` directory alone is input, not a result timestep: label it mesh
+  only and keep non-scalar representations working without `ColorBy(None)`.
+- Real ParaView 6.0.0 probes on 2026-09-07 validated `cavity_test` reconstructed
+  and four-way decomposed, six regions, 20 result times, all fields and display
+  representations, every supported filter including both Stream Tracer seed
+  types and Tube, plus mesh-only `claude_test` renders.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.
@@ -243,12 +252,16 @@ schemas, prompt, policy, case confinement, and activity model.
 
 ## 6. Test case
 
-`~/OpenFOAM/tommasoferrara-14/run/claude_test` is the disposable WSL case. It is
-a copy of the `incompressibleFluid/TJunction` tutorial with `blockMesh` already
-run: 3D, about 6,300 triangles, four patches, and 20 blockMeshDict vertices.
+Two WSL cases are disposable and may be broken or recreated from OpenFOAM 14
+tutorials:
 
-It may be broken and recreated from the OpenFOAM 14 tutorials. Do not use
-`cavity`, `nozzleFlow2D`, or `shockTube` for destructive testing.
+- `~/OpenFOAM/tommasoferrara-14/run/claude_test`: TJunction with `blockMesh`
+  already run, used for mesh-only and patch tests.
+- `~/OpenFOAM/tommasoferrara-14/run/cavity_test`: solved cavity with 20 result
+  timesteps and `processor0` through `processor3`, used for filters, fields,
+  animation and reconstructed/decomposed reader tests.
+
+Do not use `cavity`, `nozzleFlow2D`, or `shockTube` for destructive testing.
 
 ## 7. Validation and build
 

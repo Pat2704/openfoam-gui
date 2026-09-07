@@ -103,10 +103,14 @@ and `/usr/local/OpenFOAM-*`, and you can switch between them from
   ![The Mesh tab: the boundary mesh of a T-junction case in wireframe, with its four patches listed above the view, each one able to be recoloured or hidden](screenshots/mesh.png)
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
-  offscreen renderer; the tab exposes pipeline visibility and selection,
-  Slice, Clip, Contour, Cell Data to Point Data, representations, opacity,
-  field colouring, presets, scalar legend, timesteps and camera controls.
-  Detection does not assume a versioned folder name or install directory.
+  offscreen renderer. Select volume, patch and group regions; switch between
+  reconstructed and decomposed cases; build Slice, Clip, Contour, Threshold,
+  Stream Tracer, Tube, Cell Data to Point Data and Extract Surface pipelines;
+  and control representations, edge/point size, opacity, field or block
+  colouring, presets, legend, timesteps, projection, axes and camera. Mesh-only
+  cases remain usable, and interactive low-resolution frames keep navigation
+  responsive before a full-quality still render. Detection does not assume a
+  versioned folder name or install directory.
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>
@@ -281,7 +285,10 @@ to `codex.exe`; the panel shows each attempted path and why it was rejected.
 Dashboard and click **Look again**. For a portable or non-standard copy, open
 Dashboard settings and enter its directory or the full path to `pvpython.exe`.
 A first case load can take noticeably longer because ParaView initializes its
-OpenFOAM reader and renderer in a separate process.
+OpenFOAM reader and renderer in a separate process. A case containing only the
+initial `0` directory is intentionally labelled **mesh only**; Surface With
+Edges, Wireframe, Points and Outline are still available, while animation is
+disabled until solver result times exist.
 
 ---
 

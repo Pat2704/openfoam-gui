@@ -216,19 +216,63 @@ export interface ParaViewArrayInfo {
   range: [number, number];
 }
 
+export type ParaViewNodeType =
+  | 'OpenFOAMReader'
+  | 'Slice'
+  | 'Clip'
+  | 'Contour'
+  | 'CellDatatoPointData'
+  | 'Threshold'
+  | 'StreamTracer'
+  | 'Tube'
+  | 'ExtractSurface';
+
+export interface ParaViewReaderState {
+  caseType: string;
+  caseTypes: string[];
+  decomposedAvailable: boolean;
+  processorCount: number;
+  regions: string[];
+  selectedRegions: string[];
+  hasTimeSteps: boolean;
+}
+
+export interface ParaViewViewState {
+  orientationAxes: boolean;
+  centerAxes: boolean;
+  parallelProjection: boolean;
+  background: string;
+}
+
 export interface ParaViewPipelineNode {
   id: string;
   label: string;
-  type: 'OpenFOAMReader' | 'Slice' | 'Clip' | 'Contour' | 'CellDatatoPointData';
+  type: ParaViewNodeType;
   parent: string | null;
   visible: boolean;
   representation: string;
   opacity: number;
-  color: { association: 'SOLID' | 'CELLS' | 'POINTS'; name: string; preset: string; legend: boolean };
+  lineWidth: number;
+  pointSize: number;
+  color: { association: 'SOLID' | 'BLOCKS' | 'CELLS' | 'POINTS'; name: string; preset: string; legend: boolean };
   origin?: [number, number, number];
   normal?: [number, number, number];
   invert?: boolean;
   contour?: { association: 'CELLS' | 'POINTS'; name: string; value: number };
+  threshold?: { association: 'CELLS' | 'POINTS'; name: string; lower: number; upper: number };
+  streamTracer?: {
+    name: string;
+    seedType: 'Point Cloud' | 'Line';
+    center: [number, number, number];
+    radius: number;
+    points: number;
+    point1: [number, number, number];
+    point2: [number, number, number];
+    resolution: number;
+    direction: 'FORWARD' | 'BACKWARD' | 'BOTH';
+    maximumLength: number;
+  };
+  tube?: { radius: number; sides: number };
 }
 
 export interface ParaViewWorkbenchState {
@@ -243,6 +287,8 @@ export interface ParaViewWorkbenchState {
   cells: number;
   bounds: [number, number, number, number, number, number];
   presets: string[];
+  reader: ParaViewReaderState;
+  view: ParaViewViewState;
 }
 
 // A persistent pvpython process owns the ParaView pipeline. The browser can
@@ -259,6 +305,14 @@ nodes = OrderedDict()
 selected_id = 'reader'
 current_time = 0.0
 next_filter = 1
+background_name = 'ParaView Dark'
+
+BACKGROUNDS = {
+    'ParaView Dark': [0.18, 0.20, 0.24],
+    'Midnight': [0.025, 0.045, 0.085],
+    'Slate': [0.30, 0.34, 0.40],
+    'White': [1.0, 1.0, 1.0],
+}
 
 PRESETS = [
     'Cool to Warm', 'Viridis (matplotlib)', 'Plasma (matplotlib)',
@@ -284,6 +338,65 @@ def vector(value, fallback):
     if not isinstance(value, list) or len(value) != 3:
         return list(fallback)
     return [clean_number(value[i], fallback[i]) for i in range(3)]
+
+def available_values(proxy, property_name):
+    try:
+        return [str(value) for value in list(proxy.GetProperty(property_name).Available)]
+    except Exception:
+        try: return [str(value) for value in list(getattr(proxy, property_name).Available)]
+        except Exception: return []
+
+def property_value(proxy, property_name, fallback=None):
+    try:
+        value = getattr(proxy, property_name)
+        values = list(value)
+        return values[0] if len(values) == 1 else values
+    except Exception:
+        try: return getattr(proxy, property_name)
+        except Exception: return fallback
+
+def set_if_supported(proxy, property_name, value):
+    try:
+        setattr(proxy, property_name, value)
+        return True
+    except Exception:
+        return False
+
+def reader_metadata():
+    case_types = available_values(reader, 'CaseType')
+    current = property_value(reader, 'CaseType', 'Reconstructed Case')
+    if not isinstance(current, str): current = str(current)
+    regions = available_values(reader, 'MeshRegions')
+    selected = property_value(reader, 'MeshRegions', [])
+    if isinstance(selected, str): selected = [selected]
+    selected = [str(value) for value in (selected or [])]
+    case_dir = os.path.dirname(marker)
+    try:
+        processor_count = sum(1 for name in os.listdir(case_dir) if name.startswith('processor') and name[9:].isdigit() and os.path.isdir(os.path.join(case_dir, name)))
+        decomposed = processor_count > 0
+    except Exception:
+        decomposed = False
+        processor_count = 0
+    return {
+        'caseType': current,
+        'caseTypes': case_types or [current],
+        'decomposedAvailable': decomposed,
+        'processorCount': processor_count,
+        'regions': regions,
+        'selectedRegions': selected,
+        # OpenFOAM readers commonly expose the initial 0 directory as a time.
+        # It is input data, not a solver result, so mesh-only cases should not
+        # present animation controls as if a transient result existed.
+        'hasTimeSteps': any(abs(value) > 1e-12 for value in raw_times),
+    }
+
+def view_metadata():
+    return {
+        'orientationAxes': bool(property_value(view, 'OrientationAxesVisibility', True)),
+        'centerAxes': bool(property_value(view, 'CenterAxesVisibility', False)),
+        'parallelProjection': bool(property_value(view, 'CameraParallelProjection', False)),
+        'background': background_name,
+    }
 
 def bounds_for(proxy):
     try:
@@ -320,6 +433,7 @@ def node_state(identifier, node):
         'id': identifier, 'label': node['label'], 'type': node['type'],
         'parent': node['parent'], 'visible': node['visible'],
         'representation': node['representation'], 'opacity': node['opacity'],
+        'lineWidth': node['lineWidth'], 'pointSize': node['pointSize'],
         'color': node['color'],
     }
     proxy = node['proxy']
@@ -332,6 +446,12 @@ def node_state(identifier, node):
         state['invert'] = bool(proxy.Invert)
     elif node['type'] == 'Contour':
         state['contour'] = node['contour']
+    elif node['type'] == 'Threshold':
+        state['threshold'] = node['threshold']
+    elif node['type'] == 'StreamTracer':
+        state['streamTracer'] = node['streamTracer']
+    elif node['type'] == 'Tube':
+        state['tube'] = node['tube']
     return state
 
 def state():
@@ -344,6 +464,7 @@ def state():
         'arrays': arrays_for(active), 'times': times, 'time': current_time,
         'points': int(info.GetNumberOfPoints()), 'cells': int(info.GetNumberOfCells()),
         'bounds': bounds_for(active), 'presets': available_presets,
+        'reader': reader_metadata(), 'view': view_metadata(),
     }
 
 def apply_display(node):
@@ -351,10 +472,28 @@ def apply_display(node):
     display.Representation = node['representation']
     display.Opacity = node['opacity']
     display.Visibility = 1 if node['visible'] else 0
+    set_if_supported(display, 'LineWidth', node['lineWidth'])
+    set_if_supported(display, 'PointSize', node['pointSize'])
+    set_if_supported(display, 'EdgeColor', [0.08, 0.08, 0.08])
     color = node['color']
     if color['association'] == 'SOLID' or not color['name']:
-        ColorBy(display, None)
-        display.SetScalarBarVisibility(view, False)
+        # ParaView 6 raises "invalid association NONE" from ColorBy(None) for
+        # OpenFOAM meshes without result arrays. Setting ColorArrayName is the
+        # cross-version equivalent and keeps all representations available.
+        try: display.ColorArrayName = [None, '']
+        except Exception:
+            try: ColorBy(display, None)
+            except Exception: pass
+        try: display.SetScalarBarVisibility(view, False)
+        except Exception: pass
+        return
+    if color['association'] == 'BLOCKS':
+        try: ColorBy(display, ('FIELD', 'vtkBlockColors'))
+        except Exception:
+            try: display.ColorArrayName = [None, '']
+            except Exception: pass
+        try: display.SetScalarBarVisibility(view, False)
+        except Exception: pass
         return
     ColorBy(display, (color['association'], color['name']))
     try:
@@ -365,13 +504,16 @@ def apply_display(node):
         pass
     display.SetScalarBarVisibility(view, bool(color['legend']))
 
-def render(identifier, width, height):
+def render(identifier, width, height, quality=92):
     width = max(320, min(1920, int(width or 1000)))
     height = max(240, min(1200, int(height or 700)))
+    quality = max(35, min(95, int(quality or 92)))
     view.ViewSize = [width, height]
-    Render(view)
     filename = os.path.join(output_dir, 'render_' + str(identifier) + '.jpg')
-    SaveScreenshot(filename, view, ImageResolution=[width, height], Quality=92)
+    # SaveScreenshot performs the render itself. Calling Render immediately
+    # before it doubles the work and is especially noticeable while dragging.
+    try: SaveScreenshot(filename, view, ImageResolution=[width, height], Quality=quality)
+    except TypeError: SaveScreenshot(filename, view, ImageResolution=[width, height])
     return filename
 
 def set_time(value):
@@ -385,59 +527,206 @@ def set_time(value):
         node['proxy'].UpdatePipeline(time=current_time)
     for node in nodes.values(): apply_display(node)
 
-def refresh_reader():
-    global times, current_time
+def refresh_reader(follow_latest=True):
+    global times, current_time, raw_times
     try: reader.Refresh()
     except Exception: pass
     reader.UpdatePipelineInformation()
-    refreshed = [float(v) for v in list(reader.TimestepValues)]
-    times = refreshed if refreshed else [0.0]
+    for property_name in ('CellArrays', 'PointArrays'):
+        values = available_values(reader, property_name)
+        if values: set_if_supported(reader, property_name, values)
+    raw_times = [float(v) for v in list(reader.TimestepValues)]
+    times = raw_times if raw_times else [0.0]
     # Follow a newly written solver result, which is the useful meaning of
     # Refresh in a post-processing workbench.
-    set_time(times[-1])
+    set_time(times[-1] if follow_latest else current_time)
     scene.UpdateAnimationUsingDataTimeSteps()
+
+def update_reader(data):
+    global current_time
+    reset_camera = False
+    if 'caseType' in data:
+        requested = str(data.get('caseType', ''))
+        available = available_values(reader, 'CaseType')
+        if requested not in available:
+            raise RuntimeError('This ParaView build does not support that OpenFOAM case mode.')
+        if requested == 'Decomposed Case' and not reader_metadata()['decomposedAvailable']:
+            raise RuntimeError('No processor directories were found for the decomposed case.')
+        reader.CaseType = requested
+        reader.UpdatePipelineInformation()
+        reset_camera = True
+    available_regions = available_values(reader, 'MeshRegions')
+    if 'regions' in data:
+        requested_regions = data.get('regions') if isinstance(data.get('regions'), list) else []
+        selected_regions = [str(value) for value in requested_regions if str(value) in available_regions]
+        if not selected_regions:
+            raise RuntimeError('Select at least one mesh region or patch.')
+        reader.MeshRegions = selected_regions
+        reset_camera = True
+    refresh_reader(False)
+    if reset_camera: ResetCamera(view)
+
+def update_view(data):
+    global background_name
+    if 'orientationAxes' in data:
+        set_if_supported(view, 'OrientationAxesVisibility', 1 if data['orientationAxes'] else 0)
+    if 'centerAxes' in data:
+        set_if_supported(view, 'CenterAxesVisibility', 1 if data['centerAxes'] else 0)
+    if 'parallelProjection' in data:
+        set_if_supported(view, 'CameraParallelProjection', 1 if data['parallelProjection'] else 0)
+    if 'background' in data:
+        requested = str(data['background'])
+        if requested not in BACKGROUNDS: raise RuntimeError('Unsupported background preset.')
+        background_name = requested
+        view.Background = BACKGROUNDS[requested]
 
 def selected_node():
     return nodes[selected_id]
 
-def add_filter(kind):
+FILTER_LABELS = {
+    'CellDatatoPointData': 'Cell Data to Point Data',
+    'StreamTracer': 'Stream Tracer',
+    'ExtractSurface': 'Extract Surface',
+}
+
+def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
     global selected_id, next_filter
-    if kind not in ('Slice', 'Clip', 'Contour', 'CellDatatoPointData'):
-        raise RuntimeError('Unsupported ParaView filter: ' + str(kind))
+    identifier = 'filter-' + str(next_filter)
+    label = FILTER_LABELS.get(kind, kind) + str(next_filter)
+    next_filter += 1
+    proxy.UpdatePipeline(time=current_time)
+    parent = nodes[parent_id]
+    if hide_parent:
+        Hide(parent['proxy'], view)
+        parent['visible'] = False
+        parent['display'].Visibility = 0
+    display = Show(proxy, view)
+    representation = 'Surface'
+    line_width = 3.0 if kind == 'StreamTracer' else 1.0
+    node = {
+        'proxy': proxy, 'display': display, 'label': label, 'type': kind,
+        'parent': parent_id, 'visible': True, 'representation': representation,
+        'opacity': 1.0, 'lineWidth': line_width, 'pointSize': 3.0,
+        'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
+    }
+    if extra: node.update(extra)
+    nodes[identifier] = node
+    selected_id = identifier
+    apply_display(node)
+    return identifier
+
+def point_vector_for(parent_id, auto_convert):
+    candidates = [a for a in arrays_for(nodes[parent_id]['proxy']) if a['association'] == 'POINTS' and a['components'] >= 2]
+    if candidates: return parent_id, candidates[0]
+    cells = [a for a in arrays_for(nodes[parent_id]['proxy']) if a['association'] == 'CELLS' and a['components'] >= 2]
+    if not cells or not auto_convert:
+        raise RuntimeError('This filter needs a point-vector field. Add Cell Data to Point Data first.')
+    proxy = CellDatatoPointData(registrationName='Cell Data to Point Data', Input=nodes[parent_id]['proxy'])
+    converted_id = register_filter('CellDatatoPointData', proxy, parent_id)
+    converted = [a for a in arrays_for(proxy) if a['association'] == 'POINTS' and a['components'] >= 2]
+    if not converted: raise RuntimeError('No point-vector field is available after conversion.')
+    return converted_id, converted[0]
+
+def point_scalar_for(parent_id, auto_convert):
+    candidates = [a for a in arrays_for(nodes[parent_id]['proxy']) if a['association'] == 'POINTS' and a['components'] == 1]
+    if candidates: return parent_id, candidates[0]
+    cells = [a for a in arrays_for(nodes[parent_id]['proxy']) if a['association'] == 'CELLS' and a['components'] == 1]
+    if not cells or not auto_convert:
+        raise RuntimeError('This filter needs a scalar point field. Add Cell Data to Point Data first.')
+    proxy = CellDatatoPointData(registrationName='Cell Data to Point Data', Input=nodes[parent_id]['proxy'])
+    converted_id = register_filter('CellDatatoPointData', proxy, parent_id)
+    converted = [a for a in arrays_for(proxy) if a['association'] == 'POINTS' and a['components'] == 1]
+    if not converted: raise RuntimeError('No scalar point field is available after conversion.')
+    matching = next((a for a in converted if a['name'] == cells[0]['name']), converted[0])
+    return converted_id, matching
+
+def select_stream_seed(proxy, seed_type):
+    aliases = ('Point Cloud', 'Point Source', 'PointCloud') if seed_type == 'Point Cloud' else ('Line', 'High Resolution Line Source')
+    for alias in aliases:
+        try:
+            proxy.SeedType = alias
+            return
+        except Exception:
+            pass
+    raise RuntimeError('This ParaView build does not expose the requested stream-tracer seed type.')
+
+def apply_threshold(proxy, settings):
+    proxy.Scalars = [settings['association'], settings['name']]
+    if hasattr(proxy, 'LowerThreshold') and hasattr(proxy, 'UpperThreshold'):
+        proxy.LowerThreshold = settings['lower']
+        proxy.UpperThreshold = settings['upper']
+    elif hasattr(proxy, 'ThresholdRange'):
+        proxy.ThresholdRange = [settings['lower'], settings['upper']]
+
+def apply_stream(proxy, settings):
+    proxy.Vectors = ['POINTS', settings['name']]
+    select_stream_seed(proxy, settings['seedType'])
+    seed = proxy.SeedType
+    if settings['seedType'] == 'Point Cloud':
+        set_if_supported(seed, 'Center', settings['center'])
+        set_if_supported(seed, 'Radius', settings['radius'])
+        set_if_supported(seed, 'NumberOfPoints', settings['points'])
+    else:
+        set_if_supported(seed, 'Point1', settings['point1'])
+        set_if_supported(seed, 'Point2', settings['point2'])
+        set_if_supported(seed, 'Resolution', settings['resolution'])
+    set_if_supported(proxy, 'IntegrationDirection', settings['direction'])
+    set_if_supported(proxy, 'MaximumStreamlineLength', settings['maximumLength'])
+
+def add_filter(kind):
+    global selected_id
+    allowed = ('Slice', 'Clip', 'Contour', 'CellDatatoPointData', 'Threshold', 'StreamTracer', 'Tube', 'ExtractSurface')
+    if kind not in allowed: raise RuntimeError('Unsupported ParaView filter: ' + str(kind))
     parent_id = selected_id
     parent = nodes[parent_id]
-    label = kind.replace('Datato', ' Data to ') + str(next_filter)
-    identifier = 'filter-' + str(next_filter)
-    next_filter += 1
-    kwargs = {'registrationName': label, 'Input': parent['proxy']}
+    kwargs = {'registrationName': FILTER_LABELS.get(kind, kind), 'Input': parent['proxy']}
+    extra = {}
     if kind == 'Slice': proxy = Slice(**kwargs)
     elif kind == 'Clip': proxy = Clip(**kwargs)
     elif kind == 'CellDatatoPointData': proxy = CellDatatoPointData(**kwargs)
-    else:
-        candidates = [a for a in arrays_for(parent['proxy']) if a['association'] == 'POINTS']
-        if not candidates:
-            raise RuntimeError('Contour needs point data. Add Cell Data to Point Data first.')
-        chosen = candidates[0]
+    elif kind == 'ExtractSurface': proxy = ExtractSurface(**kwargs)
+    elif kind == 'Contour':
+        parent_id, chosen = point_scalar_for(parent_id, True)
+        parent = nodes[parent_id]
+        kwargs = {'registrationName': 'Contour', 'Input': parent['proxy']}
         proxy = Contour(**kwargs)
-        proxy.ContourBy = ['POINTS', chosen['name']]
         value = (chosen['range'][0] + chosen['range'][1]) / 2.0
+        proxy.ContourBy = ['POINTS', chosen['name']]
         proxy.Isosurfaces = [value]
-    proxy.UpdatePipeline(time=current_time)
-    Hide(parent['proxy'], view)
-    parent['visible'] = False
-    parent['display'].Visibility = 0
-    display = Show(proxy, view)
-    display.Representation = 'Surface'
-    node = {
-        'proxy': proxy, 'display': display, 'label': label, 'type': kind,
-        'parent': parent_id, 'visible': True, 'representation': 'Surface',
-        'opacity': 1.0,
-        'color': {'association': 'SOLID', 'name': '', 'preset': 'Cool to Warm', 'legend': False},
-    }
-    if kind == 'Contour':
-        node['contour'] = {'association': 'POINTS', 'name': chosen['name'], 'value': value}
-    nodes[identifier] = node
-    selected_id = identifier
+        extra['contour'] = {'association': 'POINTS', 'name': chosen['name'], 'value': value}
+    elif kind == 'Threshold':
+        candidates = [a for a in arrays_for(parent['proxy']) if a['components'] == 1]
+        if not candidates: raise RuntimeError('Threshold needs a scalar field.')
+        chosen = candidates[0]
+        settings = {'association': chosen['association'], 'name': chosen['name'], 'lower': chosen['range'][0], 'upper': chosen['range'][1]}
+        proxy = Threshold(**kwargs)
+        apply_threshold(proxy, settings)
+        extra['threshold'] = settings
+    elif kind == 'StreamTracer':
+        parent_id, chosen = point_vector_for(parent_id, True)
+        parent = nodes[parent_id]
+        kwargs = {'registrationName': 'Stream Tracer', 'Input': parent['proxy']}
+        b = bounds_for(parent['proxy'])
+        center = [(b[0]+b[1])/2, (b[2]+b[3])/2, (b[4]+b[5])/2]
+        diagonal = math.sqrt((b[1]-b[0])**2 + (b[3]-b[2])**2 + (b[5]-b[4])**2) or 1.0
+        settings = {
+            'name': chosen['name'], 'seedType': 'Point Cloud', 'center': center,
+            'radius': diagonal * 0.15, 'points': 50,
+            'point1': [b[0], center[1], center[2]], 'point2': [b[1], center[1], center[2]],
+            'resolution': 50, 'direction': 'BOTH', 'maximumLength': diagonal * 8.0,
+        }
+        proxy = StreamTracer(**kwargs)
+        apply_stream(proxy, settings)
+        extra['streamTracer'] = settings
+    else:
+        b = bounds_for(parent['proxy'])
+        diagonal = math.sqrt((b[1]-b[0])**2 + (b[3]-b[2])**2 + (b[5]-b[4])**2) or 1.0
+        settings = {'radius': diagonal * 0.005, 'sides': 8}
+        proxy = Tube(**kwargs)
+        set_if_supported(proxy, 'Radius', settings['radius'])
+        set_if_supported(proxy, 'NumberofSides', settings['sides'])
+        extra['tube'] = settings
+    register_filter(kind, proxy, parent_id, extra)
     ResetCamera(view)
 
 def delete_selected():
@@ -464,12 +753,16 @@ def update_selected(data):
         node['representation'] = data['representation']
     if 'opacity' in data:
         node['opacity'] = max(0.0, min(1.0, clean_number(data['opacity'], node['opacity'])))
+    if 'lineWidth' in data:
+        node['lineWidth'] = max(1.0, min(20.0, clean_number(data['lineWidth'], node['lineWidth'])))
+    if 'pointSize' in data:
+        node['pointSize'] = max(1.0, min(30.0, clean_number(data['pointSize'], node['pointSize'])))
     if 'visible' in data: node['visible'] = bool(data['visible'])
     if 'color' in data:
         color = data['color'] if isinstance(data['color'], dict) else {}
         association = color.get('association', 'SOLID')
         name = str(color.get('name', ''))
-        valid = association == 'SOLID' or any(a['association'] == association and a['name'] == name for a in arrays_for(node['proxy']))
+        valid = association in ('SOLID', 'BLOCKS') or any(a['association'] == association and a['name'] == name for a in arrays_for(node['proxy']))
         if not valid: raise RuntimeError('That array is not available on the selected pipeline item.')
         node['color'] = {
             'association': association, 'name': name,
@@ -491,6 +784,49 @@ def update_selected(data):
         node['proxy'].ContourBy = [association, name]
         node['proxy'].Isosurfaces = [value]
         node['contour'] = {'association': association, 'name': name, 'value': value}
+    if node['type'] == 'Threshold' and 'threshold' in data:
+        requested = data['threshold'] if isinstance(data['threshold'], dict) else {}
+        association = requested.get('association', node['threshold']['association'])
+        name = str(requested.get('name', node['threshold']['name']))
+        valid_arrays = arrays_for(nodes[node['parent']]['proxy'])
+        selected_array = next((a for a in valid_arrays if a['association'] == association and a['name'] == name and a['components'] == 1), None)
+        if selected_array is None: raise RuntimeError('That scalar array is not available for Threshold.')
+        lower = clean_number(requested.get('lower'), selected_array['range'][0])
+        upper = clean_number(requested.get('upper'), selected_array['range'][1])
+        if lower > upper: lower, upper = upper, lower
+        node['threshold'] = {'association': association, 'name': name, 'lower': lower, 'upper': upper}
+        apply_threshold(node['proxy'], node['threshold'])
+    if node['type'] == 'StreamTracer' and 'streamTracer' in data:
+        requested = data['streamTracer'] if isinstance(data['streamTracer'], dict) else {}
+        settings = dict(node['streamTracer'])
+        name = str(requested.get('name', settings['name']))
+        parent_arrays = arrays_for(nodes[node['parent']]['proxy'])
+        if not any(a['association'] == 'POINTS' and a['name'] == name and a['components'] >= 2 for a in parent_arrays):
+            raise RuntimeError('That point-vector array is not available for Stream Tracer.')
+        settings['name'] = name
+        seed_type = str(requested.get('seedType', settings['seedType']))
+        if seed_type not in ('Point Cloud', 'Line'): raise RuntimeError('Unsupported stream-tracer seed type.')
+        settings['seedType'] = seed_type
+        settings['center'] = vector(requested.get('center'), settings['center'])
+        settings['radius'] = max(0.0, clean_number(requested.get('radius'), settings['radius']))
+        settings['points'] = max(1, min(2000, int(clean_number(requested.get('points'), settings['points']))))
+        settings['point1'] = vector(requested.get('point1'), settings['point1'])
+        settings['point2'] = vector(requested.get('point2'), settings['point2'])
+        settings['resolution'] = max(1, min(2000, int(clean_number(requested.get('resolution'), settings['resolution']))))
+        direction = str(requested.get('direction', settings['direction']))
+        if direction not in ('FORWARD', 'BACKWARD', 'BOTH'): raise RuntimeError('Unsupported integration direction.')
+        settings['direction'] = direction
+        settings['maximumLength'] = max(1e-12, clean_number(requested.get('maximumLength'), settings['maximumLength']))
+        node['streamTracer'] = settings
+        apply_stream(node['proxy'], settings)
+    if node['type'] == 'Tube' and 'tube' in data:
+        requested = data['tube'] if isinstance(data['tube'], dict) else {}
+        settings = dict(node['tube'])
+        settings['radius'] = max(1e-12, clean_number(requested.get('radius'), settings['radius']))
+        settings['sides'] = max(3, min(64, int(clean_number(requested.get('sides'), settings['sides']))))
+        node['tube'] = settings
+        set_if_supported(node['proxy'], 'Radius', settings['radius'])
+        set_if_supported(node['proxy'], 'NumberofSides', settings['sides'])
     node['proxy'].UpdatePipeline(time=current_time)
     apply_display(node)
 
@@ -545,19 +881,18 @@ try: reader.ReadAllFilesToDetermineStructure = 1
 except Exception: pass
 reader.UpdatePipelineInformation()
 for property_name in ('CellArrays', 'PointArrays'):
-    try:
-        prop = getattr(reader, property_name)
-        setattr(reader, property_name, list(prop.Available))
-    except Exception: pass
-times = [float(v) for v in list(reader.TimestepValues)]
-if not times: times = [0.0]
+    values = available_values(reader, property_name)
+    if values: set_if_supported(reader, property_name, values)
+raw_times = [float(v) for v in list(reader.TimestepValues)]
+times = raw_times if raw_times else [0.0]
 current_time = times[-1]
 reader.UpdatePipeline(time=current_time)
 
 view = CreateRenderView()
 view.ViewSize = [1000, 700]
-view.Background = [0.18, 0.20, 0.24]
+view.Background = BACKGROUNDS[background_name]
 view.OrientationAxesVisibility = 1
+set_if_supported(view, 'CenterAxesVisibility', 0)
 scene = GetAnimationScene()
 scene.UpdateAnimationUsingDataTimeSteps()
 scene.AnimationTime = current_time
@@ -568,7 +903,7 @@ available_presets = [name for name in PRESETS if name in ListColorPresetNames()]
 nodes['reader'] = {
     'proxy': reader, 'display': display, 'label': os.path.basename(marker),
     'type': 'OpenFOAMReader', 'parent': None, 'visible': True,
-    'representation': 'Surface', 'opacity': 1.0,
+    'representation': 'Surface', 'opacity': 1.0, 'lineWidth': 1.0, 'pointSize': 3.0,
     'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
 }
 ResetCamera(view)
@@ -589,6 +924,12 @@ for line in sys.__stdin__:
             if candidate not in nodes: raise RuntimeError('Pipeline item not found.')
             selected_id = candidate
             emit(identifier, True, {'state': state()})
+        elif action == 'set_visibility':
+            candidate = str(data.get('id', ''))
+            if candidate not in nodes: raise RuntimeError('Pipeline item not found.')
+            nodes[candidate]['visible'] = bool(data.get('visible'))
+            apply_display(nodes[candidate])
+            emit(identifier, True, {'state': state()})
         elif action == 'add_filter':
             add_filter(str(data.get('filter', '')))
             emit(identifier, True, {'state': state()})
@@ -596,18 +937,22 @@ for line in sys.__stdin__:
             delete_selected(); emit(identifier, True, {'state': state()})
         elif action == 'update':
             update_selected(data); emit(identifier, True, {'state': state()})
+        elif action == 'update_reader':
+            update_reader(data); emit(identifier, True, {'state': state()})
+        elif action == 'update_view':
+            update_view(data); emit(identifier, True, {'state': state()})
         elif action == 'time':
             set_time(data.get('time')); emit(identifier, True, {'state': state()})
         elif action == 'refresh':
             refresh_reader(); emit(identifier, True, {'state': state()})
         elif action == 'reset_camera':
-            ResetCamera(view); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'))})
+            ResetCamera(view); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'standard_view':
-            standard_view(str(data.get('view', 'Iso'))); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'))})
+            standard_view(str(data.get('view', 'Iso'))); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'camera':
-            camera(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'))})
+            camera(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'render':
-            emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'))})
+            emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'quit':
             emit(identifier, True, {}); break
         else: raise RuntimeError('Unsupported ParaView action.')
@@ -788,8 +1133,8 @@ export async function sendParaViewCommand(action: string, data: Record<string, u
   return activeWorker.request(action, data);
 }
 
-export async function readParaViewRender(width: number, height: number): Promise<Buffer> {
-  const result = await sendParaViewCommand('render', { width, height });
+export async function readParaViewRender(width: number, height: number, quality = 92): Promise<Buffer> {
+  const result = await sendParaViewCommand('render', { width, height, quality });
   if (!result.image) throw new Error('ParaView did not return a rendered image.');
   try {
     return await fs.readFile(result.image);
