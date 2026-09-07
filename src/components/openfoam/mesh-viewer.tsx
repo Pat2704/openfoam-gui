@@ -550,10 +550,14 @@ export default function MeshViewer({ caseName, active = true }: {
       }
     }
     setRendererError(null);
-    // A canvas is inline by default, which reserves a text baseline below it.
-    // On a short viewport that invisible strip makes the WebGL drawing area
-    // disagree with the measured parent and shifts the mesh off centre.
+    // Keep CSS geometry separate from the HiDPI drawing buffer. setSize(...,
+    // false) changes the canvas attributes to width*dpr/height*dpr; without an
+    // explicit CSS size Chromium also displayed those physical pixels as CSS
+    // pixels. On a laptop at 125-150% scaling the canvas then overflowed its
+    // clipped parent, shifting the mesh down/right and clipping the corner axes.
     renderer.domElement.style.display = 'block';
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
     mount.appendChild(renderer.domElement);
 
     // Two lights plus a little ambient: enough to read curvature on a coloured
@@ -665,6 +669,10 @@ export default function MeshViewer({ caseName, active = true }: {
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(mount);
+    // A window can move between displays with different DPI without changing
+    // the mount's CSS dimensions, so ResizeObserver alone is not sufficient.
+    window.addEventListener('resize', resize);
+    window.visualViewport?.addEventListener('resize', resize);
 
     const onContextLost = (event: Event) => {
       event.preventDefault();
@@ -690,6 +698,8 @@ export default function MeshViewer({ caseName, active = true }: {
     return () => {
       themeObserver.disconnect();
       ro.disconnect();
+      window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);

@@ -1,6 +1,6 @@
 # RULES — canonical AI project instructions
 
-Last updated: 2026-09-07.
+Last updated: 2026-09-08.
 
 **This is the single canonical file for every project-specific rule an AI must
 follow.** The tiny tracked `AGENTS.md` only routes an AI here and must not
@@ -254,7 +254,10 @@ schemas, prompt, policy, case confinement, and activity model.
   and must consume zero CPU while idle. Vertex labels stay a fixed visual size.
 - Mesh framing accounts for horizontal and vertical field of view. WebGL drawing
   buffers respect device pixel ratio, adapter limits, and a roughly 4K pixel
-  budget without changing CSS geometry.
+  budget without changing CSS geometry. A HiDPI canvas using `setSize(...,
+  false)` must retain explicit `width: 100%; height: 100%` CSS; otherwise its
+  physical buffer size becomes its layout size on scaled laptop displays,
+  cropping both the centred mesh and the bottom-corner axes.
 - Renderer creation retries without MSAA, reports missing WebGL2 clearly, and
   remeasures after hidden mounts, resize, and context restoration. Teardown must
   call `forceContextLoss()` and dispose label textures.
