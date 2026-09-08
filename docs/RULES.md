@@ -19,16 +19,12 @@ second file.
 
 ## 1. Current state
 
-- **v4.0.0 is released.** Tag `v4.0.0` and `origin/main` identify its release
+- **v5.0.0 is released.** Tag `v5.0.0` and `origin/main` identify its release
   commit; local `main` may contain later committed work waiting for an
-  explicitly requested push.
-  What it contained is in `docs/releases/v4.0.0.md`; both artifacts are attached
-  on GitHub and copied to `Working/`.
+  explicitly requested push. What it contained is in `docs/releases/v5.0.0.md`;
+  both artifacts are attached on GitHub and copied to `Working/`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.
-- Committed locally, awaiting an explicitly requested push: the Post-Process
-  tab and the File Editor watcher. The version was not bumped, so the artifacts
-  in `Working/` carry the v4.0.0 NAME without being the released v4.0.0.
 
 Open items:
 
@@ -291,6 +287,11 @@ schemas, prompt, policy, case confinement, and activity model.
 - Tab shortcuts are `Ctrl+0`–`Ctrl+9` and the digit IS the tab index, so
   `Ctrl+0` is the Dashboard and `Ctrl+9` is Src. Adding an eleventh tab breaks
   this and needs a different scheme, not a silently dropped shortcut.
+- Anything read from the INSTALLATION must follow the selected OpenFOAM. The
+  Dashboard raises `foam-version-changed` on both a version and a distro switch;
+  a tab that caches installation data has to listen. Post-Process went on
+  offering v14's 127 function objects after a switch to v13's 119 purely because
+  it never subscribed.
 - The Mesh viewer uses TrackballControls for free rotation, renders on demand,
   and must consume zero CPU while idle. Vertex labels stay a fixed visual size.
 - Mesh framing accounts for both fields of view, and WebGL drawing buffers

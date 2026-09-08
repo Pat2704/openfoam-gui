@@ -357,19 +357,24 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     return () => clearInterval(timer);
   }, [follow, active, selected, loadDatasets, loadData]);
 
-  const openCatalog = useCallback(async () => {
-    setCatalogOpen(true);
+  /**
+   * Read the function catalogue for the OpenFOAM that is selected right now.
+   *
+   * `force` exists because the catalogue is otherwise fetched once and kept:
+   * it is 127 entries and does not change while a version stays put.
+   */
+  const loadCatalog = useCallback(async (force = false) => {
     // The case's own patch names, so an example for a `<patchNames>` argument
     // names a patch that exists instead of the word "patchName".
-    if (!patches.length && caseName) {
+    if ((force || !patches.length) && caseName) {
       void fetch(`/api/cases/${encodeURIComponent(caseName)}?action=caseSummary`)
         .then(response => (response.ok ? response.json() : null))
         .then(summary => { if (Array.isArray(summary?.patches)) setPatches(summary.patches); })
         .catch(() => { /* an example falls back to a placeholder */ });
     }
-    if (catalog.length) return;
+    if (!force && catalog.length) return;
     try {
-      const response = await fetch('/api/postprocess?action=catalog');
+      const response = await fetch(`/api/postprocess?action=catalog${force ? '&refresh=true' : ''}`);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not read the function catalogue');
       setCatalog(payload.entries ?? []);
@@ -380,6 +385,43 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
     }
   }, [catalog.length, caseName, patches.length]);
+
+  const openCatalog = useCallback(async () => {
+    setCatalogOpen(true);
+    await loadCatalog(false);
+  }, [loadCatalog]);
+
+  /**
+   * Follow the active OpenFOAM.
+   *
+   * The catalogue, the utility's name and the case's patch list all belong to
+   * the installation that was selected when they were read, and every one of
+   * them is kept for the life of this tab. Switching version therefore left the
+   * panel describing the previous one — a v14 to v13 switch went on offering
+   * 127 function objects where the new installation has 119, with v14's
+   * templates and v14's tutorial examples behind them.
+   *
+   * The Dashboard already announces the change; the Commands tab has listened
+   * to it since it was added. This tab simply never subscribed.
+   */
+  useEffect(() => {
+    const onInstallationChanged = () => {
+      setChosen(null);
+      setCommandText('');
+      setEntryText('');
+      setRunOutput(null);
+      setPatches([]);
+      setCatalog([]);
+      // The run directory moves with the version, so what the case holds has to
+      // be listed again too.
+      void loadDatasets();
+      // Only refetch the catalogue right away if it is on screen; otherwise the
+      // cleared state makes the next open read it.
+      if (catalogOpen) void loadCatalog(true);
+    };
+    window.addEventListener('foam-version-changed', onInstallationChanged);
+    return () => window.removeEventListener('foam-version-changed', onInstallationChanged);
+  }, [catalogOpen, loadCatalog, loadDatasets]);
 
   /**
    * Closing the panel discards whatever was typed in it.

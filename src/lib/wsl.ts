@@ -538,6 +538,11 @@ export function setOpenFOAMVersion(bashrcPath: string): boolean {
   cachedVersion = null;
   cachedRunDir = null;
   cachedTutDir = null;
+  // Both of these are keyed by the installation and would miss on their own,
+  // but "reset ALL caches" should mean all of them: a key that happens to be
+  // right is a weaker guarantee than not keeping the answer at all.
+  cachedCatalog = null;
+  cachedUtility = null;
   runDirVerified = false;
   tutDirVerified = false;
   // Don't delete the disk cache file — it will be overwritten on next persistCache.

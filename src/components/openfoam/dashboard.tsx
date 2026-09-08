@@ -216,6 +216,13 @@ export default function Dashboard({
       const response = await fetch(`/api/wsl?action=setDistro&name=${encodeURIComponent(distroInput.trim())}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to select the distro');
+      // A distro change replaces the whole installation — a different OpenFOAM,
+      // a different run directory — so it has to raise the same signal a
+      // version change does. Without it the tabs that read the installation
+      // went on showing the previous distro's.
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('foam-version-changed', { detail: { distro: data.distro } }));
+      }
       setLoading(true);
       lastFetchRef.current.status = 0;
       await fetchAll(true);
