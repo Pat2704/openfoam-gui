@@ -29,8 +29,12 @@ the task needs product or historical context.
 4. Do not decide the number of subagents alone. Ask the user how many may be
    opened before starting one, then open no more than authorized. Each authorized
    subagent updates its ignored `docs/agent-log/<task>.md` after every step.
-5. Never run destructive tests against real WSL cases. Only disposable
-   `claude_test` and `cavity_test` may be broken or recreated.
+5. Never run destructive tests against real WSL cases. The default one to work
+   in is the case named `test`. Beyond it, create as many as the work needs, or
+   copy them from the shipped tutorials, without asking — as long as the name
+   ends in `_test`, as in `cavity_test`. That suffix is what marks a case as
+   disposable: only cases named that way, and `test` itself, may be broken,
+   overwritten or deleted.
 6. The product remains colourful. Do not restore the rejected monochrome
    overhaul, and do not re-propose hiding `empty` or `wedge` mesh patches by
    default.

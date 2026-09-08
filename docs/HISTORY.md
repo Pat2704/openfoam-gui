@@ -6,6 +6,13 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-08 — disposable cases are a naming convention
+
+- User decision 5 no longer names two fixed cases. The default working case is
+  `test`, and any case whose name ends in `_test` is disposable, created or
+  copied from the tutorials at the agent's discretion. `claude_test` and
+  `cavity_test` still qualify; they are simply no longer the whole list.
+
 ## 2026-09-08 — builds are no longer asked for
 
 - At the user's request, RULES 2 of "Validation, builds and publication" was
