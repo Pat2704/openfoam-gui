@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
       }
       case 'foamVersions': {
         // List all installed OpenFOAM versions (auto-detected from /opt, /usr/lib, /usr/local).
-        const versions = findOpenFOAMVersions();
+        const versions = findOpenFOAMVersions(searchParams.get('refresh') === '1');
         const selected = getSelectedBashrc();
         return NextResponse.json({ versions, selectedBashrc: selected });
       }

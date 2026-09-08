@@ -424,34 +424,52 @@ export function findBashrc(): string {
 // OpenFOAM install. Returns { version, bashrcPath, installDir }[] so the
 // dashboard can show version buttons and let the user pick which one to use.
 let cachedFoamVersions: { version: string; bashrcPath: string; installDir: string }[] | null = null;
+let foamVersionsFailedAt = 0;
 
-export function findOpenFOAMVersions(): { version: string; bashrcPath: string; installDir: string }[] {
-  if (cachedFoamVersions !== null) return cachedFoamVersions;
+export function findOpenFOAMVersions(refresh = false): { version: string; bashrcPath: string; installDir: string }[] {
+  const previous = cachedFoamVersions;
+  if (refresh) foamVersionsFailedAt = 0;
+  if (!refresh && cachedFoamVersions !== null) return cachedFoamVersions;
+  // An empty result can mean "nothing is installed", but it can equally mean
+  // WSL was restarting or briefly busy. Never turn that transient state into a
+  // session-long empty version picker; retain it only long enough to stop a
+  // burst of UI requests from repeating the same scan.
+  if (foamVersionsFailedAt && Date.now() - foamVersionsFailedAt < NEGATIVE_CACHE_MS) return [];
   const script = `#!/bin/bash
-# Scan common install locations for OpenFOAM etc/bashrc files.
-# Covers Foundation (openfoam9-13), ESI (openfoam2212, 2312), and any other.
-for base in /opt /usr/lib /usr/local; do
-  [ -d "$base" ] || continue
-  find "$base" -maxdepth 5 -name bashrc -path "*/etc/*" 2>/dev/null | while IFS= read -r f; do
-    # Verify it's an OpenFOAM bashrc (check for WM_PROJECT_DIR in the file)
-    grep -q "WM_PROJECT_DIR" "$f" 2>/dev/null || continue
-    # Extract the install dir (parent of etc/)
-    installDir=$(dirname "$(dirname "$f")")
-    # Extract version from the path or from sourcing
-    ver=""
-    case "$f" in
-      */openfoam[0-9]*/etc/bashrc) ver=$(echo "$f" | sed 's|.*/openfoam\\([0-9]*\\)/.*|\\1|') ;;
-      */OpenFOAM-[0-9]*/etc/bashrc) ver=$(echo "$f" | sed 's|.*/OpenFOAM-\\([0-9]*\\)/.*|\\1|') ;;
-      */openfoam[0-9][0-9][0-9][0-9]*/etc/bashrc) ver=$(echo "$f" | sed 's|.*/openfoam\\([0-9]*\\)/.*|\\1|') ;;
-    esac
-    [ -z "$ver" ] && ver=$(basename "$installDir")
-    echo "$ver|$f|$installDir"
-  done
+# Shell globs visit only the shallow directory levels where an OpenFOAM
+# installation can contain etc/bashrc. The old recursive find over all of
+# /usr/lib walked thousands of unrelated packages and made this small picker
+# take several seconds. Names and versions remain unrestricted; /usr/lib is
+# narrowed only to its documented OpenFOAM branches.
+shopt -s nullglob
+candidates=(
+  /opt/*/etc/bashrc /opt/*/*/etc/bashrc /opt/*/*/*/etc/bashrc
+  /usr/local/*/etc/bashrc /usr/local/*/*/etc/bashrc /usr/local/*/*/*/etc/bashrc
+  /usr/lib/openfoam*/etc/bashrc /usr/lib/openfoam*/*/etc/bashrc /usr/lib/openfoam*/*/*/etc/bashrc
+  /usr/lib/OpenFOAM*/etc/bashrc /usr/lib/OpenFOAM*/*/etc/bashrc /usr/lib/OpenFOAM*/*/*/etc/bashrc
+)
+for f in "\${candidates[@]}"; do
+  [ -f "$f" ] || continue
+  grep -q "WM_PROJECT_DIR" "$f" 2>/dev/null || continue
+  installDir=\${f%/etc/bashrc}
+  leaf=\${installDir##*/}
+  case "$leaf" in
+    OpenFOAM-v*) ver=\${leaf#OpenFOAM-v} ;;
+    OpenFOAM-*) ver=\${leaf#OpenFOAM-} ;;
+    openfoam*) ver=\${leaf#openfoam} ;;
+    v[0-9]*) ver=\${leaf#v} ;;
+    *) ver="$leaf" ;;
+  esac
+  echo "$ver|$f|$installDir"
 done | sort -u
 `;
   try {
     const out = runInWslScript(Buffer.from(script).toString('base64'), 15000).trim();
-    if (!out) { cachedFoamVersions = []; return []; }
+    if (!out) {
+      cachedFoamVersions = null;
+      foamVersionsFailedAt = Date.now();
+      return [];
+    }
     const versions: { version: string; bashrcPath: string; installDir: string }[] = [];
     for (const line of out.split('\n')) {
       const parts = line.split('|');
@@ -459,11 +477,19 @@ done | sort -u
         versions.push({ version: parts[0], bashrcPath: parts[1], installDir: parts[2] });
       }
     }
+    if (versions.length === 0) {
+      foamVersionsFailedAt = Date.now();
+      return [];
+    }
+    foamVersionsFailedAt = 0;
     cachedFoamVersions = versions;
     return versions;
   } catch {
-    cachedFoamVersions = [];
-    return [];
+    // Keep the last proven list when WSL itself fails. This is the recovery
+    // path for resume/restart glitches: a failed refresh may report the known
+    // versions, but it must not make them disappear or poison later selection.
+    foamVersionsFailedAt = Date.now();
+    return previous || [];
   }
 }
 
@@ -3014,6 +3040,7 @@ export function resetCache() {
   // a switch — and picking one set selectedBashrc to a path that does not exist
   // in the new distro, so every command then failed to source anything.
   cachedFoamVersions = null;
+  foamVersionsFailedAt = 0;
   // NOTE: selectedBashrc is deliberately NOT cleared here. It is the user's
   // explicit version choice, and keeping it across a cache reset is the whole
   // point of the v1.4 fix that stopped a transient WSL failure from silently

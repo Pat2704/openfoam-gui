@@ -48,6 +48,8 @@ interface ParaViewStatus {
   error?: string;
 }
 
+type RuntimeSettings = 'openfoam' | 'paraview' | null;
+
 export default function Dashboard({
   selectedCase, onSelectCase, onRefresh, refreshSignal = 0
 }: {
@@ -65,13 +67,14 @@ export default function Dashboard({
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [distroInput, setDistroInput] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings>(null);
   // OpenFOAM version selection (replaces the old Ubuntu distro selector).
   const [foamVersions, setFoamVersions] = useState<{ version: string; bashrcPath: string; installDir: string }[]>([]);
   const [selectedFoamBashrc, setSelectedFoamBashrc] = useState<string | null>(null);
   const [switchingFoam, setSwitchingFoam] = useState(false);
   const [switchingFoamBashrc, setSwitchingFoamBashrc] = useState<string | null>(null);
   const [loadingFoamVersions, setLoadingFoamVersions] = useState(false);
+  const [foamVersionsError, setFoamVersionsError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newCaseName, setNewCaseName] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -101,6 +104,7 @@ export default function Dashboard({
 
   // Cache to avoid unnecessary re-fetches — stores the last fetch timestamp
   const lastFetchRef = useRef<{ status: number; tutorials: number }>({ status: 0, tutorials: 0 });
+  const foamVersionsRequestRef = useRef(0);
   const STATUS_CACHE_MS = 2000; // don't refetch status if done < 2s ago
 
   // Single fetch: only fullStatus (already includes batch cases in a single WSL call).
@@ -216,7 +220,7 @@ export default function Dashboard({
       lastFetchRef.current.status = 0;
       await fetchAll(true);
       setLoading(false);
-      setShowSettings(false);
+      setRuntimeSettings(null);
       toast.success(`Distro: ${data.distro}`);
     } catch (error) {
       setLoading(false);
@@ -225,18 +229,34 @@ export default function Dashboard({
   };
 
   // Fetch all installed OpenFOAM versions (for the settings dialog).
-  const fetchFoamVersions = useCallback(async () => {
+  const fetchFoamVersions = useCallback(async (refresh = false) => {
+    const requestId = ++foamVersionsRequestRef.current;
     setLoadingFoamVersions(true);
+    setFoamVersionsError(null);
     try {
-      const res = await fetch('/api/wsl?action=foamVersions');
+      const query = new URLSearchParams({ action: 'foamVersions' });
+      if (refresh) query.set('refresh', '1');
+      const res = await fetch(`/api/wsl?${query}`);
       const data = await res.json();
-      setFoamVersions(data.versions || []);
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (requestId !== foamVersionsRequestRef.current) return;
+      const detected = Array.isArray(data.versions) ? data.versions : [];
+      if (detected.length === 0 && foamVersions.length > 0) {
+        setFoamVersionsError('The latest scan returned no installations. Keeping the previously detected versions; use Look again to retry.');
+        return;
+      }
+      setFoamVersions(detected);
       setSelectedFoamBashrc(data.selectedBashrc || null);
-    } catch {
-      setFoamVersions([]);
+    } catch (error) {
+      if (requestId !== foamVersionsRequestRef.current) return;
+      // Preserve a previously valid list during a transient WSL failure. The
+      // old code replaced it with [], making versions appear to vanish after
+      // the app had been open for a while.
+      setFoamVersionsError(error instanceof Error ? error.message : 'OpenFOAM detection failed.');
+    } finally {
+      if (requestId === foamVersionsRequestRef.current) setLoadingFoamVersions(false);
     }
-    setLoadingFoamVersions(false);
-  }, []);
+  }, [foamVersions]);
 
   // Select an OpenFOAM version — resets all server caches and refreshes.
   const handleSetFoamVersion = async (bashrcPath: string, versionLabel: string) => {
@@ -263,7 +283,7 @@ export default function Dashboard({
       await fetchAll(true);
       await fetchTutorials();
       setLoading(false);
-      setShowSettings(false);
+      setRuntimeSettings(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Error switching version');
     }
@@ -484,7 +504,7 @@ export default function Dashboard({
               <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRefresh} disabled={loading}>
                 <RefreshCw className={`w-3 h-3 mr-1 ${loading ? 'animate-spin' : ''}`} /> Refresh
               </Button>
-              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setShowSettings(true); fetchFoamVersions(); }}>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" aria-label="Open OpenFOAM settings" onClick={() => { setRuntimeSettings('openfoam'); void fetchFoamVersions(); }}>
                 <Settings className="w-3 h-3" />
               </Button>
             </div>
@@ -505,23 +525,35 @@ export default function Dashboard({
             <div className="flex flex-shrink-0 items-center gap-1.5">
               {paraViewStatus?.source && <Badge variant="secondary" className="hidden max-w-36 truncate text-[10px] xl:inline-flex">{paraViewStatus.source}</Badge>}
               <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => void detectParaView(paraViewPath, true)} disabled={checkingParaView}><RefreshCw className={`mr-1 h-3 w-3 ${checkingParaView ? 'animate-spin' : ''}`} /> Look again</Button>
-              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setShowSettings(true); fetchFoamVersions(); }}><Settings className="h-3 w-3" /></Button>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" aria-label="Open ParaView settings" onClick={() => setRuntimeSettings('paraview')}><Settings className="h-3 w-3" /></Button>
             </div>
           </div>
         </CardContent>
       </Card>
       </div>
 
-      {/* Settings Dialog — all runtime configuration lives in the Dashboard. */}
-      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+      {/* Each status card opens only its own runtime configuration. Keeping the
+          panels independent also prevents the ParaView gear from starting a
+          comparatively expensive WSL installation scan. */}
+      <Dialog open={runtimeSettings !== null} onOpenChange={(open) => { if (!open) setRuntimeSettings(null); }}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Settings</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{runtimeSettings === 'paraview' ? 'ParaView settings' : 'OpenFOAM settings'}</DialogTitle></DialogHeader>
           <div className="space-y-4 pt-2">
-            <div>
-              <h3 className="text-sm font-semibold">OpenFOAM</h3>
-            <p className="text-sm text-muted-foreground">
-              Select which version of OpenFOAM to use. All paths (installation, cases, tutorials) will be updated automatically.
-            </p>
+            {runtimeSettings === 'openfoam' && <div className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold">OpenFOAM version</h3>
+                <p className="text-sm text-muted-foreground">
+                  Select which version to use. Installation, case and tutorial paths update automatically.
+                </p>
+              </div>
+              <Button variant="outline" size="sm" className="flex-shrink-0" disabled={loadingFoamVersions || switchingFoam} onClick={() => void fetchFoamVersions(true)}>
+                <RefreshCw className={`h-3.5 w-3.5 ${loadingFoamVersions ? 'animate-spin' : ''}`} /> Look again
+              </Button>
+            </div>
+            {loadingFoamVersions && foamVersions.length === 0 && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Detecting installed versions…</div>
+            )}
             <div className="flex flex-wrap gap-2">
               {foamVersions.map((v) => {
                 const isActive = v.bashrcPath === selectedFoamBashrc;
@@ -546,9 +578,10 @@ export default function Dashboard({
                 No OpenFOAM version found. Verify that OpenFOAM is installed in /opt, /usr/lib or /usr/local.
               </p>
             )}
-            </div>
+            {foamVersionsError && <p className="text-xs text-danger">{foamVersionsError}</p>}
+            </div>}
 
-            <div className="space-y-3 border-t pt-4">
+            {runtimeSettings === 'paraview' && <div className="space-y-3">
               <div>
                 <h3 className="text-sm font-semibold">ParaView</h3>
                 <p className="text-xs text-muted-foreground">Discovery supports any version and install folder. Set a path only for a portable or unusually located copy.</p>
@@ -567,7 +600,7 @@ export default function Dashboard({
                 <Button variant="outline" size="sm" disabled={checkingParaView} onClick={() => { setParaViewPath(''); void detectParaView('', true, true); }}><RefreshCw className="h-3.5 w-3.5" /> Auto-detect</Button>
                 <Button size="sm" disabled={checkingParaView} onClick={() => void detectParaView(paraViewPath, true, true)}>Save path</Button>
               </div>
-            </div>
+            </div>}
           </div>
         </DialogContent>
       </Dialog>
@@ -908,7 +941,7 @@ export default function Dashboard({
           <AlertTriangle className="h-4 w-4 text-warning" />
           <AlertDescription>
             WSL &quot;{status?.name}&quot; unavailable.
-            <code className="ml-1 px-1.5 py-0.5 bg-muted rounded text-xs font-mono cursor-pointer" onClick={() => setShowSettings(true)}>
+            <code className="ml-1 px-1.5 py-0.5 bg-muted rounded text-xs font-mono cursor-pointer" onClick={() => { setRuntimeSettings('openfoam'); void fetchFoamVersions(true); }}>
               wsl -d {status?.name || 'Ubuntu-22.04'}
             </code>
           </AlertDescription>

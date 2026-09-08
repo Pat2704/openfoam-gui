@@ -263,6 +263,9 @@ schemas, prompt, policy, case confinement, and activity model.
   call `forceContextLoss()` and dispose label textures.
 - Monitor manual refresh waits for an in-flight poll and then performs a fresh
   request; it cannot be swallowed by automatic polling.
+- Dashboard OpenFOAM and ParaView gears open independent settings panels. An
+  explicit OpenFOAM scan bypasses cached results; empty/error detection is only
+  negative-cached briefly and must never erase an already valid client list.
 - File Editor refreshes visible and expanded directories without replacing the
   open buffer, dirty state, selection, or expansion state. Navigation away from
   unsaved text requires confirmation.

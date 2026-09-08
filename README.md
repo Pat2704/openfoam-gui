@@ -71,8 +71,8 @@ sudo apt update && sudo apt install openfoam14
 ```
 
 The app auto-detects every version in `/opt/openfoam*`, `/usr/lib/openfoam/*`
-and `/usr/local/OpenFOAM-*`, and you can switch between them from
-**Dashboard → ⚙️ → OpenFOAM Version**.
+and `/usr/local/OpenFOAM-*`, and you can switch between them from the gear on
+the **OpenFOAM card in the Dashboard**.
 
 ---
 
@@ -239,10 +239,11 @@ Ubuntu/OpenFOAM; OpenFOAM Studio searches `PATH`, Windows installation records,
 Program Files and Local AppData, probes each `pvpython.exe` it finds, and selects
 the newest usable version. No fixed version or installation directory is assumed.
 
-For a portable copy or custom directory, open the Dashboard settings, enter the
-ParaView folder, `paraview.exe`, or `pvpython.exe`, and click **Save path**. The
-choice is stored locally. ParaView is not bundled; it runs as a separate
-background process only when a case is opened in its workbench.
+For a portable copy or custom directory, use the gear on the **ParaView card in
+the Dashboard**, enter the ParaView folder, `paraview.exe`, or `pvpython.exe`,
+and click **Save path**. The choice is stored locally. ParaView is not bundled;
+it runs as a separate background process only when a case is opened in its
+workbench.
 
 ---
 
