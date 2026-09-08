@@ -6,6 +6,14 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-08 — GitHub release retention
+
+- Removed the obsolete GitHub releases and binary assets from `v1` through
+  `v4.0.0`. Their Git tags, commits, source archives and repository release
+  notes remain available.
+- Retained `v5.1.0` as the current download and `v5.0.0` as the near-term
+  rollback download.
+
 ## 2026-09-08 — v5.1.0: installation-grounded AI
 
 - Released `v5.1.0` from commit `10cf290`; release notes are in
