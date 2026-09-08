@@ -19,9 +19,9 @@ second file.
 
 ## 1. Current state
 
-- **v5.0.0 is released.** Tag `v5.0.0` and `origin/main` identify its release
+- **v5.1.0 is released.** Tag `v5.1.0` and `origin/main` identify its release
   commit; local `main` may contain later committed work waiting for an
-  explicitly requested push. What it contained is in `docs/releases/v5.0.0.md`;
+  explicitly requested push. What it contained is in `docs/releases/v5.1.0.md`;
   both artifacts are attached on GitHub and copied to `Working/`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.

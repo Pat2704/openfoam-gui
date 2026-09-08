@@ -1,6 +1,6 @@
 {
   "name": "openfoam-studio-wsl",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "private": true,
   "description": "OpenFOAM Studio — desktop GUI for OpenFOAM CFD on Windows via WSL2",
   "author": "Tommaso Ferrara",
