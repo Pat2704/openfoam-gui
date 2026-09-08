@@ -93,12 +93,20 @@ function isCaseScriptPath(relativePath: string): boolean {
   return SCRIPT_COMMANDS.has(basename);
 }
 
-/** Fallback for the seconds before the index exists. */
+/**
+ * Fallback for the seconds before the index exists.
+ *
+ * Both spellings of the post-processing utility are here because the line split
+ * at v12: v9–v11 ship `postProcess`, v12 onwards `foamPostProcess`. Only one of
+ * them exists on any given installation, and the index replaces this set as
+ * soon as it is ready, so listing both costs nothing and stops the agent being
+ * refused the utility that its own OpenFOAM actually has.
+ */
 const CORE_COMMANDS = new Set([
   'blockMesh', 'checkMesh', 'foamRun', 'snappyHexMesh', 'surfaceFeatures',
   'decomposePar', 'reconstructPar', 'foamLog', 'foamDictionary', 'foamToC',
   'transformPoints', 'topoSet', 'createPatch', 'setFields', 'mapFields',
-  'postProcess', 'foamListTimes', 'potentialFoam', 'icoFoam',
+  'postProcess', 'foamPostProcess', 'foamListTimes', 'potentialFoam', 'icoFoam',
 ]);
 
 /** Shell syntax that would turn one allowed command into something else. */
