@@ -748,6 +748,17 @@ function writeConfig(config) {
 
 function registerConfigIpc() {
   ipcMain.handle('foamy-config:get', () => readConfig());
+  // The one synchronous read, and the reason for it: preload.js has to know the
+  // saved light/dark choice BEFORE the page's own scripts run, or the window
+  // paints in the default theme and corrects itself visibly a moment later.
+  // Blocking the renderer here costs one small file read at document start.
+  ipcMain.on('foamy-config:get-sync', (event) => {
+    try {
+      event.returnValue = readConfig();
+    } catch (_) {
+      event.returnValue = {};
+    }
+  });
   ipcMain.handle('foamy-config:set', (_event, config) => {
     try {
       writeConfig(config);

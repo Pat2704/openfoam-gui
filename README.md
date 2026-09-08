@@ -135,6 +135,8 @@ the **OpenFOAM card in the Dashboard**.
   arguments, the entries its configuration already sets and you can override,
   and the calls the installed tutorials actually make, which you can click to
   load. Copy the entry into `controlDict` yourself; the app never edits it.
+
+  ![The Post-Process tab: the force history written by a cavity run, charted from forces.dat, with the results found in the case listed on the left and each series reporting its last value, tail mean, min/max and whether it has settled on the right](screenshots/postProcessing.png)
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between
@@ -148,6 +150,8 @@ the **OpenFOAM card in the Dashboard**.
   OBJ, PLY, VTK/XML, PVD, XDMF, EnSight, Exodus and CSV files found inside the
   active case, including its subfolders. Mesh-only cases remain usable, and
   detection assumes neither a versioned folder name nor an install directory.
+
+  ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.
 
 <details>

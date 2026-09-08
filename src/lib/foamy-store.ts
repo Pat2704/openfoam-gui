@@ -41,7 +41,25 @@ export const FOAMY_KEYS = [
   'codex-agent-unrestricted',
   // Optional override for portable/non-standard ParaView installations.
   'paraview-path',
+  // Light or dark, as the user last chose it. next-themes keeps its own copy in
+  // localStorage, which in the packaged app is a different origin on every
+  // launch — so the app opened light however many times the user had switched
+  // it to dark. This is the copy that survives. electron/preload.js reads it
+  // before the page scripts run and seeds next-themes' key with it, so the
+  // window paints in the right theme rather than flashing through the default.
+  'ui-theme',
 ] as const;
+
+/**
+ * The key next-themes stores the choice under, and the two values this app
+ * writes to it.
+ *
+ * Named here because electron/preload.js seeds the same key from `ui-theme`
+ * before the page loads: the two halves have to agree, and the preload cannot
+ * import from this file.
+ */
+export const THEME_STORAGE_KEY = 'theme';
+export type UiTheme = 'light' | 'dark';
 
 export type FoamyConfig = Partial<Record<(typeof FOAMY_KEYS)[number], string>>;
 

@@ -567,7 +567,10 @@ export default function Dashboard({
             {loadingFoamVersions && foamVersions.length === 0 && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Detecting installed versions…</div>
             )}
-            <div className="flex flex-wrap gap-2">
+            {/* gap-3, not gap-2: these buttons carry an action that switches the
+                whole installation, and at 8 px the versions read as one strip
+                rather than as separate choices. */}
+            <div className="flex flex-wrap gap-3">
               {foamVersions.map((v) => {
                 const isActive = v.bashrcPath === selectedFoamBashrc;
                 return (
@@ -605,7 +608,9 @@ export default function Dashboard({
                   <div className="min-w-0"><p className="font-medium">{checkingParaView ? 'Detecting…' : paraViewStatus?.found ? `ParaView ${paraViewStatus.version || ''} is ready` : 'ParaView was not found'}</p><p className="mt-0.5 break-all font-mono text-[10px] text-muted-foreground">{paraViewStatus?.pvpythonPath || paraViewStatus?.error}</p></div>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              {/* Same reason as the version row above: Auto-detect and Save path
+                  do different things and sat 8 px apart, against the field. */}
+              <div className="flex flex-wrap items-center gap-3">
                 <div className="relative min-w-[280px] flex-1">
                   <FolderSearch className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input value={paraViewPath} onChange={event => setParaViewPath(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void detectParaView(paraViewPath, true, true); }} className="pl-9 font-mono text-xs" placeholder="Folder, paraview.exe, or pvpython.exe (optional)" spellCheck={false} />

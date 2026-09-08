@@ -21,6 +21,7 @@ import PostProcess from '@/components/openfoam/post-process';
 import ParaViewViewer from '@/components/openfoam/paraview-viewer';
 import OpenFoamBrowser from '@/components/openfoam/foam-browser';
 import { useCaseContext } from '@/lib/case-context';
+import { loadFoamyConfig, patchFoamyConfig, type UiTheme } from '@/lib/foamy-store';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
@@ -67,6 +68,42 @@ export default function Home() {
   // react-hooks/refs forbids.
   const isDarkRef = useRef(isDark);
   useEffect(() => { isDarkRef.current = isDark; }, [isDark]);
+
+  /**
+   * Switch the theme AND remember it where the packaged app can find it again.
+   *
+   * next-themes persists to localStorage, which is enough in the browser and
+   * useless in the packaged app: the bundled server binds a free port at every
+   * launch, so the page origin — and with it the whole store — is new each
+   * time. The app therefore opened light no matter how often the user had
+   * chosen dark. The durable copy goes to the config file behind foamyStore,
+   * the same place the API key and the agents' settings live.
+   */
+  const changeTheme = useCallback((next: UiTheme) => {
+    setTheme(next);
+    void patchFoamyConfig({ 'ui-theme': next });
+  }, [setTheme]);
+
+  /**
+   * Restore that choice on startup.
+   *
+   * electron/preload.js normally gets there first, seeding next-themes' own key
+   * before any page script runs, which is what keeps the first paint from
+   * flashing the wrong theme. This is the fallback for everything else: a
+   * browser with cleared storage, a preload that could not reach the store, a
+   * dev server. It runs once and gives up the moment the user touches the
+   * toggle, so a slow read can never undo a deliberate switch.
+   */
+  const themeTouched = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void loadFoamyConfig().then(config => {
+      const saved = config['ui-theme'];
+      if (cancelled || themeTouched.current) return;
+      if (saved === 'light' || saved === 'dark') setTheme(saved);
+    });
+    return () => { cancelled = true; };
+  }, [setTheme]);
   const [activeTab, setActiveTab] = useState('dashboard');
   /** Bumped whenever the case list changes from outside the Dashboard. */
   const [caseListVersion, setCaseListVersion] = useState(0);
@@ -178,7 +215,8 @@ export default function Home() {
         // every time and could never switch back; the toolbar button worked,
         // which is what made it look like a shortcut problem rather than a
         // stale-closure one.
-        setTheme(isDarkRef.current ? 'light' : 'dark');
+        themeTouched.current = true;
+        changeTheme(isDarkRef.current ? 'light' : 'dark');
         return;
       }
       // Ctrl+/  →  toggle shortcuts dialog
@@ -207,7 +245,8 @@ export default function Home() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+    // changeTheme is stable (setTheme is), so the listener is still bound once.
+  }, [changeTheme]);
 
   // The window, not a document: the shell is exactly the viewport and the
   // CONTENT scrolls inside it, so the header, the tab bar and the status bar
@@ -262,7 +301,7 @@ export default function Home() {
               />
             </Badge>
             <button
-              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              onClick={() => { themeTouched.current = true; changeTheme(isDark ? 'light' : 'dark'); }}
               className="p-1.5 rounded-lg border border-border hover:bg-accent transition-colors sm:px-2 sm:gap-1.5"
               title="Switch theme (Ctrl+B)"
             >

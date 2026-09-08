@@ -12,9 +12,10 @@ import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import {
   Terminal as TerminalIcon, Play, Send, Search, ChevronDown, ChevronRight,
-  Grid3x3, Layers, Zap, Trash2, Loader2, Tag
+  Grid3x3, Layers, Zap, Trash2, Loader2, Tag, Rocket
 } from 'lucide-react';
 import { getCommandsForVersion, parseMajorVersion } from '@/lib/openfoam-data';
+import { hasNativeStore } from '@/lib/foamy-store';
 
 /**
  * One entry of the command list, as /api/commands?action=catalog returns it.
@@ -600,10 +601,82 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
     void executeCommand('./Allclean');
   }, [caseName, executeCommand]);
 
+  /**
+   * Run what is typed, detached from the app.
+   *
+   * A trailing `&` is what tells the server to take the background path, where
+   * the command is started with `nohup setsid` inside WSL: it belongs to no
+   * terminal and to no process tree of ours, so closing the app leaves it
+   * running. A foreground command is the opposite by construction — its output
+   * is being streamed through a `wsl.exe` the server owns, and killing the
+   * server at quit takes it with it.
+   *
+   * That distinction existed already but only for whoever knew to type the `&`.
+   * It is a button now, because "will this survive if I close the window?" is
+   * not a question a shell idiom should be the only answer to.
+   *
+   * No redirect is added. The user asked on 2026-09-03 for the app to stop
+   * inventing log names, and the terminal already says, on starting one, that
+   * nothing is capturing the output when no redirect was written.
+   */
+  const runDetached = useCallback((raw: string) => {
+    const command = raw.trim();
+    if (!command) return;
+    void executeCommand(command.endsWith('&') ? command : `${command} &`);
+  }, [executeCommand]);
+
+  /**
+   * A command that dies with the window, as opposed to one that was detached.
+   *
+   * The distinction is in the command itself — the server takes the background
+   * path on a trailing `&` — so it is read back from the entry that is running
+   * rather than tracked in a second piece of state that could disagree with it.
+   */
+  const foregroundRunning = term.running
+    && !term.lines[term.lines.length - 1]?.command.trimEnd().endsWith('&');
+
+  /**
+   * Say so before the window takes a running command down with it.
+   *
+   * Quitting kills the bundled server, and with it every `wsl.exe` it owns —
+   * which is every foreground command, because streaming its output is what
+   * that relay is for. A detached one is not in that tree and keeps running,
+   * so this only interrupts the case where closing actually destroys work.
+   *
+   * Electron does not show a dialog of its own for beforeunload: cancelling
+   * there just makes the X do nothing. So the packaged app asks with the app's
+   * own dialog and then closes for real, while a browser is left to its native
+   * prompt.
+   */
+  const closeConfirmed = useRef(false);
+  useEffect(() => {
+    if (!foregroundRunning) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (closeConfirmed.current) return;
+      e.preventDefault();
+      e.returnValue = '';
+      if (!hasNativeStore()) return;
+      void (async () => {
+        const ok = await confirmDialog(
+          'A command is still running in the terminal, and closing the app stops it. '
+          + 'Commands started with the detach button (or with a trailing &) keep running in WSL.',
+          { title: 'Close while a command is running?', confirmLabel: 'Close anyway', destructive: true },
+        );
+        if (!ok) return;
+        closeConfirmed.current = true;
+        window.close();
+      })();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [foregroundRunning]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      executeCommand(term.input);
+      // Ctrl/Cmd+Enter sends the same line to the background instead.
+      if (e.ctrlKey || e.metaKey) runDetached(term.input);
+      else executeCommand(term.input);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (term.history.length > 0) {
@@ -843,7 +916,16 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
               <div className="flex items-center gap-2 p-1.5">
                 <span className="text-green-500 font-mono text-xs font-bold select-none">$</span>
                 <input value={term.input} onChange={(e) => setTerm(prev => ({ ...prev, input: e.target.value }))} onKeyDown={handleKeyDown} placeholder={`${caseName} $`} className="flex-1 font-mono text-xs bg-transparent focus:outline-none placeholder:text-muted-foreground/40" disabled={term.running} spellCheck={false} />
-                <Button size="sm" className="h-6 px-2" disabled={term.running || !term.input.trim()} onClick={() => executeCommand(term.input)}><Send className="w-3 h-3" /></Button>
+                <Button size="sm" variant="outline" className="h-6 px-2" disabled={term.running || !term.input.trim()}
+                  onClick={() => runDetached(term.input)}
+                  title="Run detached (Ctrl+Enter): the command keeps going if you close the app, and you follow it in the Monitor tab">
+                  <Rocket className="w-3 h-3" />
+                </Button>
+                <Button size="sm" className="h-6 px-2" disabled={term.running || !term.input.trim()}
+                  onClick={() => executeCommand(term.input)}
+                  title="Run here (Enter): the output streams into this terminal, and closing the app stops the command">
+                  <Send className="w-3 h-3" />
+                </Button>
               </div>
             </div>
           </CardContent>
