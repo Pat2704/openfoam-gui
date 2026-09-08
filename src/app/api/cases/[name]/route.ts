@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getCaseInfo,
+  statFile,
   listDirectory,
   readFile,
   writeFile,
@@ -21,6 +22,7 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 
 // GET /api/cases/[name]
 //   ?action=read&path=…          → { content }
+//   ?action=stat&path=…          → { exists, mtime, size, stamp }
 //   ?action=info                 → getCaseInfo result
 //   ?action=ls&path=…            → { items }
 //   ?action=logs&log=…&tail=…    → { content, availableLogs }
@@ -44,6 +46,12 @@ export async function GET(
         const path = searchParams.get('path') || '';
         const content = readFile(caseName, path);
         return NextResponse.json({ content });
+      }
+      case 'stat': {
+        // The editor polls this for the one file it has open, to notice a write
+        // by an agent, FOAMy, a script or the user's own terminal.
+        const path = searchParams.get('path') || '';
+        return NextResponse.json(statFile(caseName, path));
       }
       case 'info': {
         const info = getCaseInfo(caseName);

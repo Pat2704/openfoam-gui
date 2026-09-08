@@ -12,7 +12,7 @@ import {
   Plus, Trash2, FileCode, FolderPlus, Save, Copy,
   FolderTree, ChevronDown, ChevronRight, File, FileText,
   RotateCcw, Folder, CheckSquare, Square, XCircle, Timer,
-  Loader2, RefreshCw, Search, WrapText, X, Pencil
+  Loader2, RefreshCw, Search, WrapText, X, Pencil, AlertTriangle
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -69,10 +69,28 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   const [searchVisible, setSearchVisible] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
   const [searchMatches, setSearchMatches] = useState(0);
+  /** Something else rewrote the open file while it had unsaved edits. */
+  const [externalChange, setExternalChange] = useState(false);
 
-  // Cache of already-read files — avoids refetching from WSL when reopening a file.
-  // The cache is invalidated when the file is saved (because the content changes).
-  const fileCacheRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Cache of already-read files, VALIDATED against the file on disk.
+   *
+   * It used to hold plain text and be trusted blindly, which is what made an
+   * agent's or FOAMy's write invisible: reopening the file was a cache hit, so
+   * no WSL call happened at all, and the only thing that ever cleared the map
+   * was leaving the case — which unmounts this component. That is exactly why
+   * the edits "only appeared after leaving and coming back".
+   *
+   * Each entry now carries the fingerprint the content was read at. Opening a
+   * file asks `stat` for the current one first: same fingerprint, the cache is
+   * used and the read is still saved; different, and the text is re-read.
+   */
+  const fileCacheRef = useRef<Map<string, { content: string; stamp: string }>>(new Map());
+  /** Fingerprint of the open file as it was last read or written by this editor. */
+  const openStampRef = useRef<string>('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Read by the watcher below, which must not re-subscribe on every keystroke.
+  const isModifiedRef = useRef(false);
   const treeFetchRef = useRef<Promise<void> | null>(null);
   const expandedDirsRef = useRef(expandedDirs);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
@@ -246,6 +264,99 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     };
   }, [active, caseName, fetchCaseInfo]);
 
+  /** The current fingerprint of a file, or '' when it cannot be read. */
+  const fetchStamp = useCallback(async (filePath: string): Promise<string> => {
+    if (!caseName || !filePath) return '';
+    try {
+      const res = await fetch(
+        `/api/cases/${encodeURIComponent(caseName)}?action=stat&path=${encodeURIComponent(filePath)}`,
+        { cache: 'no-store' },
+      );
+      if (!res.ok) return '';
+      const data = await res.json();
+      return typeof data.stamp === 'string' ? data.stamp : '';
+    } catch {
+      return '';
+    }
+  }, [caseName]);
+
+  /**
+   * Watch the open file for writes that did not come from this editor.
+   *
+   * An agent, FOAMy, an Allrun script and the user's own terminal all write the
+   * same files the editor shows, and none of them can tell it so. Polling the
+   * file's own fingerprint answers for all of them at once.
+   *
+   * The two outcomes are deliberately different. A clean buffer is simply
+   * replaced — that is what the user wants to see, and there is nothing to
+   * lose. A DIRTY buffer is never touched: it is offered a reload instead,
+   * because silently discarding unsaved edits to show an agent's version would
+   * be a far worse bug than the staleness this fixes.
+   */
+  useEffect(() => {
+    if (!active || !caseName || !currentFile) return;
+    let cancelled = false;
+
+    const check = async () => {
+      if (document.hidden || cancelled) return;
+      const stamp = await fetchStamp(currentFile);
+      // An empty stamp means the file is gone or WSL did not answer. Neither is
+      // a content change, and treating it as one would blank the editor.
+      if (cancelled || !stamp || stamp === openStampRef.current) return;
+
+      // No fingerprint on our side yet — after a rename, or when the stat during
+      // loading failed. Adopt the current one instead of reporting a change we
+      // have no evidence for; a real edit after this will still be caught.
+      if (!openStampRef.current) {
+        openStampRef.current = stamp;
+        return;
+      }
+
+      if (isModifiedRef.current) {
+        setExternalChange(true);
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent(currentFile)}`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const content = data.content || '';
+        const after = await fetchStamp(currentFile);
+        if (cancelled) return;
+        fileCacheRef.current.set(currentFile, { content, stamp: after || stamp });
+        openStampRef.current = after || stamp;
+        // Keep the view where the reader left it. Without this the textarea
+        // jumps to the top on every agent write, which is unusable while an
+        // agent is working through a file.
+        const textarea = textareaRef.current;
+        const scrollTop = textarea?.scrollTop ?? 0;
+        const caret = textarea?.selectionStart ?? 0;
+        setFileContent(content);
+        setOriginalContent(content);
+        setActiveFile({ path: currentFile, content });
+        requestAnimationFrame(() => {
+          if (!textarea) return;
+          textarea.scrollTop = scrollTop;
+          const position = Math.min(caret, content.length);
+          textarea.setSelectionRange(position, position);
+        });
+      } catch { /* the next tick tries again */ }
+    };
+
+    void check();
+    const interval = window.setInterval(check, 4000);
+    document.addEventListener('visibilitychange', check);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', check);
+    };
+  }, [active, caseName, currentFile, fetchStamp, setActiveFile]);
+
   // ── Lazy-load directory contents on demand ──
   const loadDirectory = useCallback(async (dirPath: string) => {
     if (!caseName) return;
@@ -280,22 +391,33 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       );
       if (!ok) return;
     }
-    // Check the cache first — if the file has already been read, show it instantly
+    setExternalChange(false);
+    // Ask the file what it looks like now before trusting anything remembered
+    // about it. A stat is far cheaper than a read, so the cache still earns its
+    // keep — it just can no longer serve a version something else replaced.
+    const current = await fetchStamp(filePath);
     const cached = fileCacheRef.current.get(filePath);
-    if (cached !== undefined) {
-      setFileContent(cached);
-      setOriginalContent(cached);
+    if (cached && current && cached.stamp === current) {
+      openStampRef.current = current;
+      setFileContent(cached.content);
+      setOriginalContent(cached.content);
       setCurrentFile(filePath);
-      setActiveFile({ path: filePath, content: cached });
-      return; // cache hit — no loading spinner, no WSL call
+      setActiveFile({ path: filePath, content: cached.content });
+      return; // still current — no read, no spinner
     }
     setLoading(true);
     try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent(filePath)}`);
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent(filePath)}`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
       const content = data.content || '';
-      // Save in cache for future openings
-      fileCacheRef.current.set(filePath, content);
+      // The fingerprint is taken AFTER the read, not before: a write landing
+      // between the two would otherwise be remembered as already seen and the
+      // editor would sit on stale text believing it was current.
+      const stamp = await fetchStamp(filePath);
+      fileCacheRef.current.set(filePath, { content, stamp });
+      openStampRef.current = stamp;
       setFileContent(content);
       setOriginalContent(content);
       setCurrentFile(filePath);
@@ -317,8 +439,12 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       if (res.ok) {
         setOriginalContent(fileContent);
         setActiveFile({ path: currentFile, content: fileContent });
-        // Update the cache with the new content (invalidates the old version)
-        fileCacheRef.current.set(currentFile, fileContent);
+        // Re-fingerprint after our own write, so the watcher does not report the
+        // save it just made as somebody else's change.
+        const stamp = await fetchStamp(currentFile);
+        fileCacheRef.current.set(currentFile, { content: fileContent, stamp });
+        openStampRef.current = stamp;
+        setExternalChange(false);
         toast.success(`Saved: ${currentFile}`);
         fetchCaseInfo();
       } else {
@@ -433,11 +559,13 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { toast.error(data.error || 'Rename failed'); return; }
 
-      // The content did not change, so carry the cached text over to the new
-      // path instead of making the next open go back to WSL for it.
+      // The content did not change, but the fingerprint belongs to a path that
+      // no longer exists, so the entry moves WITHOUT it: the next open re-stats
+      // and re-reads once, rather than trusting a stamp taken from another file.
       const cached = fileCacheRef.current.get(from);
       fileCacheRef.current.delete(from);
-      if (cached !== undefined) fileCacheRef.current.set(to, cached);
+      if (cached !== undefined) fileCacheRef.current.set(to, { content: cached.content, stamp: '' });
+      if (currentFile === from) openStampRef.current = '';
 
       if (currentFile === from) {
         setCurrentFile(to);
@@ -523,6 +651,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   };
 
   const isModified = fileContent !== originalContent;
+  useEffect(() => { isModifiedRef.current = isModified; }, [isModified]);
 
   // Build top-level dir list
   const allDirNames = Object.keys(directories).filter(k => k !== '_root' && !k.includes('/'));
@@ -945,6 +1074,35 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 <span className="font-mono text-sm font-medium">{caseName}/{currentFile}</span>
                 {isModified && <Badge variant="secondary" className="text-[10px] text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30">modified</Badge>}
               </div>
+              {/* Only ever shown for a DIRTY buffer: a clean one is reloaded
+                  silently, so there is nothing to ask about. */}
+              {externalChange && (
+                <div className="flex items-center gap-2 rounded border border-info/40 bg-info-soft/60 px-2 py-1 text-[11px]">
+                  <AlertTriangle className="h-3.5 w-3.5 text-info" />
+                  <span>Changed on disk while you were editing</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={async () => {
+                      const ok = await confirmDialog(
+                        `"${currentFile}" was rewritten outside the editor. Reloading discards your unsaved changes.`,
+                        { title: 'Reload from disk', confirmLabel: 'Discard mine and reload', destructive: true },
+                      );
+                      if (!ok || !currentFile) return;
+                      fileCacheRef.current.delete(currentFile);
+                      openStampRef.current = '';
+                      setOriginalContent(fileContent); // let loadFile skip its own unsaved-changes prompt
+                      await loadFile(currentFile);
+                    }}
+                  >
+                    Reload
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => setExternalChange(false)}>
+                    Keep mine
+                  </Button>
+                </div>
+              )}
               <div className="flex gap-1">
                 <Button size="sm" variant="ghost" onClick={() => currentFile && startRename(currentFile, false)} title="Rename or move this file">
                   <Pencil className="w-3 h-3 mr-1" /> Rename
@@ -1001,6 +1159,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   ))}
                 </div>
                 <textarea
+                  ref={textareaRef}
                   value={fileContent} onChange={(e) => setFileContent(e.target.value)}
                   onScroll={(e) => {
                     if (lineNumbersRef.current) {

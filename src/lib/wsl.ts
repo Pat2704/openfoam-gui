@@ -1617,6 +1617,58 @@ export function readFile(caseName: string, filePath: string): string {
   }
 }
 
+/**
+ * A cheap fingerprint of one file, for noticing that something else changed it.
+ *
+ * The editor cannot tell from its own state whether a file it is showing is
+ * still what is on disk: an agent, FOAMy, an Allrun script or the user's own
+ * terminal can all rewrite it. Asking the file itself is the only answer that
+ * covers every writer, so this is deliberately source-agnostic.
+ *
+ * mtime and size alone are not quite enough. WSL reports whole-second mtimes
+ * here (`stat -c '%.9Y'` returns `.000000000`), so two writes in the same second
+ * that happen to produce the same length would look identical and the editor
+ * would stay stale until the next change. A checksum closes that, and is only
+ * taken for files small enough for it to be free — the case dictionaries people
+ * actually edit. Above the threshold the fingerprint degrades to mtime+size,
+ * which is the right trade for a 200 MB log nobody is hand-editing.
+ */
+export function statFile(caseName: string, filePath: string): {
+  exists: boolean;
+  mtime: number;
+  size: number;
+  stamp: string;
+} {
+  const casePath = getCasePath(caseName);
+  const safePath = validateRelativePath(filePath, 'File path');
+  const fullPath = `${casePath}/${safePath}`;
+  const HASH_LIMIT = 2 * 1024 * 1024;
+  const script = `
+f=${shellQuote(fullPath)}
+if [ ! -f "$f" ]; then echo "missing"; exit 0; fi
+meta=$(stat -c '%Y %s' "$f" 2>/dev/null) || { echo "missing"; exit 0; }
+size=\${meta##* }
+sum=""
+if [ "$size" -le ${HASH_LIMIT} ]; then sum=$(cksum < "$f" 2>/dev/null | tr -d ' '); fi
+echo "ok $meta $sum"
+`;
+  try {
+    const output = runInWslScript(Buffer.from(script).toString('base64'), 20000).trim();
+    if (!output.startsWith('ok ')) return { exists: false, mtime: 0, size: 0, stamp: '' };
+    const [, mtime, size, sum = ''] = output.split(/\s+/);
+    return {
+      exists: true,
+      mtime: Number(mtime) || 0,
+      size: Number(size) || 0,
+      stamp: `${mtime}:${size}:${sum}`,
+    };
+  } catch {
+    // Unreachable WSL must not read as "the file changed": an empty stamp is
+    // ignored by the caller rather than triggering a reload of nothing.
+    return { exists: false, mtime: 0, size: 0, stamp: '' };
+  }
+}
+
 export function writeFile(caseName: string, filePath: string, content: string): void {
   const safePath = validateRelativePath(filePath, 'File path');
   const casePath = getCasePath(caseName);
