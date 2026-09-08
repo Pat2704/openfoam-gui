@@ -26,7 +26,7 @@ import {
 } from 'recharts';
 import {
   BarChart3, RefreshCw, Loader2, Play, Search, Table2, LineChart as LineChartIcon,
-  Copy, AlertTriangle, Sigma, FolderOpen, X, Info, Radio,
+  Copy, AlertTriangle, Sigma, FolderOpen, X, Info, Radio, ScrollText, Activity, Download,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -39,10 +39,24 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { describeDatasetName, wrapFoamValue } from '@/lib/postprocess';
+import { describeDatasetName, wrapFoamValue, summarizeColumn, downsampleRows } from '@/lib/postprocess';
+import { residualsToTable } from '@/lib/residuals';
+import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
 
 interface FileRef { name: string; times: string[]; bytes: number }
 interface Dataset { name: string; files: FileRef[] }
+
+/**
+ * What is currently on the chart.
+ *
+ * A function-object file and a solver log are different things on disk and the
+ * same thing on screen, so they are named by kind and then handled identically:
+ * one chart, one table, one CSV, one export. Adding residuals as a second
+ * rendering path would have meant maintaining two of each.
+ */
+type Selection =
+  | { kind: 'dataset'; dataset: string; file: string }
+  | { kind: 'log'; log: string };
 
 interface ColumnStats {
   name: string;
@@ -143,10 +157,64 @@ function driftBadge(drift: number | null): { label: string; className: string; t
   return { label: 'drifting', className: 'text-danger', title: `Last two fifths differ by ${percent}` };
 }
 
+/**
+ * Read a solver log and present its residuals in the dataset shape.
+ *
+ * The log endpoint and the residual parser both already exist — the Monitor
+ * uses them to watch a run — so this only reshapes, and the chart, the table,
+ * the CSV and the image export then treat a log like any other dataset.
+ */
+async function readResiduals(caseName: string, log: string): Promise<TableData> {
+  const response = await fetch(
+    `/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(log)}&maxLines=50000`,
+  );
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Could not read the log');
+
+  const { columns, rows } = residualsToTable(payload.content || '');
+  // JSON has no NaN, so the API's statistics arrive with nulls where a value
+  // could not be computed. Matching that here keeps ONE shape on the client
+  // instead of two that differ only in how "no value" is spelled.
+  const nullable = (value: number) => (Number.isFinite(value) ? value : null);
+  const stats: ColumnStats[] = columns.slice(1).map((name, offset) => {
+    const summary = summarizeColumn(rows, offset + 1);
+    return {
+      name,
+      last: nullable(summary.last),
+      min: nullable(summary.min),
+      max: nullable(summary.max),
+      mean: nullable(summary.mean),
+      tailMean: nullable(summary.tailMean),
+      drift: nullable(summary.drift),
+      samples: summary.samples,
+    };
+  });
+
+  return {
+    mode: 'series',
+    columns,
+    rows: downsampleRows(rows, 4000),
+    totalRows: rows.length,
+    stats,
+    notes: columns.length
+      ? [`Initial residuals parsed from log.${log === 'log' ? '' : log}`]
+      : ['No residuals found in this log'],
+    times: [],
+    shownTime: null,
+    startTimes: [],
+    incompatible: [],
+    overwritten: 0,
+    synthesizedColumns: false,
+    truncated: false,
+  };
+}
+
 export default function PostProcess({ caseName, active = true }: { caseName: string; active?: boolean }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [selected, setSelected] = useState<{ dataset: string; file: string } | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Selection | null>(null);
   const [data, setData] = useState<TableData | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,10 +246,19 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     const request = (async () => {
       setLoadingList(true);
       try {
-        const response = await fetch(`/api/postprocess?action=list&case=${encodeURIComponent(caseName)}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Could not list postProcessing');
+        // Both lists in one pass: the function-object output and the solver
+        // logs, which are the other place a case keeps a plottable history.
+        const [datasetsResponse, logsResponse] = await Promise.all([
+          fetch(`/api/postprocess?action=list&case=${encodeURIComponent(caseName)}`),
+          fetch(`/api/cases/${encodeURIComponent(caseName)}?action=listLogs`),
+        ]);
+        const payload = await datasetsResponse.json();
+        if (!datasetsResponse.ok) throw new Error(payload.error || 'Could not list postProcessing');
         setDatasets(payload.datasets ?? []);
+        if (logsResponse.ok) {
+          const logPayload = await logsResponse.json();
+          setLogs(Array.isArray(logPayload.availableLogs) ? logPayload.availableLogs : []);
+        }
         setError(null);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : 'Could not list postProcessing');
@@ -194,22 +271,28 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     return request;
   }, [caseName]);
 
-  const loadData = useCallback(async (dataset: string, file: string, time?: string): Promise<void> => {
+  const loadData = useCallback(async (target: Selection, time?: string): Promise<void> => {
     if (!caseName) return;
     if (dataInFlight.current) await dataInFlight.current;
     const request = (async () => {
       setLoadingData(true);
       try {
-        const query = new URLSearchParams({ action: 'data', case: caseName, dataset, file });
-        if (time) query.set('time', time);
-        const response = await fetch(`/api/postprocess?${query}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Could not read the dataset');
-        setData(payload);
+        if (target.kind === 'log') {
+          setData(await readResiduals(caseName, target.log));
+        } else {
+          const query = new URLSearchParams({
+            action: 'data', case: caseName, dataset: target.dataset, file: target.file,
+          });
+          if (time) query.set('time', time);
+          const response = await fetch(`/api/postprocess?${query}`);
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || 'Could not read the dataset');
+          setData(payload);
+        }
         setError(null);
       } catch (e: unknown) {
         setData(null);
-        setError(e instanceof Error ? e.message : 'Could not read the dataset');
+        setError(e instanceof Error ? e.message : 'Could not read the data');
       } finally {
         setLoadingData(false);
         dataInFlight.current = null;
@@ -230,7 +313,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     if (!selected) return;
     setData(null);
     setHidden(new Set());
-    void loadData(selected.dataset, selected.file);
+    void loadData(selected);
   }, [selected, loadData]);
 
   useEffect(() => {
@@ -247,7 +330,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     if (!follow || !active) return;
     const timer = setInterval(() => {
       void loadDatasets();
-      if (selected) void loadData(selected.dataset, selected.file);
+      if (selected) void loadData(selected);
     }, 5000);
     return () => clearInterval(timer);
   }, [follow, active, selected, loadDatasets, loadData]);
@@ -394,7 +477,42 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   };
 
   const independent = data?.columns[0] ?? 'Time';
-  const describedSelection = selected ? describeDatasetName(selected.dataset) : null;
+
+  /**
+   * What the export dialog draws — the series that are actually on screen, in
+   * their on-screen colours. Exporting the hidden ones too would produce a
+   * picture the user never chose to look at.
+   */
+  const exportSource: ChartExportSource | null = useMemo(() => {
+    if (!data || !visibleSeries.length || !selected) return null;
+    const label = selected.kind === 'log'
+      ? `${caseName}-residuals-${selected.log}`
+      : `${caseName}-${describeDatasetName(selected.dataset).base}`;
+    return {
+      columns: data.columns,
+      rows: data.rows,
+      series: visibleSeries.map(series => ({
+        index: series.index,
+        name: series.name,
+        color: SERIES_COLORS[(series.index - 1) % SERIES_COLORS.length],
+      })),
+      xLabel: independent,
+      yLabel: visibleSeries.length === 1 ? visibleSeries[0].name : '',
+      // Residuals are the case where a log axis is almost always wanted, so it
+      // starts on for them and otherwise follows the chart on screen.
+      logScale: selected.kind === 'log' ? true : logScale,
+      fileName: label.replace(/[^A-Za-z0-9._-]+/g, '-'),
+      title: selected.kind === 'log'
+        ? `${caseName} — initial residuals`
+        : `${caseName} — ${describeDatasetName(selected.dataset).base}`,
+    };
+  }, [data, visibleSeries, selected, caseName, independent, logScale]);
+  // What the chart header calls the thing on screen.
+  const heading = !selected
+    ? null
+    : selected.kind === 'log'
+      ? { base: `log.${selected.log === 'log' ? '' : selected.log}`.replace(/\.$/, ''), detail: 'initial residuals' }
+      : { ...describeDatasetName(selected.dataset), detail: selected.file };
 
   const filteredCatalog = useMemo(() => {
     const query = catalogQuery.trim().toLowerCase();
@@ -489,12 +607,13 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       )}
                     </div>
                     {dataset.files.map(file => {
-                      const isSelected = selected?.dataset === dataset.name && selected.file === file.name;
+                      const isSelected = selected?.kind === 'dataset'
+                        && selected.dataset === dataset.name && selected.file === file.name;
                       return (
                         <button
                           key={file.name}
                           className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] ${isSelected ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-                          onClick={() => setSelected({ dataset: dataset.name, file: file.name })}
+                          onClick={() => setSelected({ kind: 'dataset', dataset: dataset.name, file: file.name })}
                         >
                           <LineChartIcon className="h-3 w-3 flex-shrink-0 opacity-70" />
                           <span className="min-w-0 flex-1 truncate" title={file.name}>{file.name}</span>
@@ -507,6 +626,38 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   </div>
                 );
               })}
+
+              {/* ── Solver logs ──
+                  The other place a case keeps a plottable history. Kept in the
+                  same tree rather than in a tab of its own, because from here a
+                  residual history is just another curve to read, compare and
+                  export — the live view of the same numbers is the Monitor's. */}
+              {logs.length > 0 && (
+                <div className="mt-3 border-t pt-2">
+                  <div className="flex items-center gap-1.5 px-1 pb-1">
+                    <ScrollText className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Residuals from logs
+                    </span>
+                    <Badge variant="outline" className="ml-auto text-[9px]">{logs.length}</Badge>
+                  </div>
+                  {logs.map(log => {
+                    const isSelected = selected?.kind === 'log' && selected.log === log;
+                    return (
+                      <button
+                        key={log}
+                        className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] ${isSelected ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+                        onClick={() => setSelected({ kind: 'log', log })}
+                      >
+                        <Activity className="h-3 w-3 flex-shrink-0 opacity-70" />
+                        <span className="min-w-0 flex-1 truncate" title={`log.${log}`}>
+                          {log === 'log' ? 'log' : `log.${log}`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </ScrollArea>
         </aside>
@@ -514,10 +665,10 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         {/* ── Chart ── */}
         <main className="flex min-h-0 flex-col">
           <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-2">
-            {describedSelection ? (
+            {heading ? (
               <>
-                <span className="truncate text-xs font-semibold" title={selected?.dataset}>{describedSelection.base}</span>
-                <span className="truncate font-mono text-[10px] text-muted-foreground">{selected?.file}</span>
+                <span className="truncate text-xs font-semibold" title={heading.base}>{heading.base}</span>
+                <span className="truncate font-mono text-[10px] text-muted-foreground">{heading.detail}</span>
               </>
             ) : (
               <span className="text-xs text-muted-foreground">No dataset selected</span>
@@ -530,7 +681,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                 <span className="text-[10px] text-muted-foreground">at</span>
                 <Select
                   value={data.shownTime ?? undefined}
-                  onValueChange={time => selected && void loadData(selected.dataset, selected.file, time)}
+                  onValueChange={time => selected && void loadData(selected, time)}
                 >
                   <SelectTrigger size="sm" className="h-7 w-28 font-mono text-[10px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -562,6 +713,16 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               </Button>
               <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data} onClick={() => void copyCsv()}>
                 <Copy className="mr-1 h-3 w-3" /> CSV
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[10px]"
+                disabled={!exportSource}
+                title="Save the chart as a picture, after adjusting how it should look"
+                onClick={() => setExportOpen(true)}
+              >
+                <Download className="mr-1 h-3 w-3" /> Save chart
               </Button>
             </div>
           </div>
@@ -609,6 +770,11 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                     domain={['dataMin', 'dataMax']}
                     tick={{ fontSize: 9 }}
                     tickCount={7}
+                    // tickCount alone is only a hint on a numeric axis: recharts
+                    // thins labels by minTickGap, whose default of 5px let a
+                    // 2000-sample residual log print forty overlapping times
+                    // along the bottom.
+                    minTickGap={45}
                     tickFormatter={formatTick}
                     label={{ value: independent, position: 'insideBottom', offset: -12, fontSize: 10 }}
                   />
@@ -909,6 +1075,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
           </div>
         </DialogContent>
       </Dialog>
+
+      <ChartExportDialog open={exportOpen} onOpenChange={setExportOpen} source={exportSource} />
     </div>
   );
 }

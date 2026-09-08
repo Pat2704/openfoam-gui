@@ -20,6 +20,7 @@ import {
   ResponsiveContainer, ReferenceLine
 } from 'recharts';
 import { confirmDialog } from '@/components/ui/confirm-host';
+import { parseAllResiduals, type ResidualPoint } from '@/lib/residuals';
 
 interface ProcessRow {
   pid: string; user: string; cpu: string; mem: string;
@@ -95,64 +96,13 @@ function parseResiduals(log: string): { time: string; values: { field: string; i
   return { time, values };
 }
 
-// ── Residual Chart: parse ALL timesteps from full log ──
-interface ResidualPoint {
-  time: number;
-  [field: string]: number | undefined;
-}
-
+// ── Residual chart colours ──
+// The parser itself now lives in src/lib/residuals.ts, shared with the
+// Post-Process tab, which charts and exports the same numbers.
 const RESIDUAL_COLORS = [
   '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6',
   '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#6366f1',
 ];
-
-function parseAllResiduals(log: string): { data: ResidualPoint[]; fields: string[] } {
-  const lines = log.split('\n');
-  const fieldSet = new Set<string>();
-  const dataMap = new Map<number, ResidualPoint>();
-
-  let currentTime = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const timeMatch = line.match(/^Time\s*=\s*([\d.eE+\-]+)/);
-    if (timeMatch) {
-      currentTime = parseFloat(timeMatch[1]);
-      if (!isNaN(currentTime) && !dataMap.has(currentTime)) {
-        dataMap.set(currentTime, { time: currentTime });
-      }
-      continue;
-    }
-    if (currentTime < 0) continue;
-
-    // ── Format 1 (MOST COMMON): "solverName:  Solving for FIELD, Initial residual = X, ..." ──
-    // e.g. "smoothSolver:  Solving for Ux, Initial residual = 0.01, Final residual = 1e-05, No Iterations 3"
-    // e.g. "GAMG:  Solving for p, Initial residual = 1, Final residual = 0.001, No Iterations 5"
-    const m0 = line.match(/\bSolving\s+for\s+(\S+),\s+Initial\s+residual\s*=\s*([\d.eE+\-]+)/i);
-    if (m0) {
-      const pt = dataMap.get(currentTime);
-      if (pt) { pt[m0[1]] = parseFloat(m0[2]); fieldSet.add(m0[1]); }
-      continue;
-    }
-
-    // ── Format 2: "field: iter = N residual = VALUE" (some foamRun output) ──
-    const m1 = line.match(/^(\S+)\s*:\s*iter\s*=\s*\d+\s*residual\s*=\s*([\d.eE+\-]+)/);
-    if (m1) {
-      const pt = dataMap.get(currentTime);
-      if (pt) { pt[m1[1]] = parseFloat(m1[2]); fieldSet.add(m1[1]); }
-      continue;
-    }
-
-    // ── Format 3: "field  iters  residual" (legacy tabular solver output) ──
-    const m2 = line.match(/^([A-Za-z_][\w.]*)\s+\d+\s+([\d.eE+\-]+)/);
-    if (m2 && !line.includes('Time') && !line.includes('PIMPLE') && !line.includes('SIMPLE')) {
-      const pt = dataMap.get(currentTime);
-      if (pt) { pt[m2[1]] = parseFloat(m2[2]); fieldSet.add(m2[1]); }
-    }
-  }
-
-  const data = Array.from(dataMap.values()).sort((a, b) => a.time - b.time);
-  return { data, fields: Array.from(fieldSet) };
-}
 
 function getLastSimTime(log: string): string {
   const matches = log.match(/Time\s*=\s*([^\s\n]+)/g);

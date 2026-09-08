@@ -815,6 +815,20 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // Saving a chart from the Post-Process tab is the app's only download, and it
+  // arrives as a blob: URL with a `download` attribute. Electron's default —
+  // ask the user where to put it — is exactly right, so nothing is overridden
+  // here; the outcome is recorded because a download that fails silently in the
+  // packaged app is precisely the class of bug this file's banner is about, and
+  // startup.log is where that gets looked for.
+  mainWindow.webContents.session.on('will-download', (_event, item) => {
+    const name = item.getFilename();
+    appendToLogFile('[main] download started: ' + name);
+    item.once('done', (_doneEvent, state) => {
+      appendToLogFile('[main] download ' + state + ': ' + name);
+    });
+  });
+
   // Block new-window navigation to anything that isn't our app origin.
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!isAppUrl(url)) {

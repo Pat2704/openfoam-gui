@@ -22,18 +22,15 @@ second file.
 - **v4.0.0 is released.** Tag `v4.0.0` and `origin/main` identify its release
   commit; local `main` may contain later committed work waiting for an
   explicitly requested push.
-- The release adds the integrated ParaView workbench, reconstructed/decomposed
-  cases, 23 filters and interactive 3D guides, plus the shared assistant
-  launcher, HiDPI-safe Mesh viewer and independent runtime settings.
-- Both release artifacts are attached on GitHub and copied to `Working/`:
-  `OpenFOAMStudio-v4.0.0-portable.exe` and
-  `OpenFOAMStudio-v4.0.0-folder.zip`.
+  What it contained is in `docs/releases/v4.0.0.md`; both artifacts are attached
+  on GitHub and copied to `Working/`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.
-- A **Post-Process** tab has been added after Mesh and is committed locally,
-  waiting for an explicitly requested push. It reads `postProcessing/` and runs
-  function objects over times already written; it does not write them into
-  `controlDict`.
+- Committed locally and waiting for an explicitly requested push: the
+  **Post-Process** tab after Mesh, and the File Editor watcher that makes an
+  agent's writes visible without reopening the case. Because the version has not
+  been bumped, the artifacts in `Working/` now carry the v4.0.0 NAME without
+  being the released v4.0.0.
 
 Open items:
 
@@ -151,10 +148,7 @@ Important modules:
   on the workbench itself.
 - The ParaView worker supports pipeline selection/visibility, mesh-region and
   patch selection, reconstructed/decomposed readers and a capability-detected
-  catalogue of 23 filters: Slice, Clip, Contour, Threshold, Stream Tracer,
-  Glyph, Transform, Reflect, both Warp variants, Shrink, Plot Over Line, Cell
-  Centers, Tube, Calculator, Gradient, Temporal Statistics, Integrate Variables,
-  both cell/point conversions, Extract Surface, Extract Edges and Connectivity.
+  catalogue of 23 filters, enumerated in the worker's own allowlist.
   Keep API/worker allowlists explicit. Insert Cell Data to Point Data when a
   point-field filter needs it, and only offer Tube for line-producing inputs to
   avoid native ParaView crashes.
@@ -205,6 +199,16 @@ Commands owns running arbitrary binaries.
   catalogue, restricted to an allowlisted character set, and shell-quoted.
   Values are wrapped in parentheses by shape, not by the template's spelling:
   `start <point>;` shows none and still needs `(0.01 0.05 0.005)`.
+- The tab also lists the case's solver logs and plots their initial residuals.
+  The parser lives in `src/lib/residuals.ts` and is shared with the Monitor;
+  keep it there. Residuals are reshaped into the same columns-and-rows table the
+  function-object datasets use, so chart, table, CSV and image export stay a
+  single path — do not add a second rendering route for them.
+- Chart export renders a SEPARATE chart at the requested output size and shows
+  it before writing: the preview must remain the file. SVG is serialized from
+  that node with the font stack inlined and the background as a real `rect`, and
+  PNG is rasterised from the same SVG through a `data:` URL — a `blob:` URL
+  taints the canvas and `toBlob` then throws.
 - Out of scope for now, deliberately: writing into `controlDict`, decomposed or
   parallel runs, and multi-region cases. Surface and VTK writers are not
   charted here — they belong to the ParaView tab.
@@ -294,6 +298,13 @@ schemas, prompt, policy, case confinement, and activity model.
 - File Editor refreshes visible and expanded directories without replacing the
   open buffer, dirty state, selection, or expansion state. Navigation away from
   unsaved text requires confirmation.
+- The editor also watches the OPEN file for writes it did not make — an agent,
+  FOAMy, a script, the user's terminal — by polling a `stat` fingerprint. A
+  clean buffer is replaced silently, keeping caret and scroll; a dirty one is
+  never touched and is offered a reload instead. Its content cache is validated
+  against that fingerprint: an unvalidated cache is what made an agent's edits
+  invisible until the case was closed and reopened, because reopening the file
+  never reached WSL at all.
 - The word-wrap control is visual only and exposes `Wrap On` / `Wrap Off` plus
   `aria-pressed`.
 

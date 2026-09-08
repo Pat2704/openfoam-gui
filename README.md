@@ -115,6 +115,16 @@ the **OpenFOAM card in the Dashboard**.
   replacing the older ones; sampled profiles keep one curve per written time and
   give you a time selector instead. **Follow** re-reads every few seconds, so a
   drag coefficient can be watched while the solver is still running.
+
+  The same panel also lists the case's **solver logs** and plots their initial
+  residuals, so a convergence history is read, compared and exported the same
+  way as everything else.
+
+  **Save chart** opens the picture before it is written: pick the output size,
+  the background (white, dark, transparent or your own two colours), the title,
+  the grid, the legend, the font size and the line weight, and watch the preview
+  become the file. SVG stays sharp at any size and keeps its text selectable;
+  PNG is rasterised from that same drawing at 1×, 2× or 3×.
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between
@@ -344,6 +354,8 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
 | `src/lib/postprocess.ts` | parses what the function objects wrote, and the templates that describe them |
+| `src/lib/residuals.ts` | reads solver residuals out of a log — shared by the Monitor and Post-Process |
+| `src/components/openfoam/chart-export.tsx` | the chart-to-picture dialog |
 | `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
 | `src/lib/paraview.ts` | version-independent discovery and persistent headless ParaView workbench |
 | `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |
