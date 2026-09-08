@@ -10,7 +10,7 @@ import {
   mergeRestarts,
   downsampleRows,
   summarizeColumn,
-  buildFunctionSpec,
+  validateTypedSpec,
   isTimeSeries,
 } from '@/lib/postprocess';
 import { apiError } from '@/lib/api-response';
@@ -22,7 +22,7 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 //   ?action=catalog&refresh=…                 → { entries }
 //
 // POST /api/postprocess
-//   { action: 'run', case, name, args, time, fields, region } → { exitCode, output, spec }
+//   { action: 'run', case, spec, time, fields, region } → { exitCode, output, spec }
 
 export async function GET(req: NextRequest) {
   try {
@@ -122,16 +122,14 @@ export async function POST(req: NextRequest) {
     }
 
     const caseName = validateCaseName(body.case || '');
-    const values: Record<string, string> = {};
-    for (const [key, value] of Object.entries(body.args ?? {})) {
-      if (typeof value === 'string') values[key] = value;
-    }
 
-    // The name is checked against the catalogue this installation reported, so
-    // a function object that was never offered cannot be requested — and a
-    // version that gained or lost one stays correct without a code change.
+    // The specification arrives as the text the user edited, so it is checked
+    // rather than composed: a leading name this installation actually offers,
+    // balanced brackets, and nothing outside the character set an OpenFOAM
+    // entry needs. A version that gained or lost a function object stays
+    // correct without a code change here.
     const known = listFunctionCatalog().map(entry => entry.name);
-    const spec = buildFunctionSpec(String(body.name ?? ''), values, known);
+    const spec = validateTypedSpec(String(body.spec ?? ''), known);
 
     const fields = Array.isArray(body.fields)
       ? body.fields.filter((field: unknown): field is string => typeof field === 'string')

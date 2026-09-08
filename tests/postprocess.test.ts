@@ -10,6 +10,10 @@ import {
   parseFunctionTemplate,
   buildFunctionSpec,
   wrapFoamValue,
+  exampleArgValue,
+  buildCallTemplate,
+  buildFunctionsEntry,
+  validateTypedSpec,
   FunctionSpecError,
   describeDatasetName,
   isTabularOutput,
@@ -328,6 +332,130 @@ test('shell syntax cannot reach the composed specification', () => {
       FunctionSpecError,
       `expected ${JSON.stringify(hostile)} to be refused`,
     );
+  }
+});
+
+test('the placeholders the installed templates actually use are classified by shape', () => {
+  // The vocabulary below was counted across all 127 OpenFOAM 14 templates, not
+  // invented: <fieldNames> 38, <fieldName> 22, <point> 11, <patchName> 6,
+  // <points> 5, <patchNames> 5, <nPoints> 5, and so on. The singular/plural
+  // split is the one that matters and the one the first version missed, which
+  // left `patch <patchName>;` showing a literal placeholder as its example.
+  const kindOf = (placeholder: string) =>
+    parseFunctionTemplate(`entry ${placeholder};\n`).args[0].kind;
+
+  assert.equal(kindOf('<fieldNames>'), 'fieldList');
+  assert.equal(kindOf('<fieldName>'), 'fieldName');
+  assert.equal(kindOf('<weightFieldNames>'), 'fieldList');
+  assert.equal(kindOf('<isoFieldName>'), 'fieldName');
+
+  assert.equal(kindOf('<patchNames>'), 'patchList');
+  assert.equal(kindOf('<patchName>'), 'patchName');
+  assert.equal(kindOf('<patchName1>'), 'patchName');
+
+  assert.equal(kindOf('<point>'), 'point');
+  assert.equal(kindOf('<points>'), 'pointList');
+  assert.equal(kindOf('<CofR>'), 'point');
+  assert.equal(kindOf('<liftDir>'), 'point');
+  assert.equal(kindOf('<normal>'), 'point');
+
+  assert.equal(kindOf('<nPoints>'), 'number');
+  assert.equal(kindOf('<isoValue>'), 'number');
+
+  // `axis` is NOT a direction here: in the graph templates it means "x", "y",
+  // "z" or "distance", so classifying it as a vector would offer `(0 0 0)`.
+  assert.equal(kindOf('<axis>'), 'text');
+  // Unrecognised placeholders stay text, so the example shows the hole.
+  assert.equal(kindOf('<phaseName>'), 'text');
+  assert.equal(kindOf('<triSurfaceFileName>'), 'text');
+});
+
+test('a singular patch argument names a patch of the case', () => {
+  const arg = {
+    name: 'patch', kind: 'patchName' as const, listWrapped: false,
+    placeholder: '<patchName>', help: '', required: true,
+  };
+  assert.equal(exampleArgValue(arg, ['movingWall', 'fixedWalls']), 'movingWall');
+  // With no case to ask, the hole stays visible rather than naming a patch that
+  // may not exist.
+  assert.equal(exampleArgValue(arg, []), '<patchName>');
+});
+
+test('an example value is taken from the template\'s own documentation', () => {
+  // `magUInf <magUInf>; // Far field velocity magnitude; e.g., 20 m/s`
+  const documented = {
+    name: 'magUInf', kind: 'text' as const, listWrapped: false,
+    placeholder: '<magUInf>', help: 'Far field velocity magnitude; e.g., 20 m/s', required: true,
+  };
+  // The value, not the prose: `20 m/s` is a sentence, `20` is what the
+  // dictionary accepts.
+  assert.equal(exampleArgValue(documented), '20');
+
+  const vector = { ...documented, name: 'CofR', help: 'Centre of rotation; e.g., (0 0 0)' };
+  assert.equal(exampleArgValue(vector), '(0 0 0)');
+});
+
+test('an undocumented placeholder stays visible instead of being guessed at', () => {
+  const opaque = {
+    name: 'whatever', kind: 'text' as const, listWrapped: false,
+    placeholder: '<whatever>', help: '', required: true,
+  };
+  assert.equal(exampleArgValue(opaque), '<whatever>');
+});
+
+test('a patch argument uses a patch the case actually has', () => {
+  const arg = {
+    name: 'patches', kind: 'patchList' as const, listWrapped: true,
+    placeholder: '<patchNames>', help: '', required: true,
+  };
+  assert.equal(exampleArgValue(arg, ['movingWall', 'fixedWalls']), '(movingWall)');
+  // With no case to ask, the placeholder stays visible rather than inventing a
+  // patch name that would fail at the first run.
+  assert.equal(exampleArgValue(arg, []), '<patchNames>');
+});
+
+test('the call template is runnable, and names its own output directory', () => {
+  const args = [
+    { name: 'start', kind: 'point' as const, listWrapped: false, placeholder: '<point>', help: '', required: true },
+    { name: 'nPoints', kind: 'number' as const, listWrapped: false, placeholder: '<number>', help: '', required: true },
+    { name: 'fields', kind: 'fieldList' as const, listWrapped: true, placeholder: '<fieldNames>', help: '', required: true },
+    { name: 'axis', kind: 'text' as const, listWrapped: false, placeholder: 'distance', help: '', required: false },
+  ];
+  // `name=` first, as every tutorial writes it: without it the output lands in
+  // a directory named after the whole call with its spaces stripped.
+  assert.equal(
+    buildCallTemplate('graphUniform', args),
+    'graphUniform(name=graphUniform, start=(0 0 0), nPoints=100, fields=(p U))',
+  );
+  // Optional entries are left out of the line; the panel documents them below.
+  assert.ok(!buildCallTemplate('graphUniform', args).includes('axis'));
+});
+
+test('the controlDict entry wraps the same call the panel would run', () => {
+  assert.equal(
+    buildFunctionsEntry('yPlus'),
+    'functions\n{\n    #includeFunc yPlus\n}',
+  );
+  // A trailing semicolon is how tutorials sometimes write it and is not part
+  // of the call.
+  assert.ok(buildFunctionsEntry('cellMin(name=pMin, p);').includes('#includeFunc cellMin(name=pMin, p)\n'));
+});
+
+test('a typed specification is checked against the installation and the syntax', () => {
+  const known = ['graphUniform', 'yPlus'];
+  assert.equal(validateTypedSpec('  yPlus ;  ', known), 'yPlus');
+  assert.equal(
+    validateTypedSpec('graphUniform(name=a, start=(0 0 0))', known),
+    'graphUniform(name=a, start=(0 0 0))',
+  );
+  // Positional fields, the form the tutorials use.
+  assert.equal(validateTypedSpec('yPlus(p, U)', known), 'yPlus(p, U)');
+});
+
+test('a typed specification that could not run is refused before OpenFOAM sees it', () => {
+  const known = ['yPlus'];
+  for (const bad of ['', '   ', 'notAFunction', 'yPlus(', 'yPlus(a))', '(yPlus)', 'yPlus; rm -rf /', 'yPlus($(id))']) {
+    assert.throws(() => validateTypedSpec(bad, known), FunctionSpecError, `expected ${JSON.stringify(bad)} to be refused`);
   }
 });
 

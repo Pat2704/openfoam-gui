@@ -431,7 +431,11 @@ export function summarizeColumn(rows: number[][], index: number): ColumnStats {
  * Derived from the placeholder OpenFOAM writes in its own template files, so
  * the form the UI builds cannot drift from the installed version.
  */
-export type FunctionArgKind = 'number' | 'point' | 'fieldList' | 'patchList' | 'pointList' | 'text';
+export type FunctionArgKind =
+  | 'number' | 'point' | 'pointList'
+  | 'fieldName' | 'fieldList'
+  | 'patchName' | 'patchList'
+  | 'text';
 
 export interface FunctionArg {
   name: string;
@@ -451,13 +455,40 @@ export interface FunctionTemplate {
   args: FunctionArg[];
 }
 
-const PLACEHOLDER_KINDS: Record<string, FunctionArgKind> = {
-  '<number>': 'number',
-  '<point>': 'point',
-  '<points>': 'pointList',
-  '<fieldNames>': 'fieldList',
-  '<patchNames>': 'patchList',
-};
+/**
+ * What kind of value a `<placeholder>` stands for.
+ *
+ * Classified by SHAPE rather than by a table of names, because the installed
+ * templates use 57 distinct placeholders and a table would be wrong on the
+ * first version that adds one. The shapes come from what OpenFOAM 14 actually
+ * writes, counted across all 127 templates:
+ *
+ *   <fieldNames> 38   <fieldName> 22   <point> 11   <phaseName> 7
+ *   <patchName> 6     <points> 5       <patchNames> 5   <nPoints> 5   …
+ *
+ * The singular/plural distinction is the one that matters most and the one the
+ * first version missed: `patch <patchName>;` was falling through to plain text,
+ * so the example kept the literal `<patchName>` instead of naming a patch of
+ * the case. Anything unrecognised still falls through on purpose — a visible
+ * `<placeholder>` reads as a hole to fill, which is better than a wrong guess.
+ */
+function placeholderKind(placeholder: string): FunctionArgKind {
+  const bare = placeholder.replace(/^<|>$/g, '');
+  const lower = bare.toLowerCase();
+  const plural = lower.endsWith('s');
+
+  if (lower === 'point') return 'point';
+  if (lower === 'points') return 'pointList';
+  // A vector written as one entry. `axis` is deliberately NOT here: in the
+  // graph templates it means "x", "y", "z" or "distance", not a direction.
+  if (['cofr', 'pitchaxis', 'liftdir', 'dragdir', 'normal', 'origin', 'centre', 'center', 'direction', 'coordinate'].includes(lower)) {
+    return 'point';
+  }
+  if (['number', 'npoints', 'scalar', 'value', 'radius', 'isovalue'].includes(lower)) return 'number';
+  if (lower.includes('field')) return plural ? 'fieldList' : 'fieldName';
+  if (lower.includes('patch')) return plural ? 'patchList' : 'patchName';
+  return 'text';
+}
 
 /** FoamFile header keywords, which describe the file rather than the function. */
 const BANNER_KEYWORDS = new Set(['FoamFile', 'version', 'format', 'class', 'object', 'location', 'note']);
@@ -552,7 +583,7 @@ export function parseFunctionTemplate(content: string): FunctionTemplate {
     const help = (comment ?? '').trim();
     args.push({
       name,
-      kind: isPlaceholder ? PLACEHOLDER_KINDS[inner] ?? 'text' : 'text',
+      kind: isPlaceholder ? placeholderKind(inner) : 'text',
       listWrapped,
       placeholder: inner,
       help: isBannerRule(help) ? '' : help,
@@ -611,6 +642,116 @@ export function wrapFoamValue(value: string, listWrapped: boolean): string {
   if (tokens.length === 1 && isTuple(tokens[0])) return trimmed;
   if (listWrapped || tokens.length > 1) return `(${trimmed})`;
   return trimmed;
+}
+
+/**
+ * A concrete example for one argument, preferring what the template documents.
+ *
+ * The installed templates carry their own examples in the comment beside each
+ * entry — `magUInf <magUInf>; // Far field velocity magnitude; e.g., 20 m/s` —
+ * so the value offered comes from the OpenFOAM in use rather than from a table
+ * written here. Only the value is taken, not the units: `20 m/s` is prose, `20`
+ * is what the dictionary accepts.
+ */
+export function exampleArgValue(arg: FunctionArg, patches: readonly string[] = []): string {
+  // An entry that already has a real value in the template is a default, and
+  // the default is the best example there is.
+  if (!arg.required && arg.placeholder && !/^<.*>$/.test(arg.placeholder)) {
+    return arg.listWrapped ? `(${arg.placeholder})` : arg.placeholder;
+  }
+
+  const documented = arg.help.match(/e\.g\.,?\s*(\([^)]*\)|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
+  if (documented) return documented[1];
+
+  switch (arg.kind) {
+    case 'point': return '(0 0 0)';
+    case 'pointList': return '((0 0 0))';
+    case 'number': return '100';
+    case 'fieldName': return 'p';
+    case 'fieldList': return '(p U)';
+    // A patch of THIS case, when the case could be asked. Naming a patch that
+    // does not exist is the kind of wrong example that wastes a run.
+    case 'patchName': return patches.length ? patches[0] : arg.placeholder;
+    case 'patchList': return patches.length ? `(${patches[0]})` : arg.placeholder;
+    default:
+      // An undocumented placeholder is left visible, so it reads as a hole to
+      // fill rather than as a value that was chosen for a reason.
+      return arg.placeholder || 'value';
+  }
+}
+
+/**
+ * The whole call, ready to run and ready to edit.
+ *
+ * This is what the Compute panel puts in front of the user instead of a
+ * generated form. A form has to invent one control per argument and gets some
+ * of them wrong; a line of text is exactly what OpenFOAM accepts, is what every
+ * tutorial writes, and can be corrected by anyone who knows the syntax.
+ *
+ * `name=` comes first because the tutorials use it and because without it the
+ * output lands in a directory named after the whole call with its spaces
+ * stripped — `graphUniform(start=(0.010.050.005),nPoints=20,...)` — which is
+ * unreadable and cannot be parsed back into its numbers.
+ */
+export function buildCallTemplate(
+  name: string,
+  args: readonly FunctionArg[],
+  patches: readonly string[] = [],
+): string {
+  const parts = [`name=${name}`];
+  for (const arg of args) {
+    if (!arg.required) continue;
+    parts.push(`${arg.name}=${exampleArgValue(arg, patches)}`);
+  }
+  return `${name}(${parts.join(', ')})`;
+}
+
+/**
+ * The `controlDict` entry that runs the same function during the solve.
+ *
+ * Offered as text to copy, never written: the app does not edit the user's
+ * `controlDict` for them. `#includeFunc` is the form every OpenFOAM 14 tutorial
+ * uses, and it takes the same call this panel already runs retroactively.
+ */
+export function buildFunctionsEntry(spec: string): string {
+  return `functions\n{\n    #includeFunc ${spec.trim().replace(/;$/, '')}\n}`;
+}
+
+/**
+ * Check a specification the user typed, and return it cleaned.
+ *
+ * Composing from form fields could guarantee the shape; free text cannot, so it
+ * is checked here instead: a leading function name that this installation
+ * actually offers, balanced parentheses, and nothing outside the character set
+ * an OpenFOAM entry needs. A trailing `;` is accepted because tutorials write
+ * one and it is not part of the call.
+ */
+export function validateTypedSpec(text: string, known: readonly string[]): string {
+  const spec = text.trim().replace(/;+$/, '').trim();
+  if (!spec) throw new FunctionSpecError('Type a function object to run');
+  if (spec.length > 1024) throw new FunctionSpecError('Function specification is too long');
+  if (!FUNCTION_SPEC_ALLOWED.test(spec)) {
+    throw new FunctionSpecError('The specification contains characters that are not allowed');
+  }
+
+  const leading = spec.match(/^([A-Za-z][A-Za-z0-9_.]{0,63})\s*(\(|$)/);
+  if (!leading) throw new FunctionSpecError('A specification starts with a function object name');
+  const name = leading[1];
+  if (known.length && !known.includes(name)) {
+    throw new FunctionSpecError(`${name} is not available in this OpenFOAM installation`);
+  }
+
+  if (leading[2] === '(') {
+    if (!spec.endsWith(')')) throw new FunctionSpecError('The arguments are missing their closing bracket');
+    let depth = 0;
+    for (const char of spec) {
+      if (char === '(') depth += 1;
+      else if (char === ')') depth -= 1;
+      if (depth < 0) throw new FunctionSpecError('The brackets are unbalanced');
+    }
+    if (depth !== 0) throw new FunctionSpecError('The brackets are unbalanced');
+  }
+  return spec;
 }
 
 /**

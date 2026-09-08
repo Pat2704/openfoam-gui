@@ -122,9 +122,17 @@ the **OpenFOAM card in the Dashboard**.
 
   **Save chart** opens the picture before it is written: pick the output size,
   the background (white, dark, transparent or your own two colours), the title,
-  the grid, the legend, the font size and the line weight, and watch the preview
-  become the file. SVG stays sharp at any size and keeps its text selectable;
-  PNG is rasterised from that same drawing at 1×, 2× or 3×.
+  the axis names, the grid, the legend, the font size and the line weight. The
+  preview is not a mock-up of the file — it is the file, scaled to fit the
+  dialog. SVG stays sharp at any size and keeps its text selectable; PNG is
+  rasterised from that same drawing at 1×, 2× or 3×.
+
+  **Compute…** gives you one editable line rather than a form: the call is
+  prefilled from the installation's own template, with its real argument names,
+  the examples the template documents, and a patch your case actually has. What
+  each argument means is listed underneath. A second box shows the
+  `functions { #includeFunc … }` entry that runs the same thing during the
+  solve — to copy into `controlDict` yourself; the app never edits it for you.
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between

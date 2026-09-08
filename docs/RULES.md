@@ -26,11 +26,9 @@ second file.
   on GitHub and copied to `Working/`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.
-- Committed locally and waiting for an explicitly requested push: the
-  **Post-Process** tab after Mesh, and the File Editor watcher that makes an
-  agent's writes visible without reopening the case. Because the version has not
-  been bumped, the artifacts in `Working/` now carry the v4.0.0 NAME without
-  being the released v4.0.0.
+- Committed locally, awaiting an explicitly requested push: the Post-Process
+  tab and the File Editor watcher. The version was not bumped, so the artifacts
+  in `Working/` carry the v4.0.0 NAME without being the released v4.0.0.
 
 Open items:
 
@@ -152,20 +150,16 @@ Important modules:
   Keep API/worker allowlists explicit. Insert Cell Data to Point Data when a
   point-field filter needs it, and only offer Tube for line-producing inputs to
   avoid native ParaView crashes.
-- Slice/Clip planes, Stream Tracer point-cloud spheres/lines and Plot Over Line
-  lines use real ParaView guide geometry. Browser drag actions are allowlisted,
-  converted through the camera basis and update both the active proxy and guide;
-  do not substitute a cosmetic 2D overlay. Preserve numeric property editing as
-  an exact alternative and hide inactive guides. Overlay controls must stop
-  pointer propagation before the viewport captures the pointer.
+- Manipulators use real ParaView guide geometry, never a cosmetic 2D overlay.
+  Drags are allowlisted and converted through the camera basis; keep numeric
+  property editing as an exact alternative, hide inactive guides, and let
+  overlay controls stop pointer propagation before the viewport captures it.
 - Additional ParaView sources may be opened only from files physically inside
-  the active case. List only allowlisted data extensions, validate the relative
-  path at the API, resolve it again in the worker, reject symlink/path escapes,
-  and use ParaView's own compatible reader. Never expose a general file picker.
-- Camera and timestep interaction render at full viewport resolution. Coalesce
-  pending motion/time requests and discard stale intermediate timesteps instead
-  of reducing image dimensions. The Information panel must report reader-level
-  bounds, centre and colour-coded X/Y/Z dimensions independently of filter output.
+  the active case: allowlisted extensions, validated at the API and resolved
+  again in the worker, symlink escapes rejected. Never a general file picker.
+- Camera and timestep interaction render at full viewport resolution: coalesce
+  pending requests and drop stale timesteps rather than shrinking the image. The
+  Information panel reports reader-level bounds independently of filter output.
 - Do not key ParaView compatibility to a version number. Inspect property
   domains/capabilities and keep aliases for renamed properties or proxy values
   (for example Point Cloud/Point Source and old/new Threshold ranges). An
@@ -195,20 +189,35 @@ Commands owns running arbitrary binaries.
   stitched and a later run's rows replace recomputed ones. Anything else
   (`distance`, `x`) means a complete profile sampled at that instant, so slices
   must NOT be merged and the user picks a time.
-- Composed `-func` specifications are validated against the installation's own
-  catalogue, restricted to an allowlisted character set, and shell-quoted.
-  Values are wrapped in parentheses by shape, not by the template's spelling:
-  `start <point>;` shows none and still needs `(0.01 0.05 0.005)`.
+- The Compute panel offers ONE editable line, not a generated form. A form has
+  to invent a control per argument and gets some of them wrong; the line is what
+  OpenFOAM accepts and what the tutorials write. It is prefilled from the
+  installation: real argument names, examples taken from each template's own
+  `e.g.` note, a patch the case actually has, and a leading `name=` so results
+  land in a readable directory instead of one named after the whole call with
+  its spaces stripped. Placeholders are classified by SHAPE — singular versus
+  plural, field versus patch — because the templates use 57 distinct ones and a
+  table of names would be wrong on the next version.
+- Typed specifications are validated, never composed: a leading name this
+  installation offers, balanced brackets, an allowlisted character set, then
+  shell-quoted.
+- The panel also shows the `functions { #includeFunc … }` entry for running the
+  same thing during the solve. It is text to copy. Do NOT write it into the
+  user's `controlDict`.
 - The tab also lists the case's solver logs and plots their initial residuals.
   The parser lives in `src/lib/residuals.ts` and is shared with the Monitor;
   keep it there. Residuals are reshaped into the same columns-and-rows table the
   function-object datasets use, so chart, table, CSV and image export stay a
   single path — do not add a second rendering route for them.
-- Chart export renders a SEPARATE chart at the requested output size and shows
-  it before writing: the preview must remain the file. SVG is serialized from
-  that node with the font stack inlined and the background as a real `rect`, and
-  PNG is rasterised from the same SVG through a `data:` URL — a `blob:` URL
-  taints the canvas and `toBlob` then throws.
+- Chart export builds the SVG document ONCE and shows that document as the
+  preview, so the preview cannot drift from the file. It has to: recharts draws
+  `<Legend>` as an HTML `<div>` over the svg, so serializing the svg node lost
+  the legend entirely and the exported figure came out unlabelled. Title, axis
+  titles and legend are therefore drawn as real SVG, the font stack is inlined,
+  and the background is a `rect` rather than a CSS property. PNG is rasterised
+  from the same document through a `data:` URL — a `blob:` URL taints the canvas
+  and `toBlob` then throws. Every axis gets a name by default; leaving one blank
+  because several series are plotted is what made a figure look unlabelled.
 - Out of scope for now, deliberately: writing into `controlDict`, decomposed or
   parallel runs, and multi-region cases. Surface and VTK writers are not
   charted here — they belong to the ParaView tab.
@@ -328,18 +337,8 @@ full check; documentation-only changes need spelling/reference/diff checks but
 do not require the application test suite or Electron build unless they alter a
 generated or packaged input.
 
-Full application validation:
-
-```powershell
-npm run check
-```
-
-Build commands:
-
-```powershell
-npm run electron:build
-node scripts/build-electron.js --skip-build  # packaging only
-```
+Full validation is `npm run check`. The build is `npm run electron:build`, or
+`node scripts/build-electron.js --skip-build` to package without rebuilding.
 
 Run the build only under the effective-application-change rule in section 2.
 The full build is incremental and normally takes a few minutes. Never delete:
@@ -441,7 +440,10 @@ source-to-artifact verification.
    the deprecated middleware convention.
 3. **Shell variables through `wsl.exe`:** inline `$NAME` expansion is unreliable
    in this path. Multi-line scripts and scripts using variables must use the
-   existing base64 script runner.
+   existing base64 script runner. `getCaseSummary` was passing its whole script
+   to `runInWsl` instead, and an added `awk` program arrived mangled and
+   silently produced nothing — the symptom was an empty patch list, not an
+   error.
 4. **JavaScript replacement strings:** `$&`, backticks, apostrophes, and doubled
    dollar signs have special meaning in `String.replace` replacement text. Use
    an edit or `.split(old).join(new)` for literal shell/document content.

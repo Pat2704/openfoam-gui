@@ -2858,9 +2858,25 @@ if [ -z "$CELLS" ]; then
   CELLS=$(grep -c '^(' "$CASE/constant/polyMesh/faces" 2>/dev/null || echo "")
 fi
 echo "CELLS:$CELLS"
-# Patch count
-PATCHES=$(grep -cE '^\\s*[a-zA-Z][a-zA-Z0-9_]*\\s*\\{' "$CASE/constant/polyMesh/boundary" 2>/dev/null || echo "0")
-echo "PATCHES:$PATCHES"
+# Patch names.
+#
+# The name and its opening brace are on SEPARATE lines in a boundary file:
+#
+#     movingWall
+#     {
+#         type  wall;
+#
+# The old pattern required both on one line, so it matched nothing: the count
+# was always 0 and the name list beside it always empty. Remember the previous
+# non-blank line and emit it when a lone brace follows, skipping the FoamFile
+# header, which opens the same way. The count is then just how many came back.
+PATCHNAMES=$(awk '{
+  line = $0
+  gsub(/^[ \\t]+|[ \\t]+$/, "", line)
+  if (line == "{" && prev ~ /^[A-Za-z][A-Za-z0-9_.:-]*$/ && prev != "FoamFile") print prev
+  if (line != "") prev = line
+}' "$CASE/constant/polyMesh/boundary" 2>/dev/null | head -50 | paste -sd, -)
+echo "PATCHNAMES:$PATCHNAMES"
 # Field count in 0/
 FIELDS=$(ls -1 "$CASE/0/" 2>/dev/null | wc -l)
 echo "FIELDS:$FIELDS"
@@ -2885,7 +2901,11 @@ fi
 echo "LOGSIZE:$LOGSIZE"
 `;
 
-    const output = runInWsl(script, 30000).trim();
+    // Through the base64 runner, not `runInWsl`. This script is multi-line and
+    // full of shell variables, which is exactly the case the banner on
+    // runInWslScript exists for: passed as a `bash -c` argument, the awk
+    // program below arrived mangled and quietly produced nothing.
+    const output = runInWslScript(Buffer.from(script).toString('base64'), 30000).trim();
     const lines = output.split('\n');
 
     const get = (prefix: string) => {
@@ -2903,14 +2923,8 @@ echo "LOGSIZE:$LOGSIZE"
       return (b / 1048576).toFixed(1) + ' MB';
     };
 
-    const patchCount = parseInt(get('PATCHES')) || 0;
-    const patchList: string[] = [];
-    if (patchCount > 0) {
-      try {
-        const patchOutput = runInWsl(`grep -E '^\\s*[a-zA-Z][a-zA-Z0-9_]*\\s*\\{' ${shellQuote(`${casePath}/constant/polyMesh/boundary`)} 2>/dev/null | awk '{print $1}' | head -20`).trim();
-        patchList.push(...patchOutput.split('\n').filter(Boolean));
-      } catch { /* */ }
-    }
+    // Names and count come from the one call above, so they cannot disagree.
+    const patchList = get('PATCHNAMES').split(',').map(name => name.trim()).filter(Boolean);
 
     return {
       success: true,

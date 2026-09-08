@@ -39,7 +39,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { describeDatasetName, wrapFoamValue, summarizeColumn, downsampleRows } from '@/lib/postprocess';
+import {
+  describeDatasetName, summarizeColumn, downsampleRows, buildCallTemplate, buildFunctionsEntry,
+} from '@/lib/postprocess';
 import { residualsToTable } from '@/lib/residuals';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
 
@@ -228,7 +230,10 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [catalogQuery, setCatalogQuery] = useState('');
   const [chosen, setChosen] = useState<CatalogEntry | null>(null);
-  const [form, setForm] = useState<Record<string, string>>({});
+  /** The function call as text — what the panel runs, and what the user edits. */
+  const [specText, setSpecText] = useState('');
+  /** The case's own patch names, so an example uses one that exists. */
+  const [patches, setPatches] = useState<string[]>([]);
   const [timeRange, setTimeRange] = useState('');
   const [extraFields, setExtraFields] = useState('');
   const [running, setRunning] = useState(false);
@@ -337,6 +342,14 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
 
   const openCatalog = useCallback(async () => {
     setCatalogOpen(true);
+    // The case's own patch names, so an example for a `<patchNames>` argument
+    // names a patch that exists instead of the word "patchName".
+    if (!patches.length && caseName) {
+      void fetch(`/api/cases/${encodeURIComponent(caseName)}?action=caseSummary`)
+        .then(response => (response.ok ? response.json() : null))
+        .then(summary => { if (Array.isArray(summary?.patches)) setPatches(summary.patches); })
+        .catch(() => { /* an example falls back to a placeholder */ });
+    }
     if (catalog.length) return;
     try {
       const response = await fetch('/api/postprocess?action=catalog');
@@ -346,43 +359,22 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
     }
-  }, [catalog.length]);
+  }, [catalog.length, caseName, patches.length]);
+
+  /** The controlDict form of whatever is currently typed. */
+  const functionsEntry = useMemo(() => buildFunctionsEntry(specText || ''), [specText]);
 
   const chooseFunction = (entry: CatalogEntry) => {
     setChosen(entry);
     setRunOutput(null);
-    // Optional arguments start at the template's own default, so a form that is
-    // left alone reproduces exactly what OpenFOAM would have done.
-    setForm(Object.fromEntries(entry.args.filter(arg => !arg.required).map(arg => [arg.name, arg.placeholder])));
+    // A ready-to-run line, built from what the installation declares: the real
+    // argument names, and examples taken from the template's own `e.g.` notes.
+    // The user edits the line rather than a set of invented controls.
+    setSpecText(buildCallTemplate(entry.name, entry.args, patches));
   };
 
-  const composedValues = useMemo(() => {
-    if (!chosen) return {};
-    const values: Record<string, string> = {};
-    for (const arg of chosen.args) {
-      const raw = (form[arg.name] ?? '').trim();
-      if (!raw) continue;
-      // Parentheses belong to OpenFOAM's syntax, not to what the user typed, so
-      // the form takes `0.01 0.05 0.005` and `wrapFoamValue` decides. See its
-      // comment: the template's spelling alone gets points wrong.
-      values[arg.name] = wrapFoamValue(raw, arg.listWrapped);
-    }
-    return values;
-  }, [chosen, form]);
-
-  const preview = useMemo(() => {
-    if (!chosen) return '';
-    const parts = Object.entries(composedValues).map(([key, value]) => `${key}=${value}`);
-    return parts.length ? `${chosen.name}(${parts.join(', ')})` : chosen.name;
-  }, [chosen, composedValues]);
-
-  const missing = useMemo(
-    () => (chosen?.args ?? []).filter(arg => arg.required && !(form[arg.name] ?? '').trim()).map(arg => arg.name),
-    [chosen, form],
-  );
-
   const runFunction = async () => {
-    if (!chosen || !caseName) return;
+    if (!caseName || !specText.trim()) return;
     setRunning(true);
     setRunOutput(null);
     try {
@@ -392,8 +384,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         body: JSON.stringify({
           action: 'run',
           case: caseName,
-          name: chosen.name,
-          args: composedValues,
+          spec: specText,
           time: timeRange.trim() || undefined,
           fields: extraFields.trim() ? extraFields.trim().split(/[\s,]+/) : undefined,
         }),
@@ -497,7 +488,14 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         color: SERIES_COLORS[(series.index - 1) % SERIES_COLORS.length],
       })),
       xLabel: independent,
-      yLabel: visibleSeries.length === 1 ? visibleSeries[0].name : '',
+      // A y axis always gets a name. Leaving it blank whenever more than one
+      // series was plotted is what made the exported figure look unlabelled;
+      // the dialog lets it be edited, but it starts from something true.
+      yLabel: visibleSeries.length === 1
+        ? visibleSeries[0].name
+        : selected.kind === 'log'
+          ? 'Initial residual'
+          : describeDatasetName(selected.dataset).base,
       // Residuals are the case where a log axis is almost always wanted, so it
       // starts on for them and otherwise follows the chart on screen.
       logScale: selected.kind === 'log' ? true : logScale,
@@ -962,7 +960,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   <div>
                     <Sigma className="mx-auto mb-2 h-8 w-8 opacity-20" />
                     <p>Pick a function object.</p>
-                    <p className="mt-1">The list, the descriptions and every field below are read from
+                    <p className="mt-1">The list, the descriptions and the example call are read from
                       the OpenFOAM installation itself, so they match the version in use.</p>
                   </div>
                 </div>
@@ -974,43 +972,73 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{chosen.description || 'No description in the template.'}</p>
                     </div>
 
-                    {chosen.args.length > 0 && (
-                      <div className="space-y-2.5">
-                        {chosen.args.map(arg => (
-                          <div key={arg.name}>
-                            <Label htmlFor={`arg-${arg.name}`} className="flex items-baseline gap-1.5 text-[11px]">
-                              <span className="font-mono font-medium">{arg.name}</span>
-                              {arg.required && <span className="text-danger">*</span>}
-                              <span className="font-mono text-[9px] text-muted-foreground">{arg.placeholder}</span>
-                            </Label>
-                            {arg.kind === 'pointList' ? (
-                              <Textarea
-                                id={`arg-${arg.name}`}
-                                value={form[arg.name] ?? ''}
-                                onChange={event => setForm(current => ({ ...current, [arg.name]: event.target.value }))}
-                                placeholder="(0.005 0.005 0.005) (0.007 0.007 0.005)"
-                                className="mt-1 h-16 font-mono text-xs"
-                              />
-                            ) : (
-                              <Input
-                                id={`arg-${arg.name}`}
-                                value={form[arg.name] ?? ''}
-                                onChange={event => setForm(current => ({ ...current, [arg.name]: event.target.value }))}
-                                placeholder={
-                                  arg.kind === 'point' ? '0 0 0'
-                                    : arg.kind === 'fieldList' ? 'p U'
-                                      : arg.kind === 'patchList' ? 'inlet outlet'
-                                        : arg.kind === 'number' ? '20'
-                                          : arg.placeholder
-                                }
-                                className="mt-1 h-8 font-mono text-xs"
-                              />
-                            )}
-                            {arg.help && <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{arg.help}</p>}
-                          </div>
-                        ))}
+                    {/* The call, as text.
+                        A generated form had to invent one control per argument
+                        and got some of them wrong. This is the line OpenFOAM
+                        actually accepts, prefilled from the installation's own
+                        template and editable by anyone who knows the syntax;
+                        what each argument means is documented below it rather
+                        than guessed at above it. */}
+                    <div>
+                      <Label htmlFor="pp-spec" className="text-[11px]">Function to run</Label>
+                      <Textarea
+                        id="pp-spec"
+                        value={specText}
+                        onChange={event => setSpecText(event.target.value)}
+                        spellCheck={false}
+                        className="mt-1 h-20 font-mono text-xs"
+                        placeholder={chosen.name}
+                      />
+                      <div className="mt-1 flex items-center gap-2">
+                        <Button
+                          size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]"
+                          onClick={() => setSpecText(buildCallTemplate(chosen.name, chosen.args, patches))}
+                        >
+                          <RefreshCw className="mr-1 h-3 w-3" /> Reset to the example
+                        </Button>
+                        <Button
+                          size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]"
+                          onClick={() => { void navigator.clipboard.writeText(specText).then(() => toast.success('Copied')); }}
+                        >
+                          <Copy className="mr-1 h-3 w-3" /> Copy
+                        </Button>
                       </div>
-                    )}
+                    </div>
+
+                    <div className="rounded border">
+                      <div className="border-b bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
+                        Arguments this installation declares
+                      </div>
+                      {chosen.args.length === 0 ? (
+                        <p className="px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
+                          None: this function object is called by name alone. Fields may still be listed
+                          after the name, as in <code className="font-mono">{chosen.name}(p, U)</code>.
+                        </p>
+                      ) : (
+                        <dl className="divide-y">
+                          {chosen.args.map(arg => (
+                            <div key={arg.name} className="grid grid-cols-[104px_1fr] gap-2 px-2 py-1">
+                              <dt className="font-mono text-[10px]">
+                                {arg.name}
+                                {arg.required
+                                  ? <span className="ml-1 text-danger" title="Required">*</span>
+                                  : <span className="ml-1 text-[9px] text-muted-foreground">opt</span>}
+                              </dt>
+                              <dd className="text-[10px] leading-snug text-muted-foreground">
+                                <span className="font-mono">{arg.placeholder}</span>
+                                {arg.help ? <> &mdash; {arg.help}</> : null}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                      <p className="border-t px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
+                        Fields can also be listed positionally, the way the tutorials write them:
+                        <code className="mx-1 font-mono">cellMin(name=pMin, p)</code>. Keeping
+                        <code className="mx-1 font-mono">name=</code> is worth it &mdash; without it the results
+                        land in a directory named after the whole call with its spaces stripped out.
+                      </p>
+                    </div>
 
                     <div className="grid grid-cols-2 gap-3 border-t pt-3">
                       <div>
@@ -1019,7 +1047,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                           id="pp-time"
                           value={timeRange}
                           onChange={event => setTimeRange(event.target.value)}
-                          placeholder="all times — or 5:, :10, 2,4,6"
+                          placeholder="all times, or 5:, :10, 2,4,6"
                           className="mt-1 h-8 font-mono text-xs"
                         />
                       </div>
@@ -1035,9 +1063,33 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       </div>
                     </div>
 
-                    <div className="rounded border bg-muted/40 px-2 py-1.5">
-                      <div className="text-[9px] font-semibold uppercase text-muted-foreground">Will run</div>
-                      <code className="block break-all font-mono text-[10px]">{preview}</code>
+                    {/* The same function, during the solve. Text to copy, never
+                        written: the app does not edit the user's controlDict. */}
+                    <div className="rounded border">
+                      <div className="flex items-center gap-2 border-b bg-muted/40 px-2 py-1">
+                        <span className="text-[9px] font-semibold uppercase text-muted-foreground">
+                          To run it during the solve instead
+                        </span>
+                        <Button
+                          size="sm" variant="ghost" className="ml-auto h-5 px-1.5 text-[9px]"
+                          onClick={() => { void navigator.clipboard.writeText(functionsEntry).then(() => toast.success('Copied')); }}
+                        >
+                          <Copy className="mr-1 h-3 w-3" /> Copy
+                        </Button>
+                      </div>
+                      <Textarea
+                        value={functionsEntry}
+                        readOnly
+                        spellCheck={false}
+                        className="h-24 rounded-none border-0 font-mono text-[10px] focus-visible:ring-0"
+                      />
+                      <p className="border-t px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
+                        Paste this into <code className="font-mono">system/controlDict</code>, or add the
+                        <code className="mx-1 font-mono">#includeFunc</code> line to the
+                        <code className="mx-1 font-mono">functions</code> block already there. The app does not
+                        edit your controlDict; running it here writes the same results without touching the
+                        case setup.
+                      </p>
                     </div>
 
                     {runOutput !== null && (
@@ -1051,9 +1103,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               )}
 
               <div className="flex flex-shrink-0 items-center gap-2 border-t px-4 py-2.5">
-                {missing.length > 0 && (
-                  <span className="text-[10px] text-muted-foreground">
-                    Required: <span className="font-mono">{missing.join(', ')}</span>
+                {specText.includes('<') && (
+                  <span className="text-[10px] text-warning">
+                    The line still has a placeholder in it
                   </span>
                 )}
                 <div className="ml-auto flex items-center gap-2">
@@ -1063,7 +1115,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   <Button
                     size="sm"
                     className="h-8 gap-1.5 text-xs"
-                    disabled={!chosen || running || missing.length > 0}
+                    disabled={!chosen || running || !specText.trim()}
                     onClick={() => void runFunction()}
                   >
                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
