@@ -38,11 +38,6 @@ Open items:
 
 - `Working/OpenCFD-trademark-request.md` has been sent to OpenCFD; no answer is
   recorded yet.
-- The GitHub social preview image still has to be uploaded by the user from the
-  repository Settings page.
-- One old folder build reportedly lost `resources/standalone` after previously
-  launching successfully. No cause was proven. Startup diagnostics now record
-  enough detail to investigate if it happens again.
 
 ## 2. Working agreement
 
@@ -64,10 +59,11 @@ These are standing user instructions:
    authorized; anything leaving the machine is not.
 5. Version bumping happens as part of a user-requested publication, not while
    ordinary work accumulates.
-6. At most two subagents may run concurrently, in addition to the main agent.
-   Each subagent must update `docs/agent-log/<task>.md` after every step with
-   completed work, findings, next action, and touched files. The directory is
-   ignored by Git.
+6. Never decide the number of subagents alone. Before starting any subagent,
+   ask the user in the live conversation how many may be opened, and open at
+   most that many. Each subagent must update `docs/agent-log/<task>.md` after
+   every step with completed work, findings, next action, and touched files.
+   The directory is ignored by Git.
 7. Never run destructive tests against the user's real WSL cases. Use only the
    disposable `claude_test` and `cavity_test` cases described in section 6.
 8. The user writes in Italian; repository prose, UI copy, and comments remain
