@@ -40,6 +40,9 @@ audits.
   policy: version and names are updated, existing assets are used or renamed,
   then commit/tag/push/release proceeds without an automatic rebuild or broad
   verification. A missing requested asset requires user direction to build.
+- Post-build follow-up verification is discretionary: the agent selects the
+  smallest check justified by the changed surface and build output, or reports
+  success without extra checks when none is warranted.
 
 ## 2026-09-08 — v5.0.0: quantitative post-processing
 

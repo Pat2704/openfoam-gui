@@ -41,10 +41,11 @@ the task needs product or historical context.
    artifacts. Keep the incremental caches; never delete `.next/cache`,
    `node_modules`, `electron/resources/bin/node.exe` or the Electron Builder
    cache to force a clean build.
-3. After an Electron build, confirm that it completed and that the portable exe
-   and folder zip exist. Do not automatically rerun the full test suite, launch
-   the packaged server or perform source-to-artifact checks unless the user asks
-   or the build itself reports a relevant failure.
+3. After an Electron build, the agent decides whether further verification is
+   warranted from the change's blast radius, the build output and any
+   packaged-only behavior it could affect. Use the smallest relevant check when
+   it is warranted; otherwise report the successful build. Never make a full
+   suite, packaged-server launch or source-to-artifact check automatic.
 4. An explicit request to push, bump a version or make a release authorizes a
    **direct publication flow**: update the requested semver fields, user-facing
    artifact names, release notes and required file names; commit, tag, push and
