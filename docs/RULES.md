@@ -37,10 +37,14 @@ the task needs product or historical context.
    `npm run check` is useful for broad application changes, not mandatory after
    every edit. Documentation-only changes need only relevant text/reference and
    diff checks.
-2. Build Electron only when the user asks for a build or newly compiled
-   artifacts. Keep the incremental caches; never delete `.next/cache`,
-   `node_modules`, `electron/resources/bin/node.exe` or the Electron Builder
-   cache to force a clean build.
+2. Every change to the source ends with an Electron build, without being asked
+   and whatever the change was: run it, then replace the two artifacts in
+   `Working/` with the ones just produced in `dist-electron/`, keeping their
+   names. The folder beside the checkout must always hold the app as the source
+   currently stands. Documentation is not source. Keep the incremental caches;
+   never delete `.next/cache`, `node_modules`,
+   `electron/resources/bin/node.exe` or the Electron Builder cache to force a
+   clean build.
 3. After an Electron build, the agent decides whether further verification is
    warranted from the change's blast radius, the build output and any
    packaged-only behavior it could affect. Use the smallest relevant check when
@@ -51,7 +55,8 @@ the task needs product or historical context.
    artifact names, release notes and required file names; commit, tag, push and
    create the release. Do **not** automatically rebuild, package, run tests,
    run `release:check`, or start the packaged server. Use the existing paired
-   artifacts, renaming them to the requested release names when needed. If the
+   artifacts — rule 2 is what keeps them current — renaming them to the
+   requested release names when needed. If the
    requested assets are absent, ask the user whether to build rather than doing
    so implicitly.
 5. A version bump updates `package.json`, `electron/package.json`, the two

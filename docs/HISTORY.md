@@ -6,6 +6,19 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-08 — builds are no longer asked for
+
+- At the user's request, RULES 2 of "Validation, builds and publication" was
+  reversed: it used to say "build Electron only when the user asks", and now
+  every change to the source ends with a build whose artifacts replace the pair
+  in `Working/`. RULES 4 gained a clause naming rule 2 as what keeps the
+  publication artifacts current.
+- First build under the new rule reproduced `v5.1.0` from the agent-channel fix
+  below, 87.0 MB portable and 133.0 MB folder zip, and both copies in `Working/`
+  now match `dist-electron/` by SHA-256.
+- Noticed in passing, not changed: the packaged standalone carries the whole
+  `tests/` directory, which nothing in the app reads.
+
 ## 2026-09-08 — the app now has its own voice in the agent conversation
 
 - Reported by the user: after switching a conversation to No limits, the agent
