@@ -128,9 +128,8 @@ Important modules:
   imply compatibility or tailor generated cases to them.
 - New Case generates a parametric box mesh, synchronized patch fields,
   version-correct dictionaries, dimension sets and a preflight.
-- The installed vocabulary is built with `foamToC` and source scans, cached in
-  WSL, and grounds FOAMy. Tutorial retrieval uses BM25 plus an Italian glossary,
-  a deliberate choice over shipping an embedding runtime.
+- The installed vocabulary comes from `foamToC` and source scans and grounds
+  FOAMy; tutorial retrieval is BM25 plus an Italian glossary, not embeddings.
 - The ParaView tab is an optional local integration, not a bundled dependency:
   `paraFoam -touch` and one persistent app-owned `pvpython` worker, whose real
   `paraview.simple` proxies own the reader, filters, displays, time and render;
@@ -142,27 +141,24 @@ Important modules:
   folder/executable path as the universal fallback. Detection and path settings
   belong on the Dashboard beside Ubuntu/OpenFOAM; keep the ParaView tab focused
   on the workbench itself.
-- The ParaView worker supports pipeline selection/visibility, mesh-region and
-  patch selection, reconstructed/decomposed readers and a capability-detected
-  catalogue of 23 filters, enumerated in the worker's own allowlist.
-  Keep API/worker allowlists explicit. Insert Cell Data to Point Data when a
-  point-field filter needs it, and only offer Tube for line-producing inputs to
-  avoid native ParaView crashes.
+- The worker supports pipeline and region selection, reconstructed/decomposed
+  readers and a capability-detected catalogue of 23 filters, enumerated in its
+  own allowlist — keep those allowlists explicit. Insert Cell Data to Point Data
+  when a point-field filter needs it, and offer Tube only for line-producing
+  inputs, which otherwise crashes ParaView.
 - Manipulators use real ParaView guide geometry, never a cosmetic 2D overlay.
   Drags are allowlisted and converted through the camera basis; keep numeric
   property editing as an exact alternative, hide inactive guides, and let
   overlay controls stop pointer propagation before the viewport captures it.
-- Additional ParaView sources may be opened only from files physically inside
-  the active case: allowlisted extensions, validated at the API and resolved
-  again in the worker, symlink escapes rejected. Never a general file picker.
+- Additional ParaView sources open only from files inside the active case, by
+  allowlisted extension, validated twice, symlinks rejected. No file picker.
 - Camera and timestep interaction render at full viewport resolution: coalesce
   pending requests and drop stale timesteps rather than shrinking the image. The
   Information panel reports reader-level bounds independently of filter output.
-- Do not key ParaView compatibility to a version number. Inspect property
-  domains/capabilities and keep aliases for renamed properties or proxy values
-  (for example Point Cloud/Point Source and old/new Threshold ranges). An
-  OpenFOAM `0` directory alone is input, not a result timestep: label it mesh
-  only and keep non-scalar representations working without `ColorBy(None)`.
+- Do not key ParaView compatibility to a version number: inspect property
+  domains and keep aliases for renamed properties and proxy values. An OpenFOAM
+  `0` directory alone is input, not a result time — label it mesh only, and keep
+  non-scalar representations working without `ColorBy(None)`.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.
@@ -203,7 +199,17 @@ Commands owns running arbitrary binaries.
   `-latestTime`, `-noZero`, each value checked, anything else refused by name.
   `-case` in particular is refused, so a run cannot leave the open case.
 - The `#includeFunc` entry is text to copy. Do NOT write it into the user's
-  `controlDict`.
+  `controlDict`. Both texts are a scratchpad for one visit: closing the panel
+  restores the installation's own call.
+- What the panel documents is what is PARTICULAR to each function: its
+  arguments, the class behind it, the entries its `#includeEtc` hides and can
+  be overridden, and how the installed tutorials call it. A general syntax note
+  was identical on all 127 and taught nothing after the first read. Nothing
+  there is written by hand — the defaults come from following the include chain,
+  the examples from the tutorials of the version in use.
+- Grid columns that hold code need `min-w-0`. A grid item defaults to
+  `min-width: auto` and will not shrink below its content, so one long call in a
+  `<code>` widened the dialog and carried its footer off the window.
 - The tab also lists the case's solver logs and plots their initial residuals.
   The parser lives in `src/lib/residuals.ts` and is shared with the Monitor;
   keep it there. Residuals are reshaped into the same columns-and-rows table the
@@ -229,10 +235,9 @@ Commands owns running arbitrary binaries.
 
 ### FOAMy
 
-FOAMy reads bounded case context and proposes whole-file edits for the user to
-apply. Truncated input and truncated model output are marked explicitly, and
-unsafe apply actions are withheld. API keys stay in the local Electron config,
-encrypted with the Windows user account.
+FOAMy reads bounded case context and proposes whole-file edits to apply.
+Truncated input and output are marked, unsafe applies are withheld, and API keys
+stay in the Electron config, encrypted with the Windows account.
 
 ### Claude and Codex
 
@@ -252,10 +257,9 @@ schemas, prompt, policy, case confinement, and activity model.
 - Reading is free. `run_openfoam` runs only when the user asks for a run; an
   ambiguous request is treated as a question, never as a simulation.
 - Claude runs with strict MCP configuration and no inherited tools or settings.
-- Codex uses an isolated `%APPDATA%\\openfoam-studio\\codex` home and requires
-  Codex CLI 0.153.1 or newer.
-- The real Codex protocol contract test is opt-in through
-  `OFSTUDIO_TEST_CODEX`; normal tests must not reach the network or spend a
+- Codex uses an isolated `%APPDATA%\\openfoam-studio\\codex` home and needs Codex
+  CLI 0.153.1+. Its real protocol contract test is opt-in through
+  `OFSTUDIO_TEST_CODEX`: normal tests never reach the network or spend a
   subscription.
 
 ### Security boundary
@@ -269,25 +273,21 @@ schemas, prompt, policy, case confinement, and activity model.
   atomically.
 - External links opened by Electron are restricted to HTTP and HTTPS.
 - In unrestricted mode a failed `cd` aborts before any command can run.
-- Treat the unrestricted `/mnt/` text check as protection against accidents,
-  not a complete sandbox against a determined bypass. Any way to reach Windows
-  storage without spelling `/mnt/` is a real security finding.
-- Never place secrets in `.env`: it is copied into the packaged application.
-  Local overrides belong in ignored `.env.local` or `.env.*.local` files, and
-  credentials must never be committed, logged, or included in artifacts.
-- Security vulnerabilities are reported privately through GitHub's Security
-  tab, not in a public issue. Do not publish exploit details without the user's
-  explicit instruction.
+- The unrestricted `/mnt/` check guards against accidents, not a determined
+  bypass: any other route to Windows storage is a real security finding.
+- Never put secrets in `.env` — it is copied into the app. Local overrides go in
+  ignored `.env.local`; credentials are never committed, logged or shipped.
+- Report vulnerabilities privately through GitHub's Security tab, never a public
+  issue, and publish no exploit details without the user's instruction.
 
 ## 5. Current UI behavior
 
-- Hardware acceleration must remain enabled. The Mesh viewer requires real
-  WebGL; disabling GPU acceleration forces the wrong renderer and is not an
-  acceptable workaround for unrelated focus or input bugs.
-- The shell owns the viewport: header, tabs, and status bar stay fixed while
-  main content scrolls. Two-pane workspaces use bounded native scroll areas.
-- FOAMy, Claude, and Codex launchers share a saved bottom-right anchor. Multiple
-  launchers fan out; a lone launcher stays fixed. Panels always sit above them.
+- Hardware acceleration stays enabled: the Mesh viewer needs real WebGL. It is
+  not a workaround for focus or input bugs.
+- The shell owns the viewport: header, tabs and status bar stay fixed while the
+  content scrolls, and two-pane workspaces use bounded scroll areas.
+- FOAMy, Claude and Codex launchers share a saved bottom-right anchor; several
+  fan out, one stays put, and panels always sit above them.
 - Tab shortcuts are `Ctrl+0`–`Ctrl+9` and the digit IS the tab index, so
   `Ctrl+0` is the Dashboard and `Ctrl+9` is Src. Adding an eleventh tab breaks
   this and needs a different scheme, not a silently dropped shortcut.
@@ -305,9 +305,8 @@ schemas, prompt, policy, case confinement, and activity model.
 - Dashboard OpenFOAM and ParaView gears open independent settings panels. An
   explicit scan bypasses caches; a failed detection is negative-cached only
   briefly and must never erase an already valid client list.
-- File Editor refreshes visible and expanded directories without replacing the
-  open buffer, dirty state, selection, or expansion state. Navigation away from
-  unsaved text requires confirmation.
+- File Editor refreshes directories without replacing the open buffer, dirty
+  state, selection or expansion, and confirms before leaving unsaved text.
 - The editor also watches the OPEN file for writes it did not make — an agent,
   FOAMy, a script, the user's terminal — by polling a `stat` fingerprint. A
   clean buffer is replaced silently, keeping caret and scroll; a dirty one is

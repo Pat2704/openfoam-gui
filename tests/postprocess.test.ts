@@ -14,6 +14,8 @@ import {
   buildCallTemplate,
   buildFunctionsEntry,
   validateTypedSpec,
+  resolveTemplateExtras,
+  tutorialExamplesFor,
   tokenizeCommand,
   parsePostProcessCommand,
   buildCommandTemplate,
@@ -460,6 +462,65 @@ test('a typed specification that could not run is refused before OpenFOAM sees i
   for (const bad of ['', '   ', 'notAFunction', 'yPlus(', 'yPlus(a))', '(yPlus)', 'yPlus; rm -rf /', 'yPlus($(id))']) {
     assert.throws(() => validateTypedSpec(bad, known), FunctionSpecError, `expected ${JSON.stringify(bad)} to be refused`);
   }
+});
+
+test('what a template hides behind its include is read, and not repeated', () => {
+  // `volAverage` looks empty until you follow it to `volValue.cfg`: the class
+  // and the entries that already have a value live there, not in the template.
+  const template = 'fields  (<fieldNames>);\n#includeEtc "caseDicts/functions/volFieldValue/volAverage.cfg"\n';
+  const files = {
+    'caseDicts/functions/volFieldValue/volAverage.cfg':
+      'operation  volAverage;\n#includeEtc "caseDicts/functions/volFieldValue/volValue.cfg"\n',
+    'caseDicts/functions/volFieldValue/volValue.cfg':
+      'type  volFieldValue;\nlibs  ("libfieldFunctionObjects.so");\ncellZone  all;\n',
+  };
+  const extras = resolveTemplateExtras(template, files);
+
+  assert.equal(extras.type, 'volFieldValue');
+  assert.deepEqual(extras.defaults.map(entry => `${entry.name}=${entry.value}`), ['operation=volAverage', 'cellZone=all']);
+  // `fields` is an ARGUMENT and is listed as one; showing it here too is the
+  // duplication this section exists to avoid.
+  assert.ok(!extras.defaults.some(entry => entry.name === 'fields'));
+  // `type` and `libs` are the class, not something to override.
+  assert.ok(!extras.defaults.some(entry => entry.name === 'type' || entry.name === 'libs'));
+});
+
+test('a configuration wiring one of its own keys to an argument is not a default', () => {
+  // `probeLocations $points;` is plumbing: it points at the template's own
+  // `points` argument and would just repeat it.
+  const extras = resolveTemplateExtras(
+    'points (<points>);\n#includeEtc "cfg"\n',
+    { cfg: 'type probes;\nprobeLocations $points;\nfixedLocations false;\n' },
+  );
+  assert.deepEqual(extras.defaults.map(entry => entry.name), ['fixedLocations']);
+});
+
+test('an include chain that loops does not spin', () => {
+  const extras = resolveTemplateExtras(
+    '#includeEtc "a"\n',
+    { a: 'type sets;\n#includeEtc "b"\n', b: 'interpolationScheme cellPoint;\n#includeEtc "a"\n' },
+  );
+  assert.equal(extras.type, 'sets');
+  assert.deepEqual(extras.defaults.map(entry => entry.name), ['interpolationScheme']);
+});
+
+test('the tutorials supply the examples, matched on the whole name', () => {
+  const lines = [
+    '    #includeFunc graphCell(name=lineA, start=(0 0 0), end=(0 1 0), U)',
+    '#includeFunc graphCellFace(name=other)',
+    '#includeFunc graphCell(name=lineB, start=(1 0 0), end=(1 1 0), U);',
+    '#includeFunc graphCell',
+    '#includeFunc graphCell(name=lineA, start=(0 0 0), end=(0 1 0), U)',
+  ];
+  const examples = tutorialExamplesFor('graphCell', lines);
+  // `graphCellFace` is a different function and must not be collected, the
+  // duplicate appears once, and the bare `graphCell` teaches nothing the panel
+  // has not already said.
+  assert.deepEqual(examples, [
+    'graphCell(name=lineA, start=(0 0 0), end=(0 1 0), U)',
+    'graphCell(name=lineB, start=(1 0 0), end=(1 1 0), U)',
+  ]);
+  assert.deepEqual(tutorialExamplesFor('nothingLikeThis', lines), []);
 });
 
 test('a quoted argument survives tokenising, brackets and spaces included', () => {

@@ -18,7 +18,10 @@ import {
   POST_PROCESSING_DIR,
   isTabularOutput,
   parseFunctionTemplate,
+  resolveTemplateExtras,
+  tutorialExamplesFor,
   type FunctionArg,
+  type FunctionDefault,
 } from './postprocess';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3302,6 +3305,12 @@ export interface CatalogEntry {
   category: string;
   description: string;
   args: FunctionArg[];
+  /** The function object class behind it, from the configuration it includes. */
+  type: string;
+  /** Entries that already have a value and can be overridden in the call. */
+  defaults: FunctionDefault[];
+  /** How the installed tutorials call it. */
+  examples: string[];
 }
 
 let cachedCatalog: { key: string; entries: CatalogEntry[] } | null = null;
@@ -3320,16 +3329,35 @@ let cachedCatalog: { key: string; entries: CatalogEntry[] } | null = null;
 export function listFunctionCatalog(refresh = false): CatalogEntry[] {
   const root = getFoamCaseDicts();
   if (!root) return [];
+  const env = getFoamEnv();
+  const configRoot = env.WM_PROJECT_DIR ? `${env.WM_PROJECT_DIR}/etc/caseDicts/functions` : '';
+  const tutorials = getTutorialDirectory();
   const key = root;
   if (!refresh && cachedCatalog && cachedCatalog.key === key) return cachedCatalog.entries;
 
+  // Three sections in ONE call: the templates, the configurations they include
+  // (which carry the class and the overridable defaults a template hides), and
+  // the way the installed tutorials call each function. The last is the best
+  // documentation there is and cannot go stale, because it is read from the
+  // version in use.
   const script = `
 find -L ${shellQuote(root)} -type f -not -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
 while IFS= read -r rel; do
-  printf '%s\\t' "$rel"
+  printf 'T\\t%s\\t' "$rel"
   base64 -w0 < ${shellQuote(root)}/"$rel"
   printf '\\n'
 done
+find -L ${shellQuote(configRoot)} -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
+while IFS= read -r rel; do
+  printf 'C\\tcaseDicts/functions/%s\\t' "$rel"
+  base64 -w0 < ${shellQuote(configRoot)}/"$rel"
+  printf '\\n'
+done
+if [ -d ${shellQuote(tutorials)} ]; then
+  printf 'X\\t'
+  grep -rhs 'includeFunc' ${shellQuote(tutorials)} 2>/dev/null | head -n 2000 | base64 -w0
+  printf '\\n'
+fi
 `;
   let output: string;
   try {
@@ -3338,21 +3366,41 @@ done
     return [];
   }
 
-  const entries: CatalogEntry[] = [];
+  const templates: { relative: string; content: string }[] = [];
+  const configs: Record<string, string> = {};
+  let tutorialLines: string[] = [];
+
   for (const line of output.split('\n')) {
-    const separator = line.indexOf('\t');
-    if (separator === -1) continue;
-    const relative = line.slice(0, separator);
-    const content = Buffer.from(line.slice(separator + 1), 'base64').toString('utf-8');
+    const first = line.indexOf('\t');
+    if (first === -1) continue;
+    const kind = line.slice(0, first);
+    if (kind === 'X') {
+      tutorialLines = Buffer.from(line.slice(first + 1), 'base64').toString('utf-8').split('\n');
+      continue;
+    }
+    const second = line.indexOf('\t', first + 1);
+    if (second === -1) continue;
+    const relative = line.slice(first + 1, second);
+    const content = Buffer.from(line.slice(second + 1), 'base64').toString('utf-8');
+    if (kind === 'C') configs[relative] = content;
+    else if (kind === 'T') templates.push({ relative, content });
+  }
+
+  const entries: CatalogEntry[] = [];
+  for (const { relative, content } of templates) {
     const segments = relative.split('/');
     const name = segments.pop() || '';
     if (!name) continue;
     const template = parseFunctionTemplate(content);
+    const extras = resolveTemplateExtras(content, configs);
     entries.push({
       name,
       category: segments.join('/') || 'general',
       description: template.description,
       args: template.args,
+      type: extras.type,
+      defaults: extras.defaults,
+      examples: tutorialExamplesFor(name, tutorialLines),
     });
   }
 

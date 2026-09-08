@@ -131,9 +131,10 @@ the **OpenFOAM card in the Dashboard**.
   command to run now, and the `functions { #includeFunc … }` entry that runs the
   same thing during the solve. Both are prefilled from the installation's own
   template — real argument names, the examples it documents, a patch your case
-  actually has — and underneath them is the syntax, the accepted options and
-  what each argument means. Copy the entry into `controlDict` yourself; the app
-  never edits it for you.
+  actually has. Underneath is what is particular to that one function: its
+  arguments, the entries its configuration already sets and you can override,
+  and the calls the installed tutorials actually make, which you can click to
+  load. Copy the entry into `controlDict` yourself; the app never edits it.
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between

@@ -100,11 +100,19 @@ interface CatalogArg {
   required: boolean;
 }
 
+interface CatalogDefault { name: string; value: string; help: string }
+
 interface CatalogEntry {
   name: string;
   category: string;
   description: string;
   args: CatalogArg[];
+  /** The function object class behind it. */
+  type: string;
+  /** Entries that already have a value and can be overridden in the call. */
+  defaults: CatalogDefault[];
+  /** How the installed tutorials call it. */
+  examples: string[];
 }
 
 /** Series colours, matching the palette the Monitor's residual plot uses. */
@@ -372,6 +380,22 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
     }
   }, [catalog.length, caseName, patches.length]);
+
+  /**
+   * Closing the panel discards whatever was typed in it.
+   *
+   * The two texts are a scratchpad for one visit: edits apply to the run you
+   * are about to make, and reopening offers the installation's own call again
+   * rather than yesterday's half-finished edit. Re-seeded on close instead of
+   * on open so the panel never flashes the old text as it appears.
+   */
+  useEffect(() => {
+    if (catalogOpen || !chosen) return;
+    const call = buildCallTemplate(chosen.name, chosen.args, patches);
+    setCommandText(buildCommandTemplate(utility, call));
+    setEntryText(buildFunctionsEntry(call));
+    setRunOutput(null);
+  }, [catalogOpen, chosen, patches, utility]);
 
   const chooseFunction = (entry: CatalogEntry) => {
     setChosen(entry);
@@ -926,8 +950,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
             </DialogTitle>
           </DialogHeader>
 
-          <div className="grid min-h-0 flex-1 grid-cols-[260px_1fr] overflow-hidden">
-            <div className="flex min-h-0 flex-col border-r">
+          <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)] overflow-hidden">
+            <div className="flex min-h-0 min-w-0 flex-col border-r">
               <div className="flex-shrink-0 p-2">
                 <div className="relative">
                   <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -963,7 +987,11 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               </ScrollArea>
             </div>
 
-            <div className="flex min-h-0 flex-col">
+            {/* `min-w-0`, because a grid item defaults to `min-width: auto` and
+                will not shrink below its content: one long call in a <code>
+                pushed this column wider than its track and carried the whole
+                dialog — footer button included — off the right of the window. */}
+            <div className="flex min-h-0 min-w-0 flex-col">
               {!chosen ? (
                 <div className="flex h-full items-center justify-center px-8 text-center text-xs text-muted-foreground">
                   <div>
@@ -975,9 +1003,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                 </div>
               ) : (
                 <ScrollArea className="min-h-0 flex-1">
-                  <div className="space-y-3 p-4">
-                    <div>
-                      <h3 className="font-mono text-sm font-semibold">{chosen.name}</h3>
+                  <div className="min-w-0 space-y-3 p-4">
+                    <div className="min-w-0">
+                      <h3 className="break-words font-mono text-sm font-semibold">{chosen.name}</h3>
                       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{chosen.description || 'No description in the template.'}</p>
                     </div>
 
@@ -1042,56 +1070,34 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       </p>
                     </div>
 
-                    {/* ── How to write it ── */}
-                    <div className="rounded border">
-                      <div className="border-b bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
-                        Syntax
-                      </div>
-                      <div className="space-y-2 px-2 py-2 text-[10px] leading-relaxed text-muted-foreground">
-                        <p>
-                          A function object is written <code className="font-mono">name(arg=value, arg=value)</code>,
-                          or just <code className="font-mono">name</code> when it takes none. Vectors and lists
-                          go in brackets: <code className="font-mono">start=(0 0 0)</code>,
-                          <code className="mx-1 font-mono">fields=(p U)</code>.
-                        </p>
-                        <p>
-                          Fields may also be listed positionally at the end, which is how the tutorials
-                          write them: <code className="font-mono">cellMin(name=pMin, p)</code>.
-                        </p>
-                        <p>
-                          <code className="font-mono">name=</code> sets the output directory. Without it the
-                          results land in one named after the whole call with its spaces stripped out,
-                          which cannot be read back.
-                        </p>
-                        <p>
-                          The command accepts <code className="font-mono">-func</code> plus
-                          <code className="mx-1 font-mono">-time 5:</code> (also
-                          <code className="mx-1 font-mono">:10</code> or <code className="font-mono">2,4,6</code>),
-                          <code className="mx-1 font-mono">-latestTime</code>,
-                          <code className="mx-1 font-mono">-noZero</code>,
-                          <code className="mx-1 font-mono">-fields &quot;(U p)&quot;</code> to force extra fields to be
-                          read, and <code className="mx-1 font-mono">-region</code> for a named mesh region.
-                          Nothing else: the run stays inside the case that is open.
-                        </p>
-                      </div>
-                      <div className="border-t bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
-                        Arguments this installation declares
+                    {/* What is particular to THIS function.
+                        A general syntax note was the same on all 127 and taught
+                        nothing after the first read; everything below is read
+                        from the installation and differs per function. */}
+                    <div className="min-w-0 rounded border">
+                      <div className="flex items-center gap-2 border-b bg-muted/40 px-2 py-1">
+                        <span className="text-[9px] font-semibold uppercase text-muted-foreground">Arguments</span>
+                        {chosen.type && (
+                          <span className="ml-auto font-mono text-[9px] text-muted-foreground" title="The function object class behind it">
+                            {chosen.type}
+                          </span>
+                        )}
                       </div>
                       {chosen.args.length === 0 ? (
                         <p className="px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
-                          None: <code className="font-mono">{chosen.name}</code> is called by name alone.
+                          None to supply: <code className="font-mono">{chosen.name}</code> is called by name alone.
                         </p>
                       ) : (
                         <dl className="divide-y">
                           {chosen.args.map(arg => (
-                            <div key={arg.name} className="grid grid-cols-[104px_1fr] gap-2 px-2 py-1">
-                              <dt className="font-mono text-[10px]">
+                            <div key={arg.name} className="grid grid-cols-[104px_minmax(0,1fr)] gap-2 px-2 py-1">
+                              <dt className="min-w-0 break-words font-mono text-[10px]">
                                 {arg.name}
                                 {arg.required
-                                  ? <span className="ml-1 text-danger" title="Required">*</span>
+                                  ? <span className="ml-1 text-danger" title="Must be given">*</span>
                                   : <span className="ml-1 text-[9px] text-muted-foreground">opt</span>}
                               </dt>
-                              <dd className="text-[10px] leading-snug text-muted-foreground">
+                              <dd className="min-w-0 break-words text-[10px] leading-snug text-muted-foreground">
                                 <span className="font-mono">{arg.placeholder}</span>
                                 {arg.help ? <> &mdash; {arg.help}</> : null}
                               </dd>
@@ -1099,6 +1105,54 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                           ))}
                         </dl>
                       )}
+
+                      {chosen.defaults.length > 0 && (
+                        <>
+                          <div className="border-t bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
+                            Set already — add any of these to the call to change it
+                          </div>
+                          <dl className="divide-y">
+                            {chosen.defaults.map(entry => (
+                              <div key={entry.name} className="grid grid-cols-[104px_minmax(0,1fr)] gap-2 px-2 py-1">
+                                <dt className="min-w-0 break-words font-mono text-[10px]">{entry.name}</dt>
+                                <dd className="min-w-0 break-words text-[10px] leading-snug text-muted-foreground">
+                                  <span className="font-mono">{entry.value}</span>
+                                  {entry.help ? <> &mdash; {entry.help}</> : null}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </>
+                      )}
+
+                      {chosen.examples.length > 0 && (
+                        <>
+                          <div className="border-t bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
+                            How the tutorials call it
+                          </div>
+                          <div className="space-y-1 px-2 py-1.5">
+                            {chosen.examples.map(example => (
+                              <button
+                                key={example}
+                                className="block w-full break-all rounded px-1 py-0.5 text-left font-mono text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                                title="Use this call"
+                                onClick={() => {
+                                  setCommandText(buildCommandTemplate(utility, example));
+                                  setEntryText(buildFunctionsEntry(example));
+                                }}
+                              >
+                                {example}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      <p className="border-t px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
+                        Keep <code className="font-mono">name=</code>: without it the results land in a
+                        directory named after the whole call with its spaces stripped out, which cannot be
+                        read back. Fields may be listed at the end without a keyword, as the examples show.
+                      </p>
                     </div>
 
                     {runOutput !== null && (

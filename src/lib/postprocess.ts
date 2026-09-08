@@ -453,6 +453,15 @@ export interface FunctionArg {
 export interface FunctionTemplate {
   description: string;
   args: FunctionArg[];
+  /** The `#includeEtc` paths this template pulls in, in order. */
+  includes: string[];
+}
+
+/** A settable entry that already has a value: something to override, not to fill in. */
+export interface FunctionDefault {
+  name: string;
+  value: string;
+  help: string;
 }
 
 /**
@@ -591,10 +600,95 @@ export function parseFunctionTemplate(content: string): FunctionTemplate {
     });
   }
 
+  const includes = lines
+    .map(line => line.match(/^\s*#includeEtc\s+"([^"]+)"/))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map(match => match[1]);
+
   return {
     description: descriptionLines.join(' ').replace(/\s+/g, ' ').trim(),
     args,
+    includes,
   };
+}
+
+/**
+ * Everything a template hides behind its `#includeEtc`.
+ *
+ * A template shows only what the user must supply; the configuration it pulls
+ * in carries the rest — the function object class, and the entries that already
+ * have a value and can simply be overridden in the call. `volAverage` looks
+ * empty until you follow it to `volValue.cfg` and find `operation volAverage;`
+ * and the write controls.
+ *
+ * `files` maps an include path, as written in the template, to its contents.
+ * Chains are followed (a cfg may include another) with a visited set, because
+ * a malformed installation must not spin here.
+ */
+export function resolveTemplateExtras(
+  template: string,
+  files: Readonly<Record<string, string>>,
+): { type: string; defaults: FunctionDefault[] } {
+  const seen = new Set<string>();
+  const defaults: FunctionDefault[] = [];
+  let type = '';
+
+  const visit = (content: string, isTemplate: boolean) => {
+    const parsed = parseFunctionTemplate(content);
+    // The template's own entries are already listed as arguments. Repeating the
+    // optional ones here would show `fields` and `operation` twice, which is
+    // the redundancy this section exists to avoid: what belongs here is what
+    // the template HIDES behind its include.
+    for (const arg of isTemplate ? [] : parsed.args) {
+      // Only entries that already carry a value are overridable defaults; the
+      // `<placeholder>` ones are the arguments, listed separately.
+      if (arg.required) continue;
+      // `probeLocations $points;` is the configuration wiring one of its own
+      // entries to a template argument. It is plumbing, not a value anyone
+      // would override, and showing it would just repeat the argument list.
+      if (arg.placeholder.startsWith('$')) continue;
+      if (defaults.some(entry => entry.name === arg.name)) continue;
+      defaults.push({ name: arg.name, value: arg.placeholder, help: arg.help });
+    }
+    const typeMatch = content.match(/^\s*type\s+([A-Za-z][\w.:]*)\s*;/m);
+    if (typeMatch && !type) type = typeMatch[1];
+
+    for (const path of parsed.includes) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const next = files[path];
+      if (next) visit(next, false);
+    }
+  };
+
+  visit(template, true);
+  return { type, defaults };
+}
+
+/**
+ * How the installed tutorials call one function object.
+ *
+ * The best documentation for a function object is the way OpenFOAM's own cases
+ * use it, and there are 259 such lines in the v14 tutorials. Showing three of
+ * them says more about what may be added to a call than any prose could, and it
+ * cannot go stale: it is read from the version in use.
+ */
+export function tutorialExamplesFor(name: string, lines: readonly string[], limit = 4): string[] {
+  const found = new Set<string>();
+  for (const line of lines) {
+    const match = line.match(/#includeFunc\s+(\S.*?)\s*;?\s*$/);
+    if (!match) continue;
+    const call = match[1].trim();
+    // The name must be the whole call or the part before its bracket, so
+    // `graphCell` does not collect every `graphCellFace` in the tutorials.
+    const base = call.split('(')[0].trim();
+    if (base !== name) continue;
+    // A bare `name` with no arguments teaches nothing the panel has not said.
+    if (call === name) continue;
+    found.add(call);
+    if (found.size >= limit) break;
+  }
+  return Array.from(found);
 }
 
 /**
