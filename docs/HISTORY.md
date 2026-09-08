@@ -6,6 +6,13 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-08 — the publication flow names the artifacts it renames
+
+- Validation rule 4 always said the direct flow reuses and renames the existing
+  pair rather than rebuilding. It now says which pair: the one in `Working/`
+  and its copy in `dist-electron/`, both carrying the new version's names once
+  the release is out.
+
 ## 2026-09-08 — disposable cases are a naming convention
 
 - User decision 5 no longer names two fixed cases. The default working case is
