@@ -60,9 +60,8 @@ the task needs product or historical context.
    create the release. Do **not** automatically rebuild, package, run tests,
    run `release:check`, or start the packaged server. Use the existing paired
    artifacts — rule 2 is what keeps them current — renaming them to the
-   requested release names when needed. If the
-   requested assets are absent, ask the user whether to build rather than doing
-   so implicitly.
+   requested release names when needed. If the requested assets are absent, ask
+   the user whether to build rather than doing so implicitly.
 5. A version bump updates `package.json`, `electron/package.json`, the two
    top-level version fields in `package-lock.json`, README artifact names and
    `Expand-Archive` example, `.github/ISSUE_TEMPLATE/bug_report.yml`,
