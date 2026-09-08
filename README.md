@@ -101,6 +101,20 @@ the **OpenFOAM card in the Dashboard**.
   condition validation live here too.
 
   ![The Mesh tab: the boundary mesh of a T-junction case in wireframe, with its four patches listed above the view, each one able to be recoloured or hidden](screenshots/mesh.png)
+- **Post-Process** — the numbers the run produced, rather than the picture. It
+  reads everything OpenFOAM's function objects wrote under `postProcessing/` —
+  force coefficients, flow rates, pressure drops, y+, probe histories, sampled
+  profiles — and charts them with a log/linear axis, a data table and CSV on the
+  clipboard. Beside each series it reports the last value, the mean over the
+  final fifth, the min/max and whether the quantity has settled or is still
+  drifting. A case that has no function objects yet is not a dead end:
+  **Compute…** lists the ones this OpenFOAM installation ships (127 on v14),
+  with the description and input fields read from the installation's own
+  templates, and runs the one you pick over the timesteps already on disk.
+  Time series are stitched across restarts, with a later run's recomputed values
+  replacing the older ones; sampled profiles keep one curve per written time and
+  give you a time selector instead. **Follow** re-reads every few seconds, so a
+  drag coefficient can be watched while the solver is still running.
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between
@@ -140,7 +154,7 @@ the **OpenFOAM card in the Dashboard**.
 
 ### Keyboard shortcuts
 
-`Ctrl+1…9` switch tab · `Ctrl+S` save file · `Ctrl+Enter` send to FOAMy ·
+`Ctrl+0…9` switch tab, in order · `Ctrl+S` save file · `Ctrl+Enter` send to FOAMy ·
 `Ctrl+B` light/dark · `Ctrl+F` search in file · `Ctrl+/` show shortcuts
 
 ---
@@ -329,6 +343,7 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `src/lib/claude-cli.ts` | finds, authenticates and drives the Claude Code process |
 | `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
+| `src/lib/postprocess.ts` | parses what the function objects wrote, and the templates that describe them |
 | `src/lib/stl.ts` | ASCII STL parser + the binary wire format `/api/mesh` returns |
 | `src/lib/paraview.ts` | version-independent discovery and persistent headless ParaView workbench |
 | `src/components/openfoam/mesh-viewer.tsx` | the three.js boundary-mesh viewer |

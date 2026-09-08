@@ -14,6 +14,12 @@ import {
   validatePid,
   validateRelativePath,
 } from './wsl-input';
+import {
+  POST_PROCESSING_DIR,
+  isTabularOutput,
+  parseFunctionTemplate,
+  type FunctionArg,
+} from './postprocess';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EVERY child_process call in this file MUST pass `windowsHide: true`.
@@ -3027,8 +3033,348 @@ export function runCheckMesh(caseName: string): CheckMeshResult {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-processing: the function-object output, and the catalogue that makes it
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Everything here reads or produces `postProcessing/`. The parsing lives in
+// `./postprocess`, which is pure and unit-tested; this half is the WSL access
+// it needs.
+//
+// One trap decided the shape of both scripts below. On this installation
+// `etc/caseDicts/postProcessing` is a SYMLINK to `etc/caseDicts/functions`, and
+// `find` does not follow symlinks unless told to: `find <link> -type f` reports
+// the link itself and nothing else. Without `-L` the catalogue came back with
+// zero entries — a feature that silently finds nothing, on the machine it was
+// written for. Every find in this section is `find -L`.
+
+/** Where the version's own function-object templates live. */
+function getFoamCaseDicts(): string {
+  const env = getFoamEnv();
+  if (env.WM_PROJECT_DIR) return `${env.WM_PROJECT_DIR}/etc/caseDicts/postProcessing`;
+  return '';
+}
+
+/**
+ * The name of the retroactive post-processing utility, resolved at run time.
+ *
+ * OpenFOAM Foundation renamed `postProcess` to `foamPostProcess`; v13 and v14
+ * ship only the new name, the v9–v11 line only the old one. Which is present is
+ * asked of the installation rather than derived from a version number, the same
+ * way ParaView compatibility is decided by capability elsewhere in the app.
+ */
+const POST_PROCESS_RESOLVER =
+  'if command -v foamPostProcess >/dev/null 2>&1; then PP=foamPostProcess; ' +
+  'elif command -v postProcess >/dev/null 2>&1; then PP=postProcess; ' +
+  'else echo "No postProcess utility in this OpenFOAM installation" >&2; exit 127; fi';
+
+export interface PostProcessFileRef {
+  /** File name inside the time directory, e.g. `volFieldValue.dat`, `line.xy`, `U`. */
+  name: string;
+  /** Time directories that hold a file by this name, ascending. */
+  times: string[];
+  /** Total bytes across those time directories. */
+  bytes: number;
+}
+
+export interface PostProcessDataset {
+  /** The `postProcessing/<name>` directory — OpenFOAM's own identity for the run. */
+  name: string;
+  files: PostProcessFileRef[];
+}
+
+/**
+ * List what a case has already written under `postProcessing/`.
+ *
+ * One WSL call for the whole tree. Files nested deeper than
+ * `<function>/<time>/<file>` — the surface writers put a directory in between —
+ * keep their remaining path in the file name, so nothing is hidden and nothing
+ * is mistaken for a sibling.
+ */
+export function listPostProcessing(caseName: string): PostProcessDataset[] {
+  const casePath = getCasePath(caseName);
+  const root = `${casePath}/${POST_PROCESSING_DIR}`;
+  // A cap, because a long transient with per-timestep surface output can hold
+  // tens of thousands of files and none of them would fit on screen anyway.
+  const MAX_ENTRIES = 20000;
+  const script = `
+if [ ! -d ${shellQuote(root)} ]; then exit 0; fi
+find -L ${shellQuote(root)} -mindepth 3 -type f -printf '%P\\t%s\\n' 2>/dev/null | head -n ${MAX_ENTRIES}
+`;
+  let output: string;
+  try {
+    output = runInWslScript(Buffer.from(script).toString('base64'), 30000);
+  } catch {
+    return [];
+  }
+
+  const datasets = new Map<string, Map<string, { times: Set<string>; bytes: number }>>();
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const [relative, size] = line.split('\t');
+    if (!relative) continue;
+    const segments = relative.split('/');
+    if (segments.length < 3) continue;
+    const [datasetName, time, ...rest] = segments;
+    const fileName = rest.join('/');
+    if (!isTabularOutput(fileName)) continue;
+
+    let files = datasets.get(datasetName);
+    if (!files) {
+      files = new Map();
+      datasets.set(datasetName, files);
+    }
+    let entry = files.get(fileName);
+    if (!entry) {
+      entry = { times: new Set(), bytes: 0 };
+      files.set(fileName, entry);
+    }
+    entry.times.add(time);
+    entry.bytes += Number(size) || 0;
+  }
+
+  return Array.from(datasets.entries())
+    .map(([name, files]) => ({
+      name,
+      files: Array.from(files.entries())
+        .map(([fileName, entry]) => ({
+          name: fileName,
+          times: Array.from(entry.times).sort((a, b) => Number(a) - Number(b)),
+          bytes: entry.bytes,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** One time directory's copy of a dataset file, as text. */
+export interface PostProcessSlice {
+  startTime: string;
+  content: string;
+  truncated: boolean;
+}
+
+/**
+ * Read every time directory's copy of one dataset file.
+ *
+ * The slices come back base64-encoded, one per line, rather than concatenated
+ * behind a delimiter. A delimiter would have to be a string that can never
+ * occur in OpenFOAM output, and "can never occur" is the kind of assumption
+ * that produces a corrupted chart months later; base64 has no such assumption
+ * in it.
+ */
+export function readPostProcessDataset(
+  caseName: string,
+  datasetName: string,
+  fileName: string,
+): PostProcessSlice[] {
+  const casePath = getCasePath(caseName);
+  // `validateRelativePath` accepts the parentheses, commas and equals signs
+  // OpenFOAM puts in these directory names, and refuses traversal, absolute
+  // paths and NUL/newline — which is exactly the boundary needed here.
+  const safeDataset = validateRelativePath(datasetName, 'Dataset');
+  const safeFile = validateRelativePath(fileName, 'File');
+  if (safeDataset.includes('/')) throw new WslInputError('Dataset invalid');
+
+  const base = `${casePath}/${POST_PROCESSING_DIR}/${safeDataset}`;
+  // 8 MB is about 200 000 rows of a scalar series, which is already past what
+  // the parser keeps and far past what a chart can show. Truncation is reported
+  // rather than hidden.
+  const MAX_SLICE_BYTES = 8 * 1024 * 1024;
+  const MAX_SLICES = 200;
+  const script = `
+base=${shellQuote(base)}
+name=${shellQuote(safeFile)}
+find -L "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null | sort -g | head -n ${MAX_SLICES} |
+while IFS= read -r t; do
+  f="$base/$t/$name"
+  [ -f "$f" ] || continue
+  size=$(stat -c '%s' "$f" 2>/dev/null || echo 0)
+  printf '%s\\t%s\\t' "$t" "$size"
+  head -c ${MAX_SLICE_BYTES} -- "$f" | base64 -w0
+  printf '\\n'
+done
+`;
+  const output = runInWslScript(Buffer.from(script).toString('base64'), 120000);
+
+  const slices: PostProcessSlice[] = [];
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const separator = line.indexOf('\t');
+    const second = line.indexOf('\t', separator + 1);
+    if (separator === -1 || second === -1) continue;
+    const startTime = line.slice(0, separator);
+    const size = Number(line.slice(separator + 1, second)) || 0;
+    const encoded = line.slice(second + 1);
+    slices.push({
+      startTime,
+      content: Buffer.from(encoded, 'base64').toString('utf-8'),
+      truncated: size > MAX_SLICE_BYTES,
+    });
+  }
+  return slices;
+}
+
+export interface CatalogEntry {
+  name: string;
+  /** The directory OpenFOAM files it under — `forces`, `graphs`, `probes`, … */
+  category: string;
+  description: string;
+  args: FunctionArg[];
+}
+
+let cachedCatalog: { key: string; entries: CatalogEntry[] } | null = null;
+
+/**
+ * The function objects this installation offers, with their arguments.
+ *
+ * Read from `etc/caseDicts/postProcessing/**`, not from a table written here:
+ * on OpenFOAM 14 that directory holds 127 templates and `foamPostProcess -list`
+ * reports the same 127, while v13 has 119. Reading the files instead of running
+ * the utility costs no OpenFOAM startup, needs no case to be open, and gives
+ * the argument list and help text in the same call — the templates declare
+ * their own parameters as `<placeholder>` entries with the comment that
+ * explains them.
+ */
+export function listFunctionCatalog(refresh = false): CatalogEntry[] {
+  const root = getFoamCaseDicts();
+  if (!root) return [];
+  const key = root;
+  if (!refresh && cachedCatalog && cachedCatalog.key === key) return cachedCatalog.entries;
+
+  const script = `
+find -L ${shellQuote(root)} -type f -not -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
+while IFS= read -r rel; do
+  printf '%s\\t' "$rel"
+  base64 -w0 < ${shellQuote(root)}/"$rel"
+  printf '\\n'
+done
+`;
+  let output: string;
+  try {
+    output = runInWslScript(Buffer.from(script).toString('base64'), 60000);
+  } catch {
+    return [];
+  }
+
+  const entries: CatalogEntry[] = [];
+  for (const line of output.split('\n')) {
+    const separator = line.indexOf('\t');
+    if (separator === -1) continue;
+    const relative = line.slice(0, separator);
+    const content = Buffer.from(line.slice(separator + 1), 'base64').toString('utf-8');
+    const segments = relative.split('/');
+    const name = segments.pop() || '';
+    if (!name) continue;
+    const template = parseFunctionTemplate(content);
+    entries.push({
+      name,
+      category: segments.join('/') || 'general',
+      description: template.description,
+      args: template.args,
+    });
+  }
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  if (entries.length) cachedCatalog = { key, entries };
+  return entries;
+}
+
+export interface PostProcessRunResult {
+  exitCode: number;
+  output: string;
+  /** The utility that actually ran, for the activity line the UI shows. */
+  command: string;
+}
+
+/**
+ * Run one function object over the times a case has already written.
+ *
+ * The specification is composed and validated by `buildFunctionSpec`, checked
+ * against this installation's own catalogue, and then quoted as a single
+ * argument. `-time` is bounded to the same character set for the same reason.
+ *
+ * Deliberately NOT a general command runner: the Commands tab already is one.
+ * This exists so the tab can produce the dataset it is about to plot.
+ */
+export function runPostProcessFunction(
+  caseName: string,
+  spec: string,
+  options: { time?: string; fields?: string[]; region?: string } = {},
+): PostProcessRunResult {
+  const casePath = getCasePath(caseName);
+  if (!FUNCTION_SPEC_SAFE.test(spec) || spec.length > 1024) {
+    throw new WslInputError('Function specification is not valid');
+  }
+
+  const args = [`-func ${shellQuote(spec)}`];
+  if (options.time) {
+    if (!/^[0-9.,:\-+eE ]{1,120}$/.test(options.time)) throw new WslInputError('Time range is not valid');
+    args.push(`-time ${shellQuote(options.time)}`);
+  }
+  if (options.fields?.length) {
+    for (const field of options.fields) {
+      if (!/^[A-Za-z][\w.]{0,63}$/.test(field)) throw new WslInputError(`Field name is not valid: ${field}`);
+    }
+    args.push(`-fields ${shellQuote(`(${options.fields.join(' ')})`)}`);
+  }
+  if (options.region) {
+    if (!/^[A-Za-z][\w.]{0,63}$/.test(options.region)) throw new WslInputError('Region name is not valid');
+    args.push(`-region ${shellQuote(options.region)}`);
+  }
+
+  // An OpenFOAM binary must never run with the Windows-mounted project path as
+  // its working directory — the space in the Windows user name makes it abort —
+  // so the cd into the Linux-side case is not optional, and `|| exit 1` binds to
+  // the cd alone for the reason documented on foamExec.
+  // The script ends `exit 0` and reports the utility's status in a marker line
+  // instead of letting it become the script's own. A failing OpenFOAM run makes
+  // execFileSync throw, and the thrown error carries the invocation — the whole
+  // base64 blob — where the useful text should be; the user was shown the
+  // command line that failed instead of the "Essential value for keyword 'rhoInf'
+  // not set" that says what to fix. Succeeding always keeps the diagnosis.
+  const script = `
+${foamSource()}
+cd ${shellQuote(casePath)} || exit 1
+${POST_PROCESS_RESOLVER}
+echo "OFSTUDIO_UTILITY=$PP"
+"$PP" ${args.join(' ')} 2>&1
+echo "OFSTUDIO_EXIT=$?"
+exit 0
+`;
+  try {
+    const output = runInWslScript(Buffer.from(script).toString('base64'), 600000);
+    const status = output.match(/OFSTUDIO_EXIT=(\d+)/);
+    return {
+      exitCode: status ? Number(status[1]) : 0,
+      output: stripMarkers(output),
+      command: readUtilityMarker(output),
+    };
+  } catch (e: any) {
+    // Only the paths that never reached the marker land here: WSL itself
+    // unreachable, the distro down, a failed `cd`.
+    return { exitCode: 1, output: String(e?.message ?? 'postProcess could not be started'), command: 'postProcess' };
+  }
+}
+
+/** Same allowlist `buildFunctionSpec` enforces, applied again at the WSL edge. */
+const FUNCTION_SPEC_SAFE = /^[A-Za-z0-9_.,:+\-*/()=|"[\] ]*$/;
+
+function readUtilityMarker(output: string): string {
+  const match = output.match(/OFSTUDIO_UTILITY=(\S+)/);
+  return match ? match[1] : 'postProcess';
+}
+
+function stripMarkers(output: string): string {
+  return output
+    .replace(/^OFSTUDIO_UTILITY=\S+\n?/m, '')
+    .replace(/^OFSTUDIO_EXIT=\d+\n?/m, '')
+    .trimEnd();
+}
+
 // ── Reset all caches (called when the distro changes or on manual refresh) ──
 export function resetCache() {
+  cachedCatalog = null;
   cachedBashrc = null;
   cachedRunDir = null;
   cachedTutDir = null;

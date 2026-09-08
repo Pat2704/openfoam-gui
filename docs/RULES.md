@@ -30,9 +30,10 @@ second file.
   `OpenFOAMStudio-v4.0.0-folder.zip`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.
-- The latest full local check passed on 2026-09-08: typecheck, lint, and 107
-  tests; the real Codex contract test was correctly skipped because it is
-  opt-in.
+- A **Post-Process** tab has been added after Mesh and is committed locally,
+  waiting for an explicitly requested push. It reads `postProcessing/` and runs
+  function objects over times already written; it does not write them into
+  `controlDict`.
 
 Open items:
 
@@ -115,6 +116,8 @@ Important modules:
 | `src/lib/case-templates.ts` | version-aware case generation |
 | `src/lib/foam-index.ts` | installed OpenFOAM vocabulary and keys |
 | `src/lib/foam-retrieval.ts` | tutorial retrieval and Italian glossary |
+| `src/lib/postprocess.ts` | function-object output and template parsing (pure) |
+| `src/components/openfoam/post-process.tsx` | the Post-Process tab |
 | `src/lib/stl.ts` | STL parsing and Mesh API wire format |
 | `src/lib/paraview.ts` | ParaView discovery and persistent headless workbench |
 | `src/components/openfoam/mesh-viewer.tsx` | three.js viewer |
@@ -174,14 +177,37 @@ Important modules:
   (for example Point Cloud/Point Source and old/new Threshold ranges). An
   OpenFOAM `0` directory alone is input, not a result timestep: label it mesh
   only and keep non-scalar representations working without `ColorBy(None)`.
-- Real ParaView 6.0.0 probes on 2026-09-07 validated `cavity_test` reconstructed
-  and four-way decomposed, six regions, 20 result times, all representations and
-  all 23 catalogue filters, including both Stream Tracer seeds, guarded Tube and
-  plane/sphere/line manipulation, plus mesh-only `claude_test` renders and an
-  imported case-local STL with a downstream Slice.
 - `foamDictionary` syntax checks run on Linux-side temporary files. An OpenFOAM
   binary must never run with the Windows-mounted project path as its working
   directory: the space in the Windows username makes OpenFOAM abort.
+
+### Post-processing
+
+The Post-Process tab reads `postProcessing/` and charts it; it is quantitative
+and works without ParaView. Keep the boundaries with the tabs it sits between:
+Monitor owns the solver log and its residuals, ParaView owns the 3D fields, and
+Commands owns running arbitrary binaries.
+
+- Never hard-code the function-object catalogue. It is read from
+  `etc/caseDicts/postProcessing/**`, whose templates declare their own
+  arguments as `<placeholder>` entries with the comment that documents them —
+  127 on v14, 119 on v13, and identical to what `foamPostProcess -list` reports
+  without paying for an OpenFOAM startup. The base-class keys (`type`, `libs`,
+  the execute/write controls) are filtered out: they are not parameters.
+- The retroactive utility is `foamPostProcess` on v12+ and `postProcess` before
+  it. Resolve it with `command -v` at run time; do not key it to a version.
+- A time directory means two different things and the file's own first column
+  is what decides. `Time` means a restart continuing one series, so slices are
+  stitched and a later run's rows replace recomputed ones. Anything else
+  (`distance`, `x`) means a complete profile sampled at that instant, so slices
+  must NOT be merged and the user picks a time.
+- Composed `-func` specifications are validated against the installation's own
+  catalogue, restricted to an allowlisted character set, and shell-quoted.
+  Values are wrapped in parentheses by shape, not by the template's spelling:
+  `start <point>;` shows none and still needs `(0.01 0.05 0.005)`.
+- Out of scope for now, deliberately: writing into `controlDict`, decomposed or
+  parallel runs, and multi-region cases. Surface and VTK writers are not
+  charted here — they belong to the ParaView tab.
 
 ### FOAMy
 
@@ -246,6 +272,9 @@ schemas, prompt, policy, case confinement, and activity model.
   main content scrolls. Two-pane workspaces use bounded native scroll areas.
 - FOAMy, Claude, and Codex launchers share a saved bottom-right anchor. Multiple
   launchers fan out; a lone launcher stays fixed. Panels always sit above them.
+- Tab shortcuts are `Ctrl+0`–`Ctrl+9` and the digit IS the tab index, so
+  `Ctrl+0` is the Dashboard and `Ctrl+9` is Src. Adding an eleventh tab breaks
+  this and needs a different scheme, not a silently dropped shortcut.
 - The Mesh viewer uses TrackballControls for free rotation, renders on demand,
   and must consume zero CPU while idle. Vertex labels stay a fixed visual size.
 - Mesh framing accounts for horizontal and vertical field of view. WebGL drawing
@@ -429,7 +458,18 @@ source-to-artifact verification.
 11. **Code style:** match the naming, idiom, and comment density of the file
     being edited. Comments should explain why a non-obvious choice exists or
     why an apparent alternative failed, rather than restating the code.
-12. **Startup reports:** when investigating a launch failure, collect
+12. **`find` does not follow symlinks.** On this installation
+    `etc/caseDicts/postProcessing` IS a symlink to `etc/caseDicts/functions`, so
+    `find <path> -type f` reports the link and nothing under it. The
+    function-object catalogue came back EMPTY until every find in that path
+    became `find -L`. Suspect this for any OpenFOAM tree that lists with `ls`
+    but finds nothing.
+13. **tailwind-merge keeps a bare utility and a breakpoint variant apart.** A
+    `max-w-5xl` passed to a component whose base class is `sm:max-w-lg` does not
+    replace it: both survive and the variant wins above 640px. Override the SAME
+    variant (`sm:max-w-5xl`). This affects every shadcn component with a
+    responsive default.
+14. **Startup reports:** when investigating a launch failure, collect
     `%APPDATA%\\openfoam-studio\\startup.log` immediately after reproduction;
     it is truncated on every launch. Always record whether the folder zip or
     portable executable was used, because their startup paths differ.

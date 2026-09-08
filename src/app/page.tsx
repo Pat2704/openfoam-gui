@@ -9,7 +9,7 @@ import { useTheme } from 'next-themes';
 import {
   LayoutDashboard, Wand2, FileCode, Terminal, Activity,
   TerminalSquare, Waves, Cpu, X, Boxes, FolderTree,
-  Keyboard, Sun, Moon, Zap, Box, Cuboid
+  Keyboard, Sun, Moon, Zap, Box, Cuboid, BarChart3
 } from 'lucide-react';
 import Dashboard from '@/components/openfoam/dashboard';
 import CaseWizard from '@/components/openfoam/case-wizard';
@@ -17,6 +17,7 @@ import FileEditor from '@/components/openfoam/file-editor';
 import CommandPanel from '@/components/openfoam/command-panel';
 import Monitor from '@/components/openfoam/monitor';
 import MeshViewer from '@/components/openfoam/mesh-viewer';
+import PostProcess from '@/components/openfoam/post-process';
 import ParaViewViewer from '@/components/openfoam/paraview-viewer';
 import OpenFoamBrowser from '@/components/openfoam/foam-browser';
 import { useCaseContext } from '@/lib/case-context';
@@ -28,6 +29,7 @@ const TABS = [
   { id: 'commands', label: 'Commands', icon: <Terminal className="w-4 h-4" /> },
   { id: 'monitor', label: 'Monitor', icon: <Activity className="w-4 h-4" /> },
   { id: 'mesh', label: 'Mesh', icon: <Box className="w-4 h-4" /> },
+  { id: 'postprocess', label: 'Post-Process', icon: <BarChart3 className="w-4 h-4" /> },
   { id: 'paraview', label: 'ParaView', icon: <Cuboid className="w-4 h-4" /> },
   { id: 'applications', label: 'Applications', icon: <Boxes className="w-4 h-4" /> },
   { id: 'src', label: 'Src', icon: <FolderTree className="w-4 h-4" /> },
@@ -37,7 +39,7 @@ const SHORTCUTS = [
   { keys: 'Ctrl + S', desc: 'Save the open file in the editor' },
   { keys: 'Ctrl + Enter', desc: 'Send message in chat' },
   { keys: 'Ctrl + /', desc: 'Show/hide keyboard shortcuts' },
-  { keys: 'Ctrl + 1-9', desc: 'Switch tab (Dashboard, Wizard, Editor, ...)' },
+  { keys: 'Ctrl + 0-9', desc: 'Switch tab, in order (0 = Dashboard … 9 = Src)' },
   { keys: '↑ / ↓', desc: 'Navigate command history in the terminal' },
   { keys: 'Ctrl + F', desc: 'Search in the file open in the editor' },
   { keys: 'Ctrl + B', desc: 'Switch light/dark theme' },
@@ -95,7 +97,7 @@ export default function Home() {
    * user-draggable height and the checkMesh and boundary-condition reports stack
    * below it, so that tab is a column that scrolls, not a pane that fills.
    */
-  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'paraview', 'applications', 'src']);
+  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'postprocess', 'paraview', 'applications', 'src']);
   const paneClass = (id: string) =>
     activeTab !== id ? 'hidden' : FILL_HEIGHT_TABS.has(id) ? 'h-full' : undefined;
   // Open cases: array of names. First element is the active one.
@@ -185,10 +187,21 @@ export default function Home() {
         setShowShortcuts(d => !d);
         return;
       }
-      // Ctrl+1..9  →  switch tabs
-      if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '9') {
+      // Ctrl+0..9  →  switch tabs, in the order they appear.
+      //
+      // A tenth tab (Post-Process) does not fit 1..9, and renumbering from zero
+      // was the user's call: the digit now IS the tab index, so Ctrl+0 is the
+      // Dashboard and Ctrl+9 is Src, with nothing left without a shortcut.
+      //
+      // Ctrl+0 is also the conventional zoom reset. In Electron that shortcut
+      // comes from the default application menu's zoom roles, and main.js
+      // removes the menu entirely (`Menu.setApplicationMenu(null)`), so there is
+      // no accelerator left to fire alongside this handler. Worth re-checking in
+      // the packaged app rather than the dev server if zoom ever moves here:
+      // menu-driven behaviour is exactly the kind that differs between the two.
+      if ((e.ctrlKey || e.metaKey) && e.key >= '0' && e.key <= '9') {
         e.preventDefault();
-        const idx = parseInt(e.key) - 1;
+        const idx = parseInt(e.key);
         if (TABS[idx]) setActiveTab(TABS[idx].id);
       }
     };
@@ -385,6 +398,11 @@ export default function Home() {
         {visitedTabs.includes('mesh') && (
           <div className={paneClass('mesh')}>
             <MeshViewer key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'mesh'} />
+          </div>
+        )}
+        {visitedTabs.includes('postprocess') && (
+          <div className={paneClass('postprocess')}>
+            <PostProcess key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'postprocess'} />
           </div>
         )}
         {visitedTabs.includes('paraview') && (
