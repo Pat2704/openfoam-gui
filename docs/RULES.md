@@ -19,18 +19,18 @@ second file.
 
 ## 1. Current state
 
-- **v3.2.0 is released.** Tag `v3.2.0` and `origin/main` identify release
-  commit `d833d47`; local `main` may contain later committed work waiting for an
+- **v4.0.0 is released.** Tag `v4.0.0` and `origin/main` identify its release
+  commit; local `main` may contain later committed work waiting for an
   explicitly requested push.
-- The release contains the shared FOAMy/Claude/Codex launcher, GPU- and
-  viewport-safe Mesh viewer, reliable Monitor and File Editor refresh, and the
-  visible word-wrap state.
+- The release adds the integrated ParaView workbench, reconstructed/decomposed
+  cases, 23 filters and interactive 3D guides, plus the shared assistant
+  launcher, HiDPI-safe Mesh viewer and independent runtime settings.
 - Both release artifacts are attached on GitHub and copied to `Working/`:
-  `OpenFOAMStudio-v3.2.0-portable.exe` and
-  `OpenFOAMStudio-v3.2.0-folder.zip`.
+  `OpenFOAMStudio-v4.0.0-portable.exe` and
+  `OpenFOAMStudio-v4.0.0-folder.zip`.
 - The repository is MIT licensed. OpenFOAM is not bundled and is a separate GPL
   program inside WSL.
-- The latest full local check passed on 2026-09-07: typecheck, lint, and 107
+- The latest full local check passed on 2026-09-08: typecheck, lint, and 107
   tests; the real Codex contract test was correctly skipped because it is
   opt-in.
 
