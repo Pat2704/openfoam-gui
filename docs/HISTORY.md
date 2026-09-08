@@ -18,6 +18,10 @@ audits.
   now match `dist-electron/` by SHA-256.
 - Noticed in passing, not changed: the packaged standalone carries the whole
   `tests/` directory, which nothing in the app reads.
+- Follow-up the same day: user decision 2 now orders the pair — the local commit
+  follows the successful build — and decision 3 spells out that neither of those
+  automatic steps is a licence to push, tag or release. Decision 3 already
+  forbade all of that; only the wording grew.
 
 ## 2026-09-08 — the app now has its own voice in the agent conversation
 

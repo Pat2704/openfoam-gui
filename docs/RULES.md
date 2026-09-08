@@ -19,9 +19,13 @@ the task needs product or historical context.
 1. The user writes in Italian. Repository prose, UI copy and code comments are
    in English.
 2. Preserve unrelated work in a dirty worktree. Commit each completed change
-   locally in coherent commits, without `Co-Authored-By` trailers.
+   locally in coherent commits, without `Co-Authored-By` trailers. The commit
+   comes after the build that *Validation, builds and publication* 2 requires
+   and after it succeeded, so nothing is committed that has not been built.
 3. Never push, tag, publish, replace a release asset or change a version unless
-   the user explicitly asks in the current message.
+   the user explicitly asks in the current message. Building and committing are
+   automatic; going to GitHub never is, and neither a finished build nor a local
+   commit is a reason to take that step. Stop there and wait for the user's word.
 4. Do not decide the number of subagents alone. Ask the user how many may be
    opened before starting one, then open no more than authorized. Each authorized
    subagent updates its ignored `docs/agent-log/<task>.md` after every step.
