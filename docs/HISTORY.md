@@ -6,6 +6,12 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-08 — v5.2.0
+
+- Released `v5.2.0`: the theme that survives a restart, the agent mode-change
+  channel below, and the Dashboard settings spacing. Notes in
+  `docs/releases/v5.2.0.md`; the paired artifacts carry the new names.
+
 ## 2026-09-08 — theme persistence, settings spacing, detached runs
 
 - The light/dark choice is stored as `ui-theme` in the userData config file and
@@ -17,10 +23,12 @@ audits.
   command started with a trailing `&` is `nohup setsid`-detached inside WSL and
   SURVIVES the `taskkill /F /T` that quitting runs on the server tree; a
   foreground one dies with the `wsl.exe` relay that streams its output. Proved
-  end to end through the UI — `sleep 123` from the new detach button outlived
-  the server tree, `sleep 456` from Run here did not. So the engine already had
-  the behaviour asked for; what was missing was a way to ask for it without
-  knowing the shell idiom, and a warning when closing would destroy a run.
+  end to end through the UI, with a `sleep` started each way. The run in
+  question had simply been a foreground one. The engine therefore already did
+  what was asked, and the detach button, its shortcut, the tooltips and the
+  close warning added around it were reverted at the user's request: the
+  terminal is back to its single Enter button with no hover text. Do not add
+  them back — the user types the `&` deliberately.
 - Dashboard settings: version buttons and ParaView's Auto-detect/Save path pair
   moved from `gap-2` to `gap-3`.
 - README gained the user's Post-Process and ParaView captures.
