@@ -41,6 +41,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   describeDatasetName, summarizeColumn, downsampleRows, buildCallTemplate, buildFunctionsEntry,
+  buildCommandTemplate, parsePostProcessCommand, POST_PROCESS_NAMES,
 } from '@/lib/postprocess';
 import { residualsToTable } from '@/lib/residuals';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
@@ -230,12 +231,20 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [catalogQuery, setCatalogQuery] = useState('');
   const [chosen, setChosen] = useState<CatalogEntry | null>(null);
-  /** The function call as text — what the panel runs, and what the user edits. */
-  const [specText, setSpecText] = useState('');
+  /**
+   * The two texts the panel is made of, both editable.
+   *
+   * The command is the whole line, flags included, because the alternative was
+   * a pair of input boxes for `-time` and `-fields` sitting beside a call they
+   * were not part of. The entry is the controlDict form of the same thing, to
+   * copy.
+   */
+  const [commandText, setCommandText] = useState('');
+  const [entryText, setEntryText] = useState('');
   /** The case's own patch names, so an example uses one that exists. */
   const [patches, setPatches] = useState<string[]>([]);
-  const [timeRange, setTimeRange] = useState('');
-  const [extraFields, setExtraFields] = useState('');
+  /** Which spelling of the utility this OpenFOAM has. */
+  const [utility, setUtility] = useState<string>(POST_PROCESS_NAMES[0]);
   const [running, setRunning] = useState(false);
   const [runOutput, setRunOutput] = useState<string | null>(null);
 
@@ -356,38 +365,38 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not read the function catalogue');
       setCatalog(payload.entries ?? []);
+      // Which spelling this OpenFOAM has, so the command shown is the one that
+      // would actually run: v12 renamed postProcess to foamPostProcess.
+      if (typeof payload.utility === 'string') setUtility(payload.utility);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
     }
   }, [catalog.length, caseName, patches.length]);
 
-  /** The controlDict form of whatever is currently typed. */
-  const functionsEntry = useMemo(() => buildFunctionsEntry(specText || ''), [specText]);
-
   const chooseFunction = (entry: CatalogEntry) => {
     setChosen(entry);
     setRunOutput(null);
-    // A ready-to-run line, built from what the installation declares: the real
-    // argument names, and examples taken from the template's own `e.g.` notes.
-    // The user edits the line rather than a set of invented controls.
-    setSpecText(buildCallTemplate(entry.name, entry.args, patches));
+    // Both texts start from what the installation declares: the real argument
+    // names, examples taken from each template's own `e.g.` note, and a patch
+    // this case actually has. The user edits the text, not a set of invented
+    // controls.
+    const call = buildCallTemplate(entry.name, entry.args, patches);
+    setCommandText(buildCommandTemplate(utility, call));
+    setEntryText(buildFunctionsEntry(call));
   };
 
   const runFunction = async () => {
-    if (!caseName || !specText.trim()) return;
+    if (!caseName || !commandText.trim()) return;
     setRunning(true);
     setRunOutput(null);
     try {
+      // Parsed here so a mistake is reported against the line the user is
+      // looking at. The server checks every piece again regardless.
+      const parsed = parsePostProcessCommand(commandText, catalog.map(entry => entry.name));
       const response = await fetch('/api/postprocess', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'run',
-          case: caseName,
-          spec: specText,
-          time: timeRange.trim() || undefined,
-          fields: extraFields.trim() ? extraFields.trim().split(/[\s,]+/) : undefined,
-        }),
+        body: JSON.stringify({ action: 'run', case: caseName, ...parsed }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'The function object could not be run');
@@ -972,47 +981,105 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{chosen.description || 'No description in the template.'}</p>
                     </div>
 
-                    {/* The call, as text.
-                        A generated form had to invent one control per argument
-                        and got some of them wrong. This is the line OpenFOAM
-                        actually accepts, prefilled from the installation's own
-                        template and editable by anyone who knows the syntax;
-                        what each argument means is documented below it rather
-                        than guessed at above it. */}
+                    {/* ── Two editable texts, and nothing else to fill in ──
+                        The command is the whole line, flags included: a pair of
+                        boxes for -time and -fields used to sit beside a call
+                        they were not part of, which is what made them read as
+                        noise. Editing the line is editing the run. */}
                     <div>
-                      <Label htmlFor="pp-spec" className="text-[11px]">Function to run</Label>
-                      <Textarea
-                        id="pp-spec"
-                        value={specText}
-                        onChange={event => setSpecText(event.target.value)}
-                        spellCheck={false}
-                        className="mt-1 h-20 font-mono text-xs"
-                        placeholder={chosen.name}
-                      />
-                      <div className="mt-1 flex items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="pp-command" className="text-[11px]">Run it now, over the times already written</Label>
                         <Button
-                          size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]"
-                          onClick={() => setSpecText(buildCallTemplate(chosen.name, chosen.args, patches))}
+                          size="sm" variant="ghost" className="ml-auto h-6 px-1.5 text-[10px]"
+                          onClick={() => setCommandText(buildCommandTemplate(utility, buildCallTemplate(chosen.name, chosen.args, patches)))}
                         >
-                          <RefreshCw className="mr-1 h-3 w-3" /> Reset to the example
+                          <RefreshCw className="mr-1 h-3 w-3" /> Reset
                         </Button>
                         <Button
                           size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]"
-                          onClick={() => { void navigator.clipboard.writeText(specText).then(() => toast.success('Copied')); }}
+                          onClick={() => { void navigator.clipboard.writeText(commandText).then(() => toast.success('Copied')); }}
                         >
                           <Copy className="mr-1 h-3 w-3" /> Copy
                         </Button>
                       </div>
+                      <Textarea
+                        id="pp-command"
+                        value={commandText}
+                        onChange={event => setCommandText(event.target.value)}
+                        spellCheck={false}
+                        className="mt-1 h-20 font-mono text-xs"
+                      />
                     </div>
 
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="pp-entry" className="text-[11px]">Or run it during the solve</Label>
+                        <Button
+                          size="sm" variant="ghost" className="ml-auto h-6 px-1.5 text-[10px]"
+                          onClick={() => setEntryText(buildFunctionsEntry(buildCallTemplate(chosen.name, chosen.args, patches)))}
+                        >
+                          <RefreshCw className="mr-1 h-3 w-3" /> Reset
+                        </Button>
+                        <Button
+                          size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]"
+                          onClick={() => { void navigator.clipboard.writeText(entryText).then(() => toast.success('Copied')); }}
+                        >
+                          <Copy className="mr-1 h-3 w-3" /> Copy
+                        </Button>
+                      </div>
+                      <Textarea
+                        id="pp-entry"
+                        value={entryText}
+                        onChange={event => setEntryText(event.target.value)}
+                        spellCheck={false}
+                        className="mt-1 h-24 font-mono text-[11px]"
+                      />
+                      <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                        Paste into <code className="font-mono">system/controlDict</code>, or add the
+                        <code className="mx-1 font-mono">#includeFunc</code> line to the
+                        <code className="mx-1 font-mono">functions</code> block already there. The app never
+                        edits your controlDict.
+                      </p>
+                    </div>
+
+                    {/* ── How to write it ── */}
                     <div className="rounded border">
                       <div className="border-b bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
+                        Syntax
+                      </div>
+                      <div className="space-y-2 px-2 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                        <p>
+                          A function object is written <code className="font-mono">name(arg=value, arg=value)</code>,
+                          or just <code className="font-mono">name</code> when it takes none. Vectors and lists
+                          go in brackets: <code className="font-mono">start=(0 0 0)</code>,
+                          <code className="mx-1 font-mono">fields=(p U)</code>.
+                        </p>
+                        <p>
+                          Fields may also be listed positionally at the end, which is how the tutorials
+                          write them: <code className="font-mono">cellMin(name=pMin, p)</code>.
+                        </p>
+                        <p>
+                          <code className="font-mono">name=</code> sets the output directory. Without it the
+                          results land in one named after the whole call with its spaces stripped out,
+                          which cannot be read back.
+                        </p>
+                        <p>
+                          The command accepts <code className="font-mono">-func</code> plus
+                          <code className="mx-1 font-mono">-time 5:</code> (also
+                          <code className="mx-1 font-mono">:10</code> or <code className="font-mono">2,4,6</code>),
+                          <code className="mx-1 font-mono">-latestTime</code>,
+                          <code className="mx-1 font-mono">-noZero</code>,
+                          <code className="mx-1 font-mono">-fields &quot;(U p)&quot;</code> to force extra fields to be
+                          read, and <code className="mx-1 font-mono">-region</code> for a named mesh region.
+                          Nothing else: the run stays inside the case that is open.
+                        </p>
+                      </div>
+                      <div className="border-t bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
                         Arguments this installation declares
                       </div>
                       {chosen.args.length === 0 ? (
                         <p className="px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
-                          None: this function object is called by name alone. Fields may still be listed
-                          after the name, as in <code className="font-mono">{chosen.name}(p, U)</code>.
+                          None: <code className="font-mono">{chosen.name}</code> is called by name alone.
                         </p>
                       ) : (
                         <dl className="divide-y">
@@ -1032,64 +1099,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                           ))}
                         </dl>
                       )}
-                      <p className="border-t px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
-                        Fields can also be listed positionally, the way the tutorials write them:
-                        <code className="mx-1 font-mono">cellMin(name=pMin, p)</code>. Keeping
-                        <code className="mx-1 font-mono">name=</code> is worth it &mdash; without it the results
-                        land in a directory named after the whole call with its spaces stripped out.
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 border-t pt-3">
-                      <div>
-                        <Label htmlFor="pp-time" className="text-[11px]">Time range</Label>
-                        <Input
-                          id="pp-time"
-                          value={timeRange}
-                          onChange={event => setTimeRange(event.target.value)}
-                          placeholder="all times, or 5:, :10, 2,4,6"
-                          className="mt-1 h-8 font-mono text-xs"
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="pp-fields" className="text-[11px]">Extra fields to read</Label>
-                        <Input
-                          id="pp-fields"
-                          value={extraFields}
-                          onChange={event => setExtraFields(event.target.value)}
-                          placeholder="U p"
-                          className="mt-1 h-8 font-mono text-xs"
-                        />
-                      </div>
-                    </div>
-
-                    {/* The same function, during the solve. Text to copy, never
-                        written: the app does not edit the user's controlDict. */}
-                    <div className="rounded border">
-                      <div className="flex items-center gap-2 border-b bg-muted/40 px-2 py-1">
-                        <span className="text-[9px] font-semibold uppercase text-muted-foreground">
-                          To run it during the solve instead
-                        </span>
-                        <Button
-                          size="sm" variant="ghost" className="ml-auto h-5 px-1.5 text-[9px]"
-                          onClick={() => { void navigator.clipboard.writeText(functionsEntry).then(() => toast.success('Copied')); }}
-                        >
-                          <Copy className="mr-1 h-3 w-3" /> Copy
-                        </Button>
-                      </div>
-                      <Textarea
-                        value={functionsEntry}
-                        readOnly
-                        spellCheck={false}
-                        className="h-24 rounded-none border-0 font-mono text-[10px] focus-visible:ring-0"
-                      />
-                      <p className="border-t px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
-                        Paste this into <code className="font-mono">system/controlDict</code>, or add the
-                        <code className="mx-1 font-mono">#includeFunc</code> line to the
-                        <code className="mx-1 font-mono">functions</code> block already there. The app does not
-                        edit your controlDict; running it here writes the same results without touching the
-                        case setup.
-                      </p>
                     </div>
 
                     {runOutput !== null && (
@@ -1103,9 +1112,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               )}
 
               <div className="flex flex-shrink-0 items-center gap-2 border-t px-4 py-2.5">
-                {specText.includes('<') && (
+                {commandText.includes('<') && (
                   <span className="text-[10px] text-warning">
-                    The line still has a placeholder in it
+                    The command still has a placeholder in it
                   </span>
                 )}
                 <div className="ml-auto flex items-center gap-2">
@@ -1115,7 +1124,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   <Button
                     size="sm"
                     className="h-8 gap-1.5 text-xs"
-                    disabled={!chosen || running || !specText.trim()}
+                    disabled={!chosen || running || !commandText.trim()}
                     onClick={() => void runFunction()}
                   >
                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}

@@ -4,6 +4,7 @@ import {
   readPostProcessDataset,
   listFunctionCatalog,
   runPostProcessFunction,
+  postProcessUtilityName,
 } from '@/lib/wsl';
 import {
   parseFoamTable,
@@ -22,7 +23,8 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 //   ?action=catalog&refresh=…                 → { entries }
 //
 // POST /api/postprocess
-//   { action: 'run', case, spec, time, fields, region } → { exitCode, output, spec }
+//   { action: 'run', case, spec, time, fields, region, latestTime, noZero }
+//                                              → { exitCode, output, spec }
 
 export async function GET(req: NextRequest) {
   try {
@@ -99,7 +101,11 @@ export async function GET(req: NextRequest) {
 
       case 'catalog': {
         const refresh = searchParams.get('refresh') === 'true';
-        return NextResponse.json({ entries: listFunctionCatalog(refresh) });
+        return NextResponse.json({
+          entries: listFunctionCatalog(refresh),
+          // So the command shown carries the name this OpenFOAM actually has.
+          utility: postProcessUtilityName(),
+        });
       }
 
       default:
@@ -139,6 +145,8 @@ export async function POST(req: NextRequest) {
       time: typeof body.time === 'string' && body.time.trim() ? body.time.trim() : undefined,
       fields: fields?.length ? fields : undefined,
       region: typeof body.region === 'string' && body.region.trim() ? body.region.trim() : undefined,
+      latestTime: body.latestTime === true,
+      noZero: body.noZero === true,
     });
 
     return NextResponse.json({ ...result, spec });

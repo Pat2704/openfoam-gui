@@ -182,7 +182,17 @@ export default function ChartExportDialog({
   });
   const [busy, setBusy] = useState(false);
   const [markup, setMarkup] = useState('');
-  const holderRef = useRef<HTMLDivElement>(null);
+  /**
+   * The offscreen node the chart is drawn into, held in STATE rather than in a
+   * ref.
+   *
+   * Radix mounts the dialog's content in a later commit than the one where
+   * `open` turns true, so a plain ref was still null when the effect below
+   * first ran: it returned early, never attached its observer, and the preview
+   * stayed blank until some other change re-ran it. A callback ref re-renders
+   * when the node actually appears, which is the signal that was missing.
+   */
+  const [holder, setHolder] = useState<HTMLDivElement | null>(null);
 
   const set = <K extends keyof ExportOptions>(key: K, value: ExportOptions[K]) =>
     setOptions(current => ({ ...current, [key]: value }));
@@ -302,7 +312,7 @@ export default function ChartExportDialog({
    * inherits from the page.
    */
   const buildSvg = React.useCallback((): string => {
-    const original = holderRef.current?.querySelector('svg');
+    const original = holder?.querySelector('svg');
     if (!original || !source) return '';
     const clone = original.cloneNode(true) as SVGSVGElement;
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -365,15 +375,46 @@ export default function ChartExportDialog({
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"` +
       ` width="${options.width}" height="${options.height}" viewBox="0 0 ${options.width} ${options.height}">` +
       `${pieces.join('')}${inner}${after.join('')}</svg>`;
-  }, [source, options, colors.background, colors.foreground, titleHeight, legend.items, topMargin]);
+  }, [holder, source, options, colors.background, colors.foreground, titleHeight, legend.items, topMargin]);
 
-  // Rebuild after every commit that could change the drawing, so the preview
-  // below never shows a chart the file would not contain.
+  /**
+   * Rebuild the document, and keep rebuilding it while recharts is still
+   * drawing.
+   *
+   * A single read after the commit was not enough: recharts does not always
+   * have its `<svg>` in the DOM by then, `buildSvg` came back empty, and
+   * nothing re-ran the effect afterwards — so the preview stayed blank until
+   * any click changed an option and happened to rebuild it. Watching the
+   * hidden holder answers for whatever recharts does and whenever it does it.
+   *
+   * There is no feedback loop: the observer watches the holder, and the markup
+   * it produces is rendered into a different element. Rebuilds are coalesced
+   * onto a frame because a chart of a few thousand points serialises to about
+   * half a megabyte and recharts mutates its subtree several times in a row.
+   */
   useLayoutEffect(() => {
     if (!open) return;
-    const next = buildSvg();
-    setMarkup(current => (current === next ? current : next));
-  }, [open, buildSvg, chartRows, logScale, source]);
+    let frame = 0;
+    const rebuild = () => {
+      const next = buildSvg();
+      // Never replace a good document with an empty one: an intermediate state
+      // where the svg has gone missing would blank the preview.
+      if (next) setMarkup(current => (current === next ? current : next));
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; rebuild(); });
+    };
+
+    rebuild();
+    if (!holder) return;
+    const observer = new MutationObserver(schedule);
+    observer.observe(holder, { childList: true, subtree: true, attributes: true });
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [open, holder, buildSvg, chartRows, logScale, source]);
 
   const download = (blob: Blob, extension: string) => {
     const url = URL.createObjectURL(blob);
@@ -644,7 +685,7 @@ export default function ChartExportDialog({
             be read. Kept in the layout (not display:none) because recharts needs
             a real box to draw into. */}
         <div aria-hidden className="pointer-events-none fixed left-[-99999px] top-0 opacity-0">
-          <div ref={holderRef} style={{ width: options.width, height: options.height }}>{chart}</div>
+          <div ref={setHolder} style={{ width: options.width, height: options.height }}>{chart}</div>
         </div>
       </DialogContent>
     </Dialog>

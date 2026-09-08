@@ -123,22 +123,20 @@ Important modules:
 
 ### OpenFOAM compatibility
 
-- The app supports the OpenFOAM Foundation line v9–v14 and selects legacy
-  (`<=10`) or modular (`>=11`) case layouts. ESI releases such as `v2312` are
-  unsupported; do not imply compatibility or tailor generated cases to them.
-- New Case generates a complete parametric box mesh, synchronized patch fields,
-  version-correct dictionaries, numeric dimension sets, and a preflight.
-- The installed OpenFOAM vocabulary is built with `foamToC` and source scans,
-  cached in WSL, and used to ground FOAMy and validate proposed dictionaries.
-- Tutorial retrieval uses BM25 plus an Italian-to-OpenFOAM glossary. This was a
-  deliberate lightweight choice over shipping a large embedding runtime.
-- The ParaView tab is an optional local integration, not a bundled dependency.
-  It uses `paraFoam -touch` and one persistent app-owned `pvpython` worker. Real
-  `paraview.simple` proxies own the reader, filters, displays, time and offscreen
-  render; the browser presents the pipeline/properties workbench and receives
-  rendered frames. Never embed ParaView's Qt UI or accept browser-supplied
-  Python, proxy names, or arbitrary property names: every operation is an
-  explicit API/worker allowlist.
+- Supported: the OpenFOAM Foundation line v9–v14, with legacy (`<=10`) or
+  modular (`>=11`) case layouts. ESI releases such as `v2312` are not; do not
+  imply compatibility or tailor generated cases to them.
+- New Case generates a parametric box mesh, synchronized patch fields,
+  version-correct dictionaries, dimension sets and a preflight.
+- The installed vocabulary is built with `foamToC` and source scans, cached in
+  WSL, and grounds FOAMy. Tutorial retrieval uses BM25 plus an Italian glossary,
+  a deliberate choice over shipping an embedding runtime.
+- The ParaView tab is an optional local integration, not a bundled dependency:
+  `paraFoam -touch` and one persistent app-owned `pvpython` worker, whose real
+  `paraview.simple` proxies own the reader, filters, displays, time and render;
+  the browser presents the workbench and receives frames. Never embed ParaView's
+  Qt UI, and never accept browser-supplied Python, proxy or property names —
+  every operation goes through an explicit API/worker allowlist.
   Discovery must not hard-code a version or install directory: check the saved
   override, environment, PATH, registry and common roots, with a manual
   folder/executable path as the universal fallback. Detection and path settings
@@ -189,21 +187,23 @@ Commands owns running arbitrary binaries.
   stitched and a later run's rows replace recomputed ones. Anything else
   (`distance`, `x`) means a complete profile sampled at that instant, so slices
   must NOT be merged and the user picks a time.
-- The Compute panel offers ONE editable line, not a generated form. A form has
-  to invent a control per argument and gets some of them wrong; the line is what
-  OpenFOAM accepts and what the tutorials write. It is prefilled from the
-  installation: real argument names, examples taken from each template's own
-  `e.g.` note, a patch the case actually has, and a leading `name=` so results
-  land in a readable directory instead of one named after the whole call with
-  its spaces stripped. Placeholders are classified by SHAPE — singular versus
-  plural, field versus patch — because the templates use 57 distinct ones and a
-  table of names would be wrong on the next version.
-- Typed specifications are validated, never composed: a leading name this
-  installation offers, balanced brackets, an allowlisted character set, then
-  shell-quoted.
-- The panel also shows the `functions { #includeFunc … }` entry for running the
-  same thing during the solve. It is text to copy. Do NOT write it into the
-  user's `controlDict`.
+- The Compute panel is TWO editable texts and nothing else to fill in: the whole
+  command, flags included, and the `functions { #includeFunc … }` entry for the
+  solve. No generated form — a form invents a control per argument and gets some
+  wrong — and no side boxes for `-time` or `-fields`, which sat beside a call
+  they were not part of. Both are prefilled from the installation: real argument
+  names, examples from each template's own `e.g.` note, a patch the case
+  actually has, and a leading `name=` so results land in a readable directory
+  rather than one named after the whole call with its spaces stripped.
+  Placeholders are classified by SHAPE — singular versus plural, field versus
+  patch — because the templates use 57 distinct ones and a table of names would
+  be wrong on the next version.
+- An editable command must not become an editable shell. It is PARSED, not
+  passed: the utility name, then only `-func`, `-time`, `-fields`, `-region`,
+  `-latestTime`, `-noZero`, each value checked, anything else refused by name.
+  `-case` in particular is refused, so a run cannot leave the open case.
+- The `#includeFunc` entry is text to copy. Do NOT write it into the user's
+  `controlDict`.
 - The tab also lists the case's solver logs and plots their initial residuals.
   The parser lives in `src/lib/residuals.ts` and is shared with the Monitor;
   keep it there. Residuals are reshaped into the same columns-and-rows table the
@@ -218,6 +218,11 @@ Commands owns running arbitrary binaries.
   from the same document through a `data:` URL — a `blob:` URL taints the canvas
   and `toBlob` then throws. Every axis gets a name by default; leaving one blank
   because several series are plotted is what made a figure look unlabelled.
+  The chart node is held in STATE through a callback ref and watched with a
+  MutationObserver, because Radix mounts dialog content in a LATER commit than
+  the one where `open` turns true: a plain ref was null when the effect first
+  ran, so nothing was ever built and the preview stayed blank until some other
+  change happened to re-run it.
 - Out of scope for now, deliberately: writing into `controlDict`, decomposed or
   parallel runs, and multi-region cases. Surface and VTK writers are not
   charted here — they belong to the ParaView tab.
@@ -240,14 +245,12 @@ schemas, prompt, policy, case confinement, and activity model.
 - Guarded agents may run an existing `Allrun`, `Allclean`, `Allmesh`, `Allwmake`,
   or `Alltest`, but may not write those script names. This closes the
   write-script/run-script shell escape without breaking tutorial scripts.
-- Command arguments are resolved and must remain inside the OpenFOAM run
-  directory. Legitimate sibling-case tools such as `mapFields ../coarse` remain
-  possible.
+- Command arguments are resolved and must remain inside the run directory, so
+  sibling-case tools such as `mapFields ../coarse` still work.
 - Unrestricted mode enables a WSL shell inside the case, but `/mnt/` remains
   blocked to protect Windows files.
-- Reading is allowed freely. `run_openfoam` is used only when the user asks for
-  a run; a question must not silently start a simulation. Ambiguous requests are
-  treated as questions.
+- Reading is free. `run_openfoam` runs only when the user asks for a run; an
+  ambiguous request is treated as a question, never as a simulation.
 - Claude runs with strict MCP configuration and no inherited tools or settings.
 - Codex uses an isolated `%APPDATA%\\openfoam-studio\\codex` home and requires
   Codex CLI 0.153.1 or newer.
@@ -257,11 +260,11 @@ schemas, prompt, policy, case confinement, and activity model.
 
 ### Security boundary
 
-- `/api/agent/tools` fails closed and requires the per-process agent token.
-- `src/proxy.ts` blocks browser-labelled cross-origin API requests.
+- `/api/agent/tools` fails closed and requires the per-process agent token, and
+  `src/proxy.ts` blocks browser-labelled cross-origin API requests.
 - Selected OpenFOAM bashrc paths must come from the detector's own results.
-- Case names and relative paths use the shared validators; no absolute path,
-  traversal, NUL, control character, or prefix-sibling escape is accepted.
+- Case names and relative paths use the shared validators: no absolute path,
+  traversal, NUL, control character or prefix-sibling escape.
 - File writes use a sibling temporary file, preserve permissions, and rename
   atomically.
 - External links opened by Electron are restricted to HTTP and HTTPS.
@@ -290,20 +293,18 @@ schemas, prompt, policy, case confinement, and activity model.
   this and needs a different scheme, not a silently dropped shortcut.
 - The Mesh viewer uses TrackballControls for free rotation, renders on demand,
   and must consume zero CPU while idle. Vertex labels stay a fixed visual size.
-- Mesh framing accounts for horizontal and vertical field of view. WebGL drawing
-  buffers respect device pixel ratio, adapter limits, and a roughly 4K pixel
-  budget without changing CSS geometry. A HiDPI canvas using `setSize(...,
-  false)` must retain explicit `width: 100%; height: 100%` CSS; otherwise its
-  physical buffer size becomes its layout size on scaled laptop displays,
-  cropping both the centred mesh and the bottom-corner axes.
-- Renderer creation retries without MSAA, reports missing WebGL2 clearly, and
-  remeasures after hidden mounts, resize, and context restoration. Teardown must
-  call `forceContextLoss()` and dispose label textures.
-- Monitor manual refresh waits for an in-flight poll and then performs a fresh
-  request; it cannot be swallowed by automatic polling.
+- Mesh framing accounts for both fields of view, and WebGL drawing buffers
+  respect device pixel ratio, adapter limits and a ~4K budget without changing
+  CSS geometry. A HiDPI canvas using `setSize(..., false)` must keep explicit
+  `width: 100%; height: 100%` CSS, or its buffer size becomes its layout size on
+  scaled displays and crops the mesh.
+- Renderer creation retries without MSAA, reports missing WebGL2, and remeasures
+  after hidden mounts, resize and context restoration; teardown calls
+  `forceContextLoss()` and disposes label textures.
+- Monitor manual refresh waits for an in-flight poll, then makes a fresh request.
 - Dashboard OpenFOAM and ParaView gears open independent settings panels. An
-  explicit OpenFOAM scan bypasses cached results; empty/error detection is only
-  negative-cached briefly and must never erase an already valid client list.
+  explicit scan bypasses caches; a failed detection is negative-cached only
+  briefly and must never erase an already valid client list.
 - File Editor refreshes visible and expanded directories without replacing the
   open buffer, dirty state, selection, or expansion state. Navigation away from
   unsaved text requires confirmation.
@@ -314,8 +315,7 @@ schemas, prompt, policy, case confinement, and activity model.
   against that fingerprint: an unvalidated cache is what made an agent's edits
   invisible until the case was closed and reopened, because reopening the file
   never reached WSL at all.
-- The word-wrap control is visual only and exposes `Wrap On` / `Wrap Off` plus
-  `aria-pressed`.
+- The word-wrap control is visual only, exposing `Wrap On`/`Wrap Off` and `aria-pressed`.
 
 ## 6. Test case
 

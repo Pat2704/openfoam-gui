@@ -14,6 +14,9 @@ import {
   buildCallTemplate,
   buildFunctionsEntry,
   validateTypedSpec,
+  tokenizeCommand,
+  parsePostProcessCommand,
+  buildCommandTemplate,
   FunctionSpecError,
   describeDatasetName,
   isTabularOutput,
@@ -457,6 +460,60 @@ test('a typed specification that could not run is refused before OpenFOAM sees i
   for (const bad of ['', '   ', 'notAFunction', 'yPlus(', 'yPlus(a))', '(yPlus)', 'yPlus; rm -rf /', 'yPlus($(id))']) {
     assert.throws(() => validateTypedSpec(bad, known), FunctionSpecError, `expected ${JSON.stringify(bad)} to be refused`);
   }
+});
+
+test('a quoted argument survives tokenising, brackets and spaces included', () => {
+  // `-func "graphUniform(start=(0 0 0))"` is ONE argument. Splitting on
+  // whitespace would make it four and lose the call.
+  assert.deepEqual(
+    tokenizeCommand('foamPostProcess -func "graphUniform(start=(0 0 0), fields=(p U))"'),
+    ['foamPostProcess', '-func', 'graphUniform(start=(0 0 0), fields=(p U))'],
+  );
+  assert.deepEqual(tokenizeCommand("a -time '5:'"), ['a', '-time', '5:']);
+});
+
+test('an edited command is read back into the pieces the runner accepts', () => {
+  const known = ['graphUniform', 'yPlus'];
+  const parsed = parsePostProcessCommand(
+    'foamPostProcess -func "graphUniform(name=lineA, start=(0 0 0))" -time 5: -fields "(U p)" -latestTime',
+    known,
+  );
+  assert.equal(parsed.spec, 'graphUniform(name=lineA, start=(0 0 0))');
+  assert.equal(parsed.time, '5:');
+  assert.deepEqual(parsed.fields, ['U', 'p']);
+  assert.equal(parsed.latestTime, true);
+  assert.equal(parsed.noZero, undefined);
+
+  // The utility name may be left off; the flags alone are enough.
+  assert.equal(parsePostProcessCommand('-func yPlus', known).spec, 'yPlus');
+  // And either spelling of it is accepted, since which one exists depends on
+  // the OpenFOAM version.
+  assert.equal(parsePostProcessCommand('postProcess -func yPlus', known).spec, 'yPlus');
+});
+
+test('an editable command is not an editable shell', () => {
+  const known = ['yPlus'];
+  const refused: [string, string][] = [
+    ['rm -rf / -func yPlus', 'a command that is not the utility'],
+    ['foamPostProcess -func yPlus -case /etc', '-case, which would leave the open case'],
+    ['foamPostProcess -func yPlus -exec something', 'an unknown flag'],
+    ['foamPostProcess -func notAFunction', 'a function this installation does not have'],
+    ['foamPostProcess -time 5:', 'no -func at all'],
+    ['foamPostProcess -func', '-func with no value'],
+    ['foamPostProcess -func yPlus -fields "(U; rm -rf /)"', 'a field name that is not one'],
+    ['foamPostProcess -func yPlus stray', 'a stray argument outside -func'],
+    ['', 'nothing'],
+  ];
+  for (const [command, why] of refused) {
+    assert.throws(() => parsePostProcessCommand(command, known), FunctionSpecError, `expected to refuse ${why}`);
+  }
+});
+
+test('the default command is the call, quoted, under the utility this version has', () => {
+  assert.equal(
+    buildCommandTemplate('foamPostProcess', 'yPlus'),
+    'foamPostProcess -func "yPlus"',
+  );
 });
 
 test('a dataset directory name is split for display without inventing its numbers', () => {

@@ -127,12 +127,13 @@ the **OpenFOAM card in the Dashboard**.
   dialog. SVG stays sharp at any size and keeps its text selectable; PNG is
   rasterised from that same drawing at 1×, 2× or 3×.
 
-  **Compute…** gives you one editable line rather than a form: the call is
-  prefilled from the installation's own template, with its real argument names,
-  the examples the template documents, and a patch your case actually has. What
-  each argument means is listed underneath. A second box shows the
-  `functions { #includeFunc … }` entry that runs the same thing during the
-  solve — to copy into `controlDict` yourself; the app never edits it for you.
+  **Compute…** gives you two editable texts rather than a form: the whole
+  command to run now, and the `functions { #includeFunc … }` entry that runs the
+  same thing during the solve. Both are prefilled from the installation's own
+  template — real argument names, the examples it documents, a patch your case
+  actually has — and underneath them is the syntax, the accepted options and
+  what each argument means. Copy the entry into `controlDict` yourself; the app
+  never edits it for you.
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
   offscreen renderer. Select volume, patch and group regions; switch between

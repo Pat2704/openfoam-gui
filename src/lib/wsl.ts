@@ -2839,8 +2839,16 @@ export function getCaseSummary(caseName: string): CaseSummaryInfo {
   try {
     const script = `
 CASE=${shellQuote(casePath)}
-# Solver from controlDict
-SOLVER=$(grep -E '^application\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
+# Solver from controlDict.
+#
+# "application icoFoam;" is the v9/v10 spelling. From v11 the solvers became
+# modules and the key is "solver incompressibleFluid;", so looking only for
+# application reported an empty solver on every modern case. Both are read,
+# newest first.
+SOLVER=$(grep -E '^solver\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
+if [ -z "$SOLVER" ]; then
+  SOLVER=$(grep -E '^application\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
+fi
 echo "SOLVER:$SOLVER"
 # Time params from controlDict
 DT=$(grep -E '^deltaT\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
@@ -2852,10 +2860,17 @@ echo "WI:$WI"
 # Scheme (ddtSchemes)
 SCHEME=$(grep -A2 'ddtSchemes' "$CASE/system/fvSchemes" 2>/dev/null | grep 'default' | awk '{print $NF}' | tr -d ';')
 echo "SCHEME:$SCHEME"
-# Mesh cells (best effort)
-CELLS=$(grep -E '^nCells\\s*:' "$CASE/constant/polyMesh/boundary" 2>/dev/null | awk '{print $NF}')
+# Mesh cells.
+#
+# The count is in the note of constant/polyMesh/owner, which every mesh writer
+# fills in:
+#     note  "nPoints: 882 nCells: 400 nFaces: 1640 nInternalFaces: 760";
+# It was being looked for in boundary, which does not carry it, and the
+# fallback counted lines beginning with an open bracket in faces - a file that
+# has exactly one. Every case therefore reported a mesh of 1 cell.
+CELLS=$(sed -n 's/.*nCells:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$CASE/constant/polyMesh/owner" 2>/dev/null | head -1)
 if [ -z "$CELLS" ]; then
-  CELLS=$(grep -c '^(' "$CASE/constant/polyMesh/faces" 2>/dev/null || echo "")
+  CELLS=$(sed -n 's/.*nCells:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$CASE/constant/polyMesh/neighbour" 2>/dev/null | head -1)
 fi
 echo "CELLS:$CELLS"
 # Patch names.
@@ -3346,6 +3361,36 @@ done
   return entries;
 }
 
+let cachedUtility: { key: string; name: string } | null = null;
+
+/**
+ * Which spelling of the retroactive utility this installation has.
+ *
+ * Asked once and remembered, only so the panel can SHOW the right command.
+ * The run itself resolves it again inside the script, because that is the
+ * answer that has to be right even if this cache is stale.
+ */
+export function postProcessUtilityName(): string {
+  const key = findBashrc() || 'none';
+  if (cachedUtility && cachedUtility.key === key) return cachedUtility.name;
+  const script = `
+${foamSource()}
+${POST_PROCESS_RESOLVER}
+echo "$PP"
+`;
+  try {
+    // The script prints the name and nothing else: sourcing the bashrc has
+    // its output suppressed, and the resolver's failure message goes to
+    // stderr, which this runner does not return.
+    const name = runInWslScript(Buffer.from(script).toString('base64'), 30000).trim();
+    if (name === 'foamPostProcess' || name === 'postProcess') {
+      cachedUtility = { key, name };
+      return name;
+    }
+  } catch { /* the default below is the modern one */ }
+  return 'foamPostProcess';
+}
+
 export interface PostProcessRunResult {
   exitCode: number;
   output: string;
@@ -3366,7 +3411,7 @@ export interface PostProcessRunResult {
 export function runPostProcessFunction(
   caseName: string,
   spec: string,
-  options: { time?: string; fields?: string[]; region?: string } = {},
+  options: { time?: string; fields?: string[]; region?: string; latestTime?: boolean; noZero?: boolean } = {},
 ): PostProcessRunResult {
   const casePath = getCasePath(caseName);
   if (!FUNCTION_SPEC_SAFE.test(spec) || spec.length > 1024) {
@@ -3388,6 +3433,9 @@ export function runPostProcessFunction(
     if (!/^[A-Za-z][\w.]{0,63}$/.test(options.region)) throw new WslInputError('Region name is not valid');
     args.push(`-region ${shellQuote(options.region)}`);
   }
+  // Switches, not values: nothing of the caller's reaches the command line.
+  if (options.latestTime) args.push('-latestTime');
+  if (options.noZero) args.push('-noZero');
 
   // An OpenFOAM binary must never run with the Windows-mounted project path as
   // its working directory — the space in the Windows user name makes it abort —

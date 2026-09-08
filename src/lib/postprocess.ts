@@ -706,6 +706,128 @@ export function buildCallTemplate(
   return `${name}(${parts.join(', ')})`;
 }
 
+/** The retroactive utility, under either of the names the line has used. */
+export const POST_PROCESS_NAMES = ['foamPostProcess', 'postProcess'] as const;
+
+export interface ParsedCommand {
+  spec: string;
+  time?: string;
+  fields?: string[];
+  region?: string;
+  latestTime?: boolean;
+  noZero?: boolean;
+}
+
+/**
+ * Split a command line into arguments, respecting quotes.
+ *
+ * `-func "graphUniform(start=(0 0 0))"` is ONE argument containing spaces and
+ * brackets; splitting on whitespace would turn it into four and lose the call.
+ */
+export function tokenizeCommand(text: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let started = false;
+  for (const char of text.replace(/\s+/g, ' ')) {
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (char === ' ') {
+      if (started || current) tokens.push(current);
+      current = '';
+      started = false;
+      continue;
+    }
+    current += char;
+  }
+  if (started || current) tokens.push(current);
+  return tokens.filter((token, index) => token !== '' || index < tokens.length);
+}
+
+/**
+ * Read the command the user edited into the pieces the runner accepts.
+ *
+ * The whole line is editable, which is what makes the panel usable — but an
+ * editable line must not become an editable shell. Only the flags this utility
+ * needs are recognised, each value is checked, and anything else is refused by
+ * name so the message says what to remove. `-case` in particular is not
+ * accepted: the run is confined to the case that is open.
+ */
+export function parsePostProcessCommand(text: string, known: readonly string[]): ParsedCommand {
+  const tokens = tokenizeCommand(text.trim());
+  if (!tokens.length) throw new FunctionSpecError('Type a command to run');
+
+  let index = 0;
+  if (!tokens[0].startsWith('-')) {
+    if (!(POST_PROCESS_NAMES as readonly string[]).includes(tokens[0])) {
+      throw new FunctionSpecError(`A command starts with ${POST_PROCESS_NAMES.join(' or ')}, not ${tokens[0]}`);
+    }
+    index = 1;
+  }
+
+  const parsed: ParsedCommand = { spec: '' };
+  const valueOf = (flag: string): string => {
+    const value = tokens[index + 1];
+    if (value === undefined || (value.startsWith('-') && value.length > 1 && !/^-?\d/.test(value))) {
+      throw new FunctionSpecError(`${flag} needs a value`);
+    }
+    index += 2;
+    return value;
+  };
+
+  while (index < tokens.length) {
+    const flag = tokens[index];
+    switch (flag) {
+      case '-func': parsed.spec = validateTypedSpec(valueOf(flag), known); break;
+      case '-time': {
+        const value = valueOf(flag);
+        if (!/^[0-9.,:\-+eE ]{1,120}$/.test(value)) throw new FunctionSpecError('The time range is not valid');
+        parsed.time = value;
+        break;
+      }
+      case '-fields': {
+        const value = valueOf(flag).replace(/^\(|\)$/g, '');
+        const fields = value.split(/[\s,]+/).filter(Boolean);
+        for (const field of fields) {
+          if (!/^[A-Za-z][\w.]{0,63}$/.test(field)) throw new FunctionSpecError(`Not a field name: ${field}`);
+        }
+        parsed.fields = fields;
+        break;
+      }
+      case '-region': {
+        const value = valueOf(flag);
+        if (!/^[A-Za-z][\w.]{0,63}$/.test(value)) throw new FunctionSpecError('The region name is not valid');
+        parsed.region = value;
+        break;
+      }
+      case '-latestTime': parsed.latestTime = true; index += 1; break;
+      case '-noZero': parsed.noZero = true; index += 1; break;
+      default:
+        throw new FunctionSpecError(
+          flag.startsWith('-')
+            ? `${flag} is not one of the options this panel runs: -func, -time, -fields, -region, -latestTime, -noZero`
+            : `Unexpected "${flag}" — arguments belong inside -func "…"`,
+        );
+    }
+  }
+
+  if (!parsed.spec) throw new FunctionSpecError('The command needs a -func "…" to run');
+  return parsed;
+}
+
+/** The default command for a chosen function: the call, ready to edit. */
+export function buildCommandTemplate(utility: string, spec: string): string {
+  return `${utility} -func "${spec}"`;
+}
+
 /**
  * The `controlDict` entry that runs the same function during the solve.
  *
