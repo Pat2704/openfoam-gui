@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   ensureFoamIndex,
+  foamIndexStats,
   getFoamIndexIfReady,
   isBuilding,
   renderSlices,
@@ -12,6 +13,7 @@ import {
   typesMentioned,
   type NameProblem,
 } from '@/lib/foam-index';
+import { catalogStats, ensureCatalog } from '@/lib/foam-commands';
 import { findExamples } from '@/lib/foam-examples';
 import { resolveHelp, renderFindings } from '@/lib/foam-help';
 import {
@@ -32,6 +34,15 @@ export async function GET(req: NextRequest) {
     if (action === 'build') {
       const index = await ensureFoamIndex(searchParams.get('force') === '1');
       return NextResponse.json(status(index));
+    }
+
+    if (action === 'rebuild') {
+      // A version or distro switch changes every local source of truth. Build
+      // in dependency order so the compact authoritative data is ready first.
+      await ensureFoamIndex(true);
+      await ensureCatalog(true);
+      await ensureCorpus(true);
+      return NextResponse.json(status(getFoamIndexIfReady()));
     }
 
     if (action === 'slice') {
@@ -176,21 +187,12 @@ export async function POST(req: NextRequest) {
 }
 
 function status(index: ReturnType<typeof getFoamIndexIfReady>) {
-  if (!index) return { ready: false, building: isBuilding() };
+  const base = foamIndexStats();
   return {
-    ready: true,
-    building: isBuilding(),
-    version: index.version,
-    hasToC: index.hasToC,
-    builtAt: index.builtAt,
-    counts: {
-      names: Object.keys(index.names).length,
-      scalarBCs: index.boundaryConditions.scalar.length,
-      vectorBCs: index.boundaryConditions.vector.length,
-      solvers: index.solvers.length,
-      functionObjects: index.functionObjects.length,
-      fvModels: index.fvModels.length,
-      applications: index.applications.length,
-    },
+    ...base,
+    ready: Boolean(index),
+    hasToC: index?.hasToC ?? false,
+    corpus: corpusStats(),
+    catalog: catalogStats(),
   };
 }

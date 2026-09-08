@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getOpenFOAMVersion, readCaseFilesDeep, type CaseFileSlice } from '@/lib/wsl';
+import {
+  getCaseFilesFingerprint, getOpenFOAMVersion, readCaseFilesDeep, type CaseFileSlice,
+} from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
 import { validateCaseName } from '@/lib/wsl-input';
 import { resolveLLMConfig, fetchModels } from '@/lib/llm';
@@ -16,8 +18,8 @@ import {
 const conversations = new Map<string, { role: 'system' | 'user' | 'assistant'; content: string }[]>();
 // In-memory cumulative token usage per sessionId.
 const sessionTokens = new Map<string, number>();
-// Tracks which sessions have already received the case-files context.
-const sessionCaseContext = new Map<string, boolean>();
+// Tracks the exact case snapshot already present in each conversation.
+const sessionCaseContext = new Map<string, { caseName: string; fingerprint: string }>();
 const MAX_HISTORY = 40;
 
 // Build the system prompt dynamically with the detected version.
@@ -204,8 +206,11 @@ export async function POST(req: NextRequest) {
 
     // ── Build the user message ──
     const sections: string[] = [];
-    if (body?.caseName) {
-      sections.push(`[Active case: ${body.caseName}]`);
+    const activeCaseName = typeof body?.caseName === 'string' && body.caseName
+      ? validateCaseName(body.caseName)
+      : '';
+    if (activeCaseName) {
+      sections.push(`[Active case: ${activeCaseName}]`);
     }
     if (body?.fileContext?.path && typeof body.fileContext.content === 'string') {
       sections.push(`[File open in editor: ${body.fileContext.path}]\n\`\`\`\n${body.fileContext.content}\n\`\`\``);
@@ -213,11 +218,29 @@ export async function POST(req: NextRequest) {
 
     const caseFilesContext: string | undefined = typeof body?.caseFilesContext === 'string' ? body.caseFilesContext : undefined;
     const forceReload = Boolean(body?.forceCaseReload);
-    const alreadyHasContext = sessionCaseContext.get(sessionId) === true;
+    const autoContext = body?.autoContext === true;
+    const previousContext = sessionCaseContext.get(sessionId);
+    let fingerprint = '';
+    if (autoContext && activeCaseName) {
+      try { fingerprint = getCaseFilesFingerprint(activeCaseName); } catch { /* fall back to the renderer snapshot below */ }
+    }
+    const snapshotChanged = Boolean(
+      forceReload || !previousContext || previousContext.caseName !== activeCaseName ||
+      (fingerprint && previousContext.fingerprint !== fingerprint),
+    );
 
-    if (caseFilesContext && (!alreadyHasContext || forceReload)) {
+    if (autoContext && activeCaseName && snapshotChanged) {
+      // When WSL is reachable, always take the authoritative server-side disk
+      // snapshot. This avoids pairing a fresh fingerprint with a renderer
+      // snapshot that became stale between its read and this request.
+      const context = fingerprint
+        ? buildCaseContext(readCaseFilesDeep(activeCaseName)).context
+        : caseFilesContext || buildCaseContext(readCaseFilesDeep(activeCaseName)).context;
+      sections.push(`[Case file contents CURRENT ON DISK — 0/, system/, constant/ (excluding polyMesh)]\n${context}`);
+      sessionCaseContext.set(sessionId, { caseName: activeCaseName, fingerprint });
+    } else if (caseFilesContext && (!previousContext || forceReload)) {
       sections.push(`[Case file contents — 0/, system/, constant/ (excluding polyMesh)]\n${caseFilesContext}`);
-      sessionCaseContext.set(sessionId, true);
+      sessionCaseContext.set(sessionId, { caseName: activeCaseName, fingerprint });
     }
 
     // Files the user applied since that context was sent. Without this the

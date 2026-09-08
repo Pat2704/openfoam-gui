@@ -34,8 +34,8 @@
  * their own category: a user who types `simpleFoam` is asking exactly the
  * question that script answers.
  *
- * Cost: one WSL call, ~2 s, cached on disk and invalidated when the selected
- * bashrc changes. The static table in `openfoam-data.ts` survives as the
+ * Cost: one WSL call, ~2 s, cached on disk and invalidated when the shared
+ * installation identity changes. The static table in `openfoam-data.ts` survives as the
  * fallback for the seconds before this answers, and for a machine where WSL is
  * unreachable.
  */
@@ -43,12 +43,14 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { foamSource, findBashrc, runInWslScriptAsync } from './wsl';
+import {
+  foamSource, findBashrc, getOpenFOAMInstallationIdentity, runInWslScriptAsync,
+} from './wsl';
 
 const CACHE_PATH = path.join(os.homedir(), '.wslgui-foam-commands.json');
 
 /** Bump when the shape below changes, so old caches are discarded. */
-const CATALOG_FORMAT = 1;
+const CATALOG_FORMAT = 2;
 
 export type FoamCommandKind = 'application' | 'script' | 'solverModule';
 
@@ -69,6 +71,10 @@ export interface FoamCommandCatalog {
   version: string;
   /** Which install this came from — the cache is invalid if the user switches. */
   bashrc: string;
+  installationId: string;
+  installationBaseId: string;
+  distro: string;
+  fingerprint: string;
   builtAt: string;
   commands: FoamCommand[];
 }
@@ -92,9 +98,15 @@ function loadCache(): FoamCommandCatalog | null {
 /** True when the cached catalogue still describes the install now selected. */
 function isFresh(c: FoamCommandCatalog | null): c is FoamCommandCatalog {
   if (!c) return false;
-  let bashrc = '';
-  try { bashrc = findBashrc(); } catch { /* WSL down: trust the cache */ }
-  return !bashrc || c.bashrc === bashrc;
+  try {
+    const current = getOpenFOAMInstallationIdentity();
+    return c.installationBaseId === current.baseId &&
+      (!current.fingerprintAvailable || c.installationId === current.id);
+  } catch {
+    let bashrc = '';
+    try { bashrc = findBashrc(); } catch { /* WSL down: trust the cache */ }
+    return !bashrc || c.bashrc === bashrc;
+  }
 }
 
 /** The catalogue if it is already available, without touching WSL. */
@@ -105,6 +117,28 @@ export function getCatalogIfReady(): FoamCommandCatalog | null {
 
 export function isCatalogBuilding(): boolean {
   return building !== null;
+}
+
+export function catalogStats() {
+  if (!memoryCatalog) memoryCatalog = loadCache();
+  const cached = memoryCatalog;
+  const ready = isFresh(cached);
+  return cached ? {
+    ready,
+    stale: !ready,
+    building: isCatalogBuilding(),
+    version: cached.version,
+    distro: cached.distro,
+    builtAt: cached.builtAt,
+    commands: cached.commands.length,
+  } : {
+    ready: false,
+    stale: false,
+    building: isCatalogBuilding(),
+    version: '',
+    distro: '',
+    commands: 0,
+  };
 }
 
 /** Build if needed. Concurrent callers share one build. */
@@ -157,6 +191,7 @@ const SCRIPT_EXCLUDE = new Set([
  */
 async function buildCatalog(): Promise<FoamCommandCatalog> {
   const src = foamSource();
+  const installation = getOpenFOAMInstallationIdentity();
 
   // The awk that lifts the first paragraph of a Description block. Two shapes:
   // a C++ header (indented plain text) and a shell header (`#     ` prefixed).
@@ -271,6 +306,10 @@ echo "${MARK}end"
     format: CATALOG_FORMAT,
     version,
     bashrc: (() => { try { return findBashrc(); } catch { return ''; } })(),
+    installationId: installation.id,
+    installationBaseId: installation.baseId,
+    distro: installation.distro,
+    fingerprint: installation.fingerprint,
     builtAt: new Date().toISOString(),
     commands,
   };

@@ -223,6 +223,9 @@ export default function Dashboard({
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('foam-version-changed', { detail: { distro: data.distro } }));
       }
+      void fetch('/api/foam-index?action=rebuild').catch(() => {
+        // The knowledge status stays stale and the next AI turn retries.
+      });
       setLoading(true);
       lastFetchRef.current.status = 0;
       await fetchAll(true);
@@ -280,6 +283,9 @@ export default function Dashboard({
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('foam-version-changed', { detail: { version: data.version } }));
       }
+      void fetch('/api/foam-index?action=rebuild').catch(() => {
+        // The knowledge status stays stale and the next AI turn retries.
+      });
       // Full refresh: cases AND tutorials must follow the new version.
       // fetchAll refreshes cases + status; fetchTutorials refreshes the
       // tutorial categories + tutorial dir (which change with the version).

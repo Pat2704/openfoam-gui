@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
+import { buildInstallationId } from './foam-installation';
 import {
   boundedInteger,
   isPhysicalFieldFile,
@@ -223,6 +224,7 @@ export function runInWslScriptAsync(b64: string, timeout = 120000): Promise<stri
 
 // ── Caches (in-memory + persistent disk) ──
 let cachedBashrc: string | null = null;
+let cachedInstallationIdentity: OpenFOAMInstallationIdentity | null = null;
 let cachedRunDir: string | null = null;
 let cachedTutDir: string | null = null;
 let cachedFoamEnv: Record<string, string> | null = null;
@@ -536,6 +538,7 @@ export function setOpenFOAMVersion(bashrcPath: string): boolean {
   cachedBashrc = null;
   cachedFoamEnv = null;
   cachedVersion = null;
+  cachedInstallationIdentity = null;
   cachedRunDir = null;
   cachedTutDir = null;
   // Both of these are keyed by the installation and would miss on their own,
@@ -694,6 +697,85 @@ export function getOpenFOAMVersion(): string {
   } catch {
     return 'Unknown';
   }
+}
+
+/**
+ * Stable identity of the OpenFOAM installation selected in the Dashboard.
+ *
+ * A bashrc path is not an identity by itself: two WSL distros can both contain
+ * `/opt/openfoam14/etc/bashrc`, and an installation can be upgraded in place.
+ * The knowledge caches use this value, so include the distro, the resolved
+ * environment paths and a small metadata fingerprint of the installed binaries.
+ * It is computed once per selection and reset together with the WSL caches.
+ */
+export interface OpenFOAMInstallationIdentity {
+  id: string;
+  baseId: string;
+  distro: string;
+  bashrc: string;
+  version: string;
+  projectDir: string;
+  tutorials: string;
+  applicationBin: string;
+  fingerprint: string;
+  fingerprintAvailable: boolean;
+}
+
+export function getOpenFOAMInstallationIdentity(): OpenFOAMInstallationIdentity {
+  if (cachedInstallationIdentity) return cachedInstallationIdentity;
+
+  const env = getFoamEnv();
+  const distro = getDistro();
+  const bashrc = findBashrc();
+  const version = env.WM_PROJECT_VERSION || getOpenFOAMVersion();
+  const projectDir = env.WM_PROJECT_DIR || '';
+  const tutorials = env.FOAM_TUTORIALS || getTutorialDirectory();
+  const applicationBin = env.FOAM_APPBIN || '';
+  const tracked = [bashrc, projectDir, tutorials, applicationBin, env.FOAM_SRC || '', env.FOAM_APP || '']
+    .filter(p => p.startsWith('/'));
+
+  let metadata = '';
+  let fingerprintAvailable = true;
+  try {
+    const quoted = tracked.map(shellQuote).join(' ');
+    const script = `#!/bin/bash
+${foamSource()}
+cd /tmp || cd /
+for p in ${quoted}; do
+  [ -e "$p" ] && stat -c '%n|%Y|%s' "$p" 2>/dev/null
+done
+for d in ${shellQuote(applicationBin)} ${shellQuote(projectDir ? `${projectDir}/bin` : '')}; do
+  [ -d "$d" ] || continue
+  find "$d" -maxdepth 1 -type f -printf '%f|%s|%T@\n' 2>/dev/null | sort | cksum
+done
+`;
+    metadata = runInWslScript(Buffer.from(script).toString('base64'), 30000).trim();
+  } catch {
+    // The paths and distro still distinguish normal version switches. A later
+    // explicit refresh resets this value and gets another chance to fingerprint.
+    metadata = 'metadata-unavailable';
+    fingerprintAvailable = false;
+  }
+
+  const hashes = buildInstallationId({
+    distro, bashrc, version, projectDir, tutorials, applicationBin, metadata,
+  });
+  const identity: OpenFOAMInstallationIdentity = {
+    id: hashes.id,
+    baseId: hashes.baseId,
+    distro,
+    bashrc,
+    version,
+    projectDir,
+    tutorials,
+    applicationBin,
+    fingerprint: hashes.fingerprint,
+    fingerprintAvailable,
+  };
+  // Do not freeze an incomplete fingerprint for the whole process. WSL may
+  // simply have been waking up; the next request should be able to verify it.
+  if (fingerprintAvailable) cachedInstallationIdentity = identity;
+  return identity;
 }
 
 // ── Public: get OpenFOAM env vars as a string ──
@@ -1132,6 +1214,25 @@ printf 'SEARCH_DONE:%d\\n' "$count"
 // { path, content }[] with paths relative to the case root.
 /** Per-file slice sent to the copilot. Anything longer is cut and MARKED. */
 export const CASE_CONTEXT_FILE_LIMIT = 32_000;
+
+/**
+ * Cheap content-state marker for the dictionaries FOAMy can see.
+ *
+ * It hashes full path, size and nanosecond mtime rather than reading every
+ * file. FOAMy checks it before a turn and reloads the bounded case context only
+ * when something changed, including writes made by an agent, script or terminal.
+ */
+export function getCaseFilesFingerprint(caseName: string): string {
+  const casePath = getCasePath(validateCaseName(caseName));
+  const script = `#!/bin/bash
+CASE=${shellQuote(casePath)}
+[ -d "$CASE" ] || { echo NOEXIST; exit 0; }
+find "$CASE/0" "$CASE/system" "$CASE/constant" \
+  -path '*/polyMesh/*' -prune -o \
+  -type f -printf '%p|%s|%T@\n' 2>/dev/null | sort | sha256sum | cut -d' ' -f1
+`;
+  return runInWslScript(Buffer.from(script).toString('base64'), 30000).trim();
+}
 
 export interface CaseFileSlice {
   path: string;
@@ -3547,6 +3648,7 @@ export function resetCache() {
   cachedTutDir = null;
   cachedFoamEnv = null;
   cachedVersion = null;
+  cachedInstallationIdentity = null;
   // The list of installed OpenFOAMs belongs to a DISTRO, and resetCache's only
   // caller that matters is setDistro. Leaving it behind meant the Settings
   // version dropdown went on offering the previous distro's installations after

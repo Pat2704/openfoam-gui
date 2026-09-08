@@ -124,8 +124,7 @@ Important modules:
   imply compatibility or tailor generated cases to them.
 - New Case generates a parametric box mesh, synchronized patch fields,
   version-correct dictionaries, dimension sets and a preflight.
-- The installed vocabulary comes from `foamToC` and source scans and grounds
-  FOAMy; tutorial retrieval is BM25 plus an Italian glossary, not embeddings.
+- The installed vocabulary comes from `foamToC` and source scans; tutorial retrieval is BM25 plus an Italian glossary, not embeddings. All knowledge caches share an identity made from distro, resolved install paths and installed-binary metadata, so a distro/version/in-place install change invalidates them together.
 - The ParaView tab is an optional local integration, not a bundled dependency:
   `paraFoam -touch` and one persistent app-owned `pvpython` worker, whose real
   `paraview.simple` proxies own the reader, filters, displays, time and render;
@@ -231,9 +230,7 @@ Commands owns running arbitrary binaries.
 
 ### FOAMy
 
-FOAMy reads bounded case context and proposes whole-file edits to apply.
-Truncated input and output are marked, unsafe applies are withheld, and API keys
-stay in the Electron config, encrypted with the Windows account.
+FOAMy reads bounded case context and proposes whole-file edits to apply. It fingerprints the dictionary tree before every contextual turn and reloads after agent, script or terminal writes. Truncated input and output are marked, unsafe applies are withheld, and API keys stay in the Electron config, encrypted with the Windows account.
 
 ### Claude and Codex
 
@@ -243,15 +240,12 @@ schemas, prompt, policy, case confinement, and activity model.
 - Guarded mode may read and write within the run directory and execute installed
   OpenFOAM applications. It has no general shell, filesystem, web, plugin, MCP,
   or desktop access beyond the supplied tools.
-- Guarded agents may run an existing `Allrun`, `Allclean`, `Allmesh`, `Allwmake`,
-  or `Alltest`, but may not write those script names. This closes the
-  write-script/run-script shell escape without breaking tutorial scripts.
+- Guarded agents may run an existing `Allrun`, `Allclean`, `Allmesh`, `Allwmake`, or `Alltest`, but may not write those script names. This closes the write-script/run-script shell escape without breaking tutorial scripts.
 - Command arguments are resolved and must remain inside the run directory, so
   sibling-case tools such as `mapFields ../coarse` still work.
 - Unrestricted mode enables a WSL shell inside the case, but `/mnt/` remains
   blocked to protect Windows files.
-- Reading is free. `run_openfoam` runs only when the user asks for a run; an
-  ambiguous request is treated as a question, never as a simulation.
+- Reading is free. `run_openfoam` runs only when the user asks; guarded option names and required values are checked against that binary's own `-help`. `write_case_file` automatically refuses known-invalid names or syntax before writing; `validate_case_files` remains the cross-file check. An ambiguous request is a question, never a simulation.
 - Claude runs with strict MCP configuration and no inherited tools or settings.
 - Codex uses an isolated `%APPDATA%\\openfoam-studio\\codex` home and needs Codex
   CLI 0.153.1+. Its real protocol contract test is opt-in through
@@ -282,8 +276,7 @@ schemas, prompt, policy, case confinement, and activity model.
   not a workaround for focus or input bugs.
 - The shell owns the viewport: header, tabs and status bar stay fixed while the
   content scrolls, and two-pane workspaces use bounded scroll areas.
-- FOAMy, Claude and Codex launchers share a saved bottom-right anchor; several
-  fan out, one stays put, and panels always sit above them.
+- FOAMy, Claude and Codex launchers share a saved bottom-right anchor; several fan out, one stays put, panels always sit above them, and every AI surface shows the indexed version, freshness, date and knowledge counts.
 - Tab shortcuts are `Ctrl+0`–`Ctrl+9` and the digit IS the tab index, so
   `Ctrl+0` is the Dashboard and `Ctrl+9` is Src. Adding an eleventh tab breaks
   this and needs a different scheme, not a silently dropped shortcut.
@@ -337,7 +330,7 @@ full check; documentation-only changes need spelling/reference/diff checks but
 do not require the application test suite or Electron build unless they alter a
 generated or packaged input.
 
-Full validation is `npm run check`. The build is `npm run electron:build`, or
+Full validation is `npm run check`; it includes v9-v14 lookup/command checks and Italian tutorial-retrieval fixtures. The build is `npm run electron:build`, or
 `node scripts/build-electron.js --skip-build` to package without rebuilding.
 
 Run the build only under the effective-application-change rule in section 2.

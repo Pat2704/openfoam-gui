@@ -7,7 +7,7 @@
  * portata all'ingresso" — matches no literal string and gets no example.
  *
  * This module ranks the whole tutorial corpus against the question and returns
- * the best two chunks. It is a SELECTOR, not a collector: it looks at ~7.000
+ * the best two chunks. It is a SELECTOR, not a collector: it looks at ~20.000
  * chunks and hands back at most 1.500 characters, so the prompt cost stays
  * where it is today (measured: 671 characters for the grep path) while the
  * choice gets much better.
@@ -28,10 +28,12 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getTutorialDirectory, runInWslScriptAsync } from './wsl';
+import {
+  getOpenFOAMInstallationIdentity, getTutorialDirectory, runInWslScriptAsync,
+} from './wsl';
 
 const CACHE_PATH = path.join(os.homedir(), '.wslgui-foam-corpus.json');
-const CACHE_FORMAT = 1;
+const CACHE_FORMAT = 2;
 const MARK = '@@FOAMDOC@@';
 const NEWLINE = String.fromCharCode(10);
 
@@ -59,6 +61,10 @@ export interface Chunk {
 
 interface Corpus {
   format: number;
+  installationId: string;
+  installationBaseId: string;
+  version: string;
+  distro: string;
   tutorials: string;
   builtAt: string;
   chunks: Chunk[];
@@ -87,7 +93,14 @@ function loadCache(): Corpus | null {
 
 export function getCorpusIfReady(): Corpus | null {
   if (!corpus) corpus = loadCache();
-  return corpus;
+  if (!corpus) return null;
+  try {
+    const current = getOpenFOAMInstallationIdentity();
+    return corpus.installationBaseId === current.baseId &&
+      (!current.fingerprintAvailable || corpus.installationId === current.id) ? corpus : null;
+  } catch {
+    return corpus;
+  }
 }
 
 export function isCorpusBuilding(): boolean {
@@ -127,6 +140,7 @@ export function ensureCorpus(force = false): Promise<Corpus | null> {
  * real answer in the ranking.
  */
 async function buildCorpus(): Promise<Corpus> {
+  const installation = getOpenFOAMInstallationIdentity();
   const tutorials = getTutorialDirectory();
   if (!tutorials || !tutorials.startsWith('/')) throw new Error('no tutorials directory');
 
@@ -165,7 +179,16 @@ done
     }
   }
 
-  return { format: CACHE_FORMAT, tutorials, builtAt: new Date().toISOString(), chunks };
+  return {
+    format: CACHE_FORMAT,
+    installationId: installation.id,
+    installationBaseId: installation.baseId,
+    version: installation.version,
+    distro: installation.distro,
+    tutorials,
+    builtAt: new Date().toISOString(),
+    chunks,
+  };
 }
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
@@ -287,24 +310,40 @@ function expand(terms: string[]): string[] {
   return [...out];
 }
 
-function buildPostings(c: Corpus): void {
-  postings = new Map();
-  lengths = new Float64Array(c.chunks.length);
+function createPostings(chunks: Chunk[]): {
+  postings: Map<string, number[]>; lengths: Float64Array; avgLength: number;
+} {
+  const nextPostings = new Map<string, number[]>();
+  const nextLengths = new Float64Array(chunks.length);
   let total = 0;
-  for (let i = 0; i < c.chunks.length; i++) {
-    const terms = tokenise(c.chunks[i].text);
-    lengths[i] = terms.length;
+  for (let i = 0; i < chunks.length; i++) {
+    // Tutorial paths carry unusually strong domain evidence: a generic
+    // blockMeshDict body may only say "hex", while its parent directory says
+    // snappyHexMesh, conjugateHeatTransfer or the solver family. Index both.
+    const terms = tokenise(`${chunks[i].path}\n${chunks[i].text}`);
+    nextLengths[i] = terms.length;
     total += terms.length;
     const seen = new Set<string>();
     for (const t of terms) {
       if (seen.has(t)) continue;      // presence, not frequency: dictionaries repeat
       seen.add(t);
-      const list = postings.get(t);
+      const list = nextPostings.get(t);
       if (list) list.push(i);
-      else postings.set(t, [i]);
+      else nextPostings.set(t, [i]);
     }
   }
-  avgLength = total / Math.max(1, c.chunks.length) || 1;
+  return {
+    postings: nextPostings,
+    lengths: nextLengths,
+    avgLength: total / Math.max(1, chunks.length) || 1,
+  };
+}
+
+function buildPostings(c: Corpus): void {
+  const built = createPostings(c.chunks);
+  postings = built.postings;
+  lengths = built.lengths;
+  avgLength = built.avgLength;
 }
 
 export interface Ranked extends Chunk {
@@ -323,33 +362,50 @@ export function rank(question: string, limit = 8): Ranked[] {
   if (!c) return [];
   if (!postings) buildPostings(c);
   if (!postings || !lengths) return [];
+  return rankChunksWithIndex(c.chunks, question, limit, postings, lengths, avgLength);
+}
+
+/** Pure entry point used by retrieval evaluations and small fixture corpora. */
+export function rankChunks(chunks: Chunk[], question: string, limit = 8): Ranked[] {
+  const built = createPostings(chunks);
+  return rankChunksWithIndex(chunks, question, limit, built.postings, built.lengths, built.avgLength);
+}
+
+function rankChunksWithIndex(
+  chunks: Chunk[], question: string, limit: number,
+  chunkPostings: Map<string, number[]>, chunkLengths: Float64Array, chunkAvgLength: number,
+): Ranked[] {
 
   const terms = expand([...new Set(tokenise(question))]);
   if (!terms.length) return [];
 
   const k1 = 1.2, b = 0.75;
   const scores = new Map<number, number>();
-  const N = c.chunks.length;
+  const N = chunks.length;
 
   for (const term of terms) {
-    const list = postings.get(term);
+    const list = chunkPostings.get(term);
     if (!list || !list.length) continue;
     // A term in nearly every chunk carries nothing; the idf handles that.
     const idf = Math.log(1 + (N - list.length + 0.5) / (list.length + 0.5));
     for (const i of list) {
-      const len = lengths[i] || 1;
+      const len = chunkLengths[i] || 1;
       const tf = 1;                                        // presence-based
-      const norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len / avgLength));
+      const norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len / chunkAvgLength));
       scores.set(i, (scores.get(i) || 0) + idf * norm);
     }
   }
 
-  // Whole-identifier bonus, case-insensitive but word-bounded.
+  // Whole-identifier bonus, case-insensitive and valid for a conventional
+  // suffix such as snappyHexMeshDict. Exact OpenFOAM identifiers are much
+  // stronger evidence than generic terms such as mesh, surface and extract.
   const identifiers = (question.match(/[A-Za-z][A-Za-z0-9_]{4,}/g) || []).slice(0, 6);
   for (const [i, s] of scores) {
     let bonus = 0;
+    const source = `${chunks[i].path}\n${chunks[i].text}`;
     for (const id of identifiers) {
-      if (new RegExp(`\\b${id}\\b`).test(c.chunks[i].text)) bonus += 2.5;
+      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${escaped}(?:[A-Z][A-Za-z0-9_]*)?\\b`, 'i').test(source)) bonus += 10;
     }
     if (bonus) scores.set(i, s + bonus);
   }
@@ -357,7 +413,7 @@ export function rank(question: string, limit = 8): Ranked[] {
   return [...scores.entries()]
     .sort((a, b2) => b2[1] - a[1])
     .slice(0, limit)
-    .map(([i, score]) => ({ ...c.chunks[i], score }));
+    .map(([i, score]) => ({ ...chunks[i], score }));
 }
 
 /**
@@ -412,7 +468,22 @@ export function renderExcerpts(excerpts: Ranked[]): string {
   );
 }
 
-export function corpusStats(): { ready: boolean; chunks: number; builtAt?: string } {
-  const c = getCorpusIfReady();
-  return c ? { ready: true, chunks: c.chunks.length, builtAt: c.builtAt } : { ready: false, chunks: 0 };
+export function corpusStats(): {
+  ready: boolean; stale: boolean; building: boolean; chunks: number; files: number;
+  builtAt?: string; version?: string; distro?: string; tutorials?: string;
+} {
+  if (!corpus) corpus = loadCache();
+  const cached = corpus;
+  const ready = Boolean(getCorpusIfReady());
+  return cached ? {
+    ready,
+    stale: !ready,
+    building: isCorpusBuilding(),
+    chunks: cached.chunks.length,
+    files: new Set(cached.chunks.map(c => c.path)).size,
+    builtAt: cached.builtAt,
+    version: cached.version,
+    distro: cached.distro,
+    tutorials: cached.tutorials,
+  } : { ready: false, stale: false, building: isCorpusBuilding(), chunks: 0, files: 0 };
 }

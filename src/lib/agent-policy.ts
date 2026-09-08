@@ -32,7 +32,8 @@ import { argumentStaysInside, looksLikePath, validateCaseName, validateRelativeP
 import {
   ensureFoamIndex, getFoamIndexIfReady, validateDictText, checkDictSyntax, suggest,
 } from '@/lib/foam-index';
-import { getCorpusIfReady, renderExcerpts, selectExcerpts } from '@/lib/foam-retrieval';
+import { foamLookupResult, validateApplicationArguments } from '@/lib/agent-knowledge';
+import { ensureCorpus, getCorpusIfReady, renderExcerpts, selectExcerpts } from '@/lib/foam-retrieval';
 import { resolveHelp, renderFindings } from '@/lib/foam-help';
 
 /** In-memory activity log, newest last. Survives as long as the server does. */
@@ -65,7 +66,7 @@ function record(tool: string, summary: string, ok: boolean): void {
  * installation itself, so it is right for this version without a hand-kept
  * table. The extras are the two scripts every tutorial case carries.
  */
-const SCRIPT_COMMANDS = new Set(['Allrun', 'Allclean', 'Allmesh', 'Allpre', 'Allpost']);
+const SCRIPT_COMMANDS = new Set(['Allrun', 'Allclean', 'Allmesh', 'Allwmake', 'Alltest']);
 
 /**
  * The agent may RUN the case's own scripts. It may not WRITE them.
@@ -138,11 +139,13 @@ function checkCommand(raw: string, caseName: string): { ok: true; command: strin
 
   const parts = command.split(/\s+/);
   let head = parts[0];
+  let argumentStart = 1;
   if (head === 'mpirun') {
     if (parts[1] !== '-np' || !/^\d+$/.test(parts[2] || '')) {
       return { ok: false, reason: 'mpirun must be written exactly as: mpirun -np <n> <command> -parallel' };
     }
     head = parts[3];
+    argumentStart = 4;
     if (!head) return { ok: false, reason: 'mpirun needs a command to run' };
   }
 
@@ -154,6 +157,12 @@ function checkCommand(raw: string, caseName: string): { ok: true; command: strin
       reason: `"${head}" is not an executable of this OpenFOAM installation` +
         (near.length ? ` — did you mean: ${near.join(', ')}?` : ''),
     };
+  }
+
+  const application = getFoamIndexIfReady()?.applications.find(app => app.name === head);
+  if (application) {
+    const optionVerdict = validateApplicationArguments(application, parts.slice(argumentStart));
+    if (!optionVerdict.ok) return optionVerdict;
   }
 
   // Checking argv[0] is not enough, because the ARGUMENTS decide where an
@@ -306,8 +315,30 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
         };
       }
       const content = typeof args.content === 'string' ? args.content : '';
+      // Agent writes are gated, not merely followed by a suggestion to check.
+      // A user can still make an expert override in the File Editor, but an
+      // autonomous agent never places a known-invalid dictionary on disk.
+      const index = getFoamIndexIfReady() || await ensureFoamIndex();
+      if (!index) return { error: 'the installed-version index could not be built, so this write cannot be validated' };
+      const names = validateDictText(index, content, path);
+      const dictionaryLike = /\bFoamFile\s*\{/.test(content) || (
+        /^(?:0(?:\.orig)?|system|constant)\//.test(path) &&
+        /[;{}]/.test(content) &&
+        !/\.(?:stl|obj|csv|dat|txt)$/i.test(path)
+      );
+      const syntax = dictionaryLike
+        ? await checkDictSyntax([{ path, content }])
+        : [];
+      if (names.length || syntax.length) {
+        const lines = [
+          ...syntax.map(s => `SYNTAX ${s.path}${s.line ? ` line ${s.line}` : ''}: ${s.message}`),
+          ...names.map(n => `NAME ${n.where}: "${n.name}" does not exist here` +
+            (n.suggestions.length ? ` — did you mean ${n.suggestions.join(', ')}?` : '')),
+        ];
+        return { error: `write refused by automatic validation:\n${lines.join('\n')}` };
+      }
       writeFile(name, path, content);
-      return { text: `written: ${name}/${path} (${content.length} bytes)` };
+      return { text: `validated and written: ${name}/${path} (${content.length} bytes)` };
     }
 
     case 'run_openfoam': {
@@ -355,34 +386,8 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
       const index = getFoamIndexIfReady();
       if (!index) { void ensureFoamIndex(); return { error: 'the version index is still building — try again in a few seconds' }; }
       const name = str('name');
-      if (name) {
-        const tables = index.names[name];
-        const keys = index.keysByType[name];
-        if (!tables) {
-          return { text: `"${name}" does not exist in OpenFOAM ${index.version}. Closest: ${suggest(index, name).join(', ') || '(nothing close)'}` };
-        }
-        return {
-          text: [
-            `${name} — valid in OpenFOAM ${index.version}`,
-            `tables: ${tables.join(', ')}`,
-            keys?.length ? `accepted keys: ${keys.join(' ')}` : 'accepted keys: (none found in the sources)',
-          ].join('\n'),
-        };
-      }
-
       const kind = str('kind') || 'solvers';
-      const lists: Record<string, string[]> = {
-        solvers: index.solvers,
-        scalarBCs: index.boundaryConditions.scalar,
-        vectorBCs: index.boundaryConditions.vector,
-        functionObjects: index.functionObjects,
-        fvModels: index.fvModels,
-        fvConstraints: index.fvConstraints,
-        applications: index.applications.map(a => a.name),
-      };
-      const list = lists[kind];
-      if (!list) return { error: `unknown kind "${kind}" — use one of: ${Object.keys(lists).join(', ')}` };
-      return { text: `${kind} in OpenFOAM ${index.version} (${list.length}):\n${list.join(' ')}` };
+      return foamLookupResult(index, name, kind, name ? suggest(index, name) : []);
     }
 
     case 'foam_help': {
@@ -405,7 +410,10 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
     }
 
     case 'search_tutorials': {
-      if (!getCorpusIfReady()) return { error: 'the tutorial corpus is still being indexed — try again shortly' };
+      if (!getCorpusIfReady()) {
+        void ensureCorpus();
+        return { error: 'the tutorial corpus is still being indexed — try again shortly' };
+      }
       const block = renderExcerpts(selectExcerpts(str('query')));
       return { text: block || '(nothing matched in the tutorials)' };
     }

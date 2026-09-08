@@ -32,7 +32,7 @@
 
 import { getFoamIndexIfReady, ensureFoamIndex, suggest } from './foam-index';
 import { getCatalogIfReady, ensureCatalog, findCommand } from './foam-commands';
-import { foamSource, runInWslScriptAsync } from './wsl';
+import { foamSource, getOpenFOAMInstallationIdentity, runInWslScriptAsync } from './wsl';
 import { searchWeb, fetchReadable } from './web-search';
 
 export type HelpTier = 'index' | 'command-help' | 'web';
@@ -74,7 +74,10 @@ function isSafeName(name: string): boolean {
  */
 export async function commandHelp(name: string): Promise<string | null> {
   if (!isSafeName(name)) return null;
-  if (helpCache.has(name)) return helpCache.get(name) ?? null;
+  let installationId = 'unknown-installation';
+  try { installationId = getOpenFOAMInstallationIdentity().id; } catch { /* use the safe fallback */ }
+  const cacheKey = `${installationId}\0${name}`;
+  if (helpCache.has(cacheKey)) return helpCache.get(cacheKey) ?? null;
 
   const script = `#!/bin/bash
 ${foamSource()}
@@ -91,7 +94,7 @@ timeout 10 ${name} -help 2>&1 | head -80
   } catch {
     text = null;
   }
-  helpCache.set(name, text);
+  helpCache.set(cacheKey, text);
   return text;
 }
 

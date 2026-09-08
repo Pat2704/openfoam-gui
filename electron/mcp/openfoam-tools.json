@@ -63,7 +63,7 @@
   },
   {
     "name": "write_case_file",
-    "description": "Write one file in a case, creating parent directories as needed. Confined to the run directory. Check the result with validate_case_files afterwards.",
+    "description": "Write one complete file in a case, creating parent directories as needed. Confined to the run directory. OpenFOAM dictionary names and syntax are validated automatically and a known-invalid write is refused; use validate_case_files afterwards for cross-file checks.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -86,7 +86,7 @@
   },
   {
     "name": "run_openfoam",
-    "description": "Run one OpenFOAM executable inside a case (blockMesh, checkMesh, foamRun, snappyHexMesh, decomposePar, Allrun, …). Only executables this installation actually ships are accepted, and shell syntax (pipes, redirects, chaining) is refused. For a parallel run write exactly \"mpirun -np <n> <command> -parallel\". Use background: true for long solves instead of a trailing \"&\". Returns the exit code and the last lines of output.",
+    "description": "Run one OpenFOAM executable inside a case (blockMesh, checkMesh, foamRun, snappyHexMesh, decomposePar, Allrun, …). Only guarded commands this installation exposes are accepted; application option names and required values are checked against that binary's own -help, and shell syntax is refused. For a parallel run write exactly \"mpirun -np <n> <command> -parallel\". Use background: true for long solves instead of a trailing \"&\". Returns the exit code and the last lines of output.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -111,7 +111,7 @@
   },
   {
     "name": "validate_case_files",
-    "description": "Check files against THIS OpenFOAM installation: every type/model/solver name against the run-time selection tables, and the syntax through OpenFOAM's own parser. Use it after writing, before running.",
+    "description": "Check a related set of files against THIS OpenFOAM installation: every type/model/solver name against the run-time selection tables, and syntax through OpenFOAM's own parser. write_case_file already validates each individual dictionary; use this before running for the complete changed set.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -33,17 +33,30 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { foamSource, getOpenFOAMVersion, findBashrc, runInWslScriptAsync } from './wsl';
+import {
+  foamSource, getOpenFOAMVersion, findBashrc, getOpenFOAMInstallationIdentity,
+  runInWslScriptAsync,
+} from './wsl';
 
 const CACHE_PATH = path.join(os.homedir(), '.wslgui-foam-index.json');
 
 /** Bump when the shape below changes, so old caches are discarded. */
-const INDEX_FORMAT = 2;
+const INDEX_FORMAT = 3;
+
+export interface FoamApplicationOption {
+  name: string;
+  /** The value placeholder printed by -help, e.g. "<dir>". */
+  valueHint: string;
+  description: string;
+  requiresValue: boolean;
+}
 
 export interface FoamApplication {
   name: string;
   /** Option flags, without descriptions: `-case`, `-parallel`, … */
   options: string[];
+  /** Structured form of the same -help lines, used before a command runs. */
+  optionDetails: FoamApplicationOption[];
 }
 
 export interface FoamIndex {
@@ -52,6 +65,11 @@ export interface FoamIndex {
   version: string;
   /** Which install this came from — the cache is invalid if the user switches. */
   bashrc: string;
+  /** Distro + resolved install paths + installed-binary fingerprint. */
+  installationId: string;
+  installationBaseId: string;
+  distro: string;
+  fingerprint: string;
   builtAt: string;
   /** Whether foamToC was available (false on 9/10: names cannot be validated). */
   hasToC: boolean;
@@ -106,9 +124,43 @@ function saveCache(index: FoamIndex): void {
 /** True when the cached index still describes the install now selected. */
 function isFresh(index: FoamIndex | null): index is FoamIndex {
   if (!index) return false;
-  let bashrc = '';
-  try { bashrc = findBashrc(); } catch { /* WSL down: trust the cache */ }
-  return !bashrc || index.bashrc === bashrc;
+  try {
+    const current = getOpenFOAMInstallationIdentity();
+    return index.installationBaseId === current.baseId &&
+      (!current.fingerprintAvailable || index.installationId === current.id);
+  } catch {
+    // When WSL is temporarily unreachable, retain the last known installation
+    // only when its selected bashrc still matches. A later successful identity
+    // read will perform the stronger fingerprint comparison.
+    let bashrc = '';
+    try { bashrc = findBashrc(); } catch { /* unavailable */ }
+    return !bashrc || index.bashrc === bashrc;
+  }
+}
+
+export function foamIndexStats() {
+  if (!memoryIndex) memoryIndex = loadCache();
+  const cached = memoryIndex;
+  const ready = isFresh(cached);
+  return {
+    ready,
+    stale: Boolean(cached) && !ready,
+    building: isBuilding(),
+    version: cached?.version || '',
+    distro: cached?.distro || '',
+    builtAt: cached?.builtAt,
+    counts: cached ? {
+      names: Object.keys(cached.names).length,
+      keyedTypes: Object.keys(cached.keysByType).length,
+      scalarBCs: cached.boundaryConditions.scalar.length,
+      vectorBCs: cached.boundaryConditions.vector.length,
+      solvers: cached.solvers.length,
+      functionObjects: cached.functionObjects.length,
+      fvModels: cached.fvModels.length,
+      fvConstraints: cached.fvConstraints.length,
+      applications: cached.applications.length,
+    } : undefined,
+  };
 }
 
 /**
@@ -170,6 +222,7 @@ const NEWLINE = String.fromCharCode(10);
  */
 export async function buildFoamIndex(): Promise<FoamIndex> {
   const src = foamSource();
+  const installation = getOpenFOAMInstallationIdentity();
   const script = `#!/bin/bash
 ${src}
 echo "${MARK}version"
@@ -236,6 +289,10 @@ echo "${MARK}end"
     format: INDEX_FORMAT,
     version,
     bashrc: (() => { try { return findBashrc(); } catch { return ''; } })(),
+    installationId: installation.id,
+    installationBaseId: installation.baseId,
+    distro: installation.distro,
+    fingerprint: installation.fingerprint,
     builtAt: new Date().toISOString(),
     hasToC,
     names,
@@ -323,19 +380,27 @@ function parseToCTable(text: string): string[] {
 }
 
 /** Every `@@FOAMIDX@@app <name>` block, with the option flags it listed. */
-function parseApps(out: string): FoamApplication[] {
+export function parseApps(out: string): FoamApplication[] {
   const apps: FoamApplication[] = [];
   let current: FoamApplication | null = null;
   for (const line of out.split('\n')) {
     if (line.startsWith(MARK + 'app ')) {
       if (current) apps.push(current);
-      current = { name: line.slice((MARK + 'app ').length).trim(), options: [] };
+      current = { name: line.slice((MARK + 'app ').length).trim(), options: [], optionDetails: [] };
       continue;
     }
     if (line.startsWith(MARK)) { if (current) { apps.push(current); current = null; } continue; }
     if (!current) continue;
-    const m = line.match(/^\s{2}(-[A-Za-z][A-Za-z0-9]*)/);
-    if (m) current.options.push(m[1]);
+    const m = line.match(/^\s+(-[A-Za-z][A-Za-z0-9-]*)(?:\s+(<[^>]+>|\[[^\]]+\]))?(?:\s+(.*))?$/);
+    if (m) {
+      current.options.push(m[1]);
+      current.optionDetails.push({
+        name: m[1],
+        valueHint: m[2] || '',
+        description: m[3]?.trim() || '',
+        requiresValue: Boolean(m[2]?.startsWith('<')),
+      });
+    }
   }
   if (current) apps.push(current);
   return apps.filter(a => a.name).sort((a, b) => a.name.localeCompare(b.name));

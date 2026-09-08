@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import type { CodexModel } from '@/lib/codex-protocol';
 import { Button } from '@/components/ui/button';
+import { KnowledgeStatus } from '@/components/knowledge-status';
 import { useCaseContext } from '@/lib/case-context';
 import { toast } from 'sonner';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
@@ -700,6 +701,12 @@ export default function CodexPanel() {
             </div>
           </div>
 
+          {ready && (
+            <div className="border-b border-black/5 px-3 py-1.5 dark:border-white/10">
+              <KnowledgeStatus className="min-w-0 overflow-hidden whitespace-nowrap" />
+            </div>
+          )}
+
           {/* Conversation */}
           <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
             {!status && !statusError && (
@@ -818,7 +825,8 @@ export default function CodexPanel() {
                 <p className="text-sm font-medium">What should we work on?</p>
                 <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed max-w-[300px]">
                   I can read and write the files of your cases and run OpenFOAM myself — inside the
-                  run directory, with the executables this installation ships. I cannot delete anything.
+                  run directory, with the guarded commands this installation exposes. Existing cleanup
+                  scripts may delete generated case data, and every write is validated automatically.
                 </p>
                 <div className="mt-4 w-full space-y-1.5">
                   {[

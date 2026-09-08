@@ -14,6 +14,7 @@ import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, saveFoamyConfig } from '@/lib/foamy-store';
 import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
 import { useAgentLauncher } from '@/components/agent-launcher-provider';
+import { KnowledgeStatus } from '@/components/knowledge-status';
 
 // ── Provider presets ──
 interface ProviderPreset {
@@ -601,6 +602,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
           caseName: caseName || undefined,
           fileContext,
           caseFilesContext: shouldSendCaseContext ? caseFilesContext : undefined,
+          autoContext,
           forceCaseReload: false,
           changedFiles: changedFilesRef.current.size
             ? Array.from(changedFilesRef.current, ([path, content]) => ({ path, content }))
@@ -1433,6 +1435,7 @@ Applying it would leave "${filePath}" unreadable to the solver. Apply anyway?`,
                 )}
               </div>
             )}
+            <KnowledgeStatus className="w-full flex-wrap" />
           </div>
 
           {/* Resize handle */}

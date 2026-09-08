@@ -161,7 +161,9 @@ the **OpenFOAM card in the Dashboard**.
 </details>
 
 - **FOAMy** — a chat copilot that reads your case files and proposes edits you
-  can apply with one click.
+  can apply with one click. Its local knowledge badge shows which OpenFOAM
+  installation and tutorial corpus are ready; case context is refreshed when
+  an agent, script or terminal changes a dictionary.
 - **Claude** — an agent that reads, writes and runs your cases itself, on your
   Claude subscription. Same idea, opposite direction: FOAMy hands you a file to
   approve, Claude changes the case and tells you what it did.
@@ -214,12 +216,19 @@ somewhere unusual.
 - read and write files inside your **run directory only** — case names and
   paths go through the same validators the rest of the app uses, so `..`, an
   absolute path or a symlink gets it nowhere;
-- run **only executables this OpenFOAM installation actually ships** (156 of
-  them, read from the installation itself), one command per call — no pipes, no
-  redirects, no chaining;
+- run only the guarded commands this OpenFOAM installation exposes (156 on the
+  reference v14 install), one command per call — option names and required
+  values are checked against the executable's own `-help`, with no pipes,
+  redirects or chaining;
 - **nothing else.** It has no shell, no filesystem access outside those tools,
   and no web access. `rm` and `mv` are not on the list, so deleting or moving a
   file is not something it can express — it will tell you to do it yourself.
+
+Agent dictionary writes are checked automatically against the installed
+run-time tables and OpenFOAM parser before they reach the case. The separate
+validation tool remains available for checking a set of related files together.
+Existing `Allclean`-style scripts can of course remove the generated data they
+were written to clean.
 
 **Unrestricted mode.** The shield button in the composer says `Guarded` by
 default: Claude may only run the OpenFOAM executables this installation ships,
@@ -259,7 +268,8 @@ npm install -g @openai/codex
 
 Codex receives exactly the same OpenFOAM tools as Claude: it can read and write
 inside the run directory and run only installed OpenFOAM commands in `Guarded`
-mode. `No limits` enables a WSL shell inside the case directory, with the same
+mode. It gets the same automatic write validation, command-option checks and
+visible local-knowledge status. `No limits` enables a WSL shell inside the case directory, with the same
 `/mnt/` protection and visible activity cards. It has no inherited desktop
 skills, plugins, MCP servers, shell, filesystem or web tools: every action goes
 through the app's shared OpenFOAM policy.
@@ -346,7 +356,8 @@ The tests run on `node --test` with Node's own TypeScript support, so there is n
 framework to install and no build step — `npm test` works on a fresh clone. They cover
 the parts where a mistake is silent: the input validators that everything reaching
 `wsl.exe` passes through, and the case generator, whose output has to be accepted by
-two incompatible OpenFOAM layouts (≤10 and 11+).
+two incompatible OpenFOAM layouts (≤10 and 11+). Knowledge tests also exercise
+v9–v14 lookup behavior, structured command options and Italian tutorial retrieval.
 
 Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 `electron/electron-builder.yml` and `electron/scripts/prepare-resources.js`.
@@ -363,6 +374,8 @@ Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
 | `src/lib/claude-cli.ts` | finds, authenticates and drives the Claude Code process |
 | `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
+| `src/lib/agent-knowledge.ts` | pure lookup and installed-command validation rules |
+| `src/lib/foam-installation.ts` | shared identity for installation-derived caches |
 | `src/lib/postprocess.ts` | parses what the function objects wrote, and the templates that describe them |
 | `src/lib/residuals.ts` | reads solver residuals out of a log — shared by the Monitor and Post-Process |
 | `src/components/openfoam/chart-export.tsx` | the chart-to-picture dialog |
