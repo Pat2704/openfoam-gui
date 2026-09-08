@@ -10,6 +10,7 @@ import { homedir } from 'os';
 import { Rpc } from './codex-rpc';
 import definitions from '../../electron/mcp/openfoam-tools.json';
 import { callTool } from './agent-policy';
+import { buildModeNotice, sanitizeUserMessage } from './agent-prompt';
 import { CODEX_CONFIG, modelChoices, panelEvents, type PanelEvent, type CodexModel } from './codex-protocol';
 
 const run = promisify(execFile);
@@ -198,6 +199,10 @@ export async function send(options: { sessionId: string; message: string; model:
     session = { busy: false, interrupted: false, unrestricted: false, started: 0, context: '', listeners: new Set() };
     sessions.set(options.sessionId, session);
   }
+  // Resuming re-applies baseInstructions, which describe only the mode in force
+  // NOW — so a thread that has already run needs the change announced, exactly
+  // as on the Claude side. `started` is the marker that it has run.
+  const modeChanged = session.started > 0 && session.unrestricted !== options.unrestricted;
   session.busy = true; session.interrupted = false; session.started = Date.now();
   session.listeners.add(listener); session.unrestricted = options.unrestricted;
   try {
@@ -219,7 +224,10 @@ export async function send(options: { sessionId: string; message: string; model:
     session.context = options.systemPrompt;
     if (session.interrupted) { finish(session); return; }
     const result = await rpc.request('turn/start', { threadId: session.threadId, model: options.model, effort: options.effort,
-      environments: [], input: [{ type: 'text', text: options.message, text_elements: [] }] });
+      environments: [],
+      input: [{ type: 'text',
+        text: (modeChanged ? buildModeNotice(options.unrestricted) : '') + sanitizeUserMessage(options.message),
+        text_elements: [] }] });
     if (session.busy) session.turnId = result.turn.id;
     if (session.interrupted && session.turnId) await rpc.request('turn/interrupt', { threadId: session.threadId, turnId: session.turnId });
   } catch (e) { finish(session, e instanceof Error ? e.message : String(e)); }

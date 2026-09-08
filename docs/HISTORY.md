@@ -6,6 +6,33 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-08 — the app now has its own voice in the agent conversation
+
+- Reported by the user: after switching a conversation to No limits, the agent
+  told them the bracketed mode announcement in their message was "a classic
+  prompt injection pattern", then decided unrestricted mode had been on since
+  the first turn and apologised for its earlier, correct, guarded answers.
+- Two causes. The announcement was prepended to the user's own turn as
+  `[The user has just switched …]`, which is precisely the shape of an injected
+  fake system message, so a careful agent distrusts it and blames the user. And
+  the system prompt is rebuilt and re-applied on every message — on `--resume`
+  for Claude Code, on `thread/resume` for Codex — so after a switch the whole
+  conversation looks as if it had always run under the new mode.
+- Fix in `src/lib/agent-prompt.ts`: the app speaks inside `<openfoam-studio>`
+  tags, `sanitizeUserMessage()` rewrites those tags (and `<system-reminder>`)
+  out of user text so the channel cannot be forged, and both system prompts now
+  say that the instructions describe only the CURRENT setting, that earlier
+  answers under the other mode were right at the time, and that the mode is a
+  shield button the user can press rather than a fact about the world. Guarded
+  mode also learns to name No limits instead of calling things impossible, and
+  that the Commands-tab Terminal is the user's own shell.
+- `claude-cli.ts` and `codex-cli.ts` both send the notice and sanitise the
+  message; Codex previously announced nothing at all. Covered by
+  `tests/agent-prompt.test.ts`.
+- Left alone: `buildSystemPrompt` ends with `.filter(Boolean)`, which also drops
+  the `''` paragraph breaks, so the prompt reaches the agent as one dense block.
+  Pre-existing, cosmetic, not touched here.
+
 ## 2026-09-08 — GitHub release retention
 
 - Removed the obsolete GitHub releases and binary assets from `v1` through

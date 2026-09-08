@@ -44,6 +44,7 @@ import { join, resolve, dirname } from 'path';
 import { tmpdir, homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { expectedToken } from '@/lib/agent-token';
+import { buildModeNotice, sanitizeUserMessage } from '@/lib/agent-prompt';
 
 // ── Finding the binary ──────────────────────────────────────────────────────
 
@@ -840,10 +841,10 @@ export function send(
    * The mode changed under a conversation that has already run.
    *
    * The restart gives the agent the new tool descriptions and system prompt,
-   * but NOT a reason to revise what it already said. Observed: after refusing
-   * to delete a file in guarded mode, it went on refusing once the limits were
-   * lifted — its own earlier "I can't delete files" was still the most
-   * authoritative thing in its context. So the change is announced.
+   * but NOT a reason to revise what it already said, so the change is
+   * announced — see buildModeNotice for what goes wrong when it is not, and
+   * for why the announcement is a tagged notice from the app rather than
+   * bracketed prose glued to the front of the user's own message.
    */
   const modeChanged = session.hasRun && session.unrestricted !== options.unrestricted;
 
@@ -871,20 +872,18 @@ export function send(
 
   session.busy = true;
   session.hasRun = true;
-  const notice = modeChanged
-    ? (options.unrestricted
-      ? '[The user has just switched this conversation to UNRESTRICTED mode. Your run_openfoam tool '
-        + 'is now a real shell: deleting, moving, pipes, redirects and chaining all work. Anything '
-        + 'you said earlier about not being able to do those things no longer applies.]\n\n'
-      : '[The user has just switched this conversation back to GUARDED mode. run_openfoam now accepts '
-        + 'only the OpenFOAM executables this installation ships, one per call, with no shell syntax. '
-        + 'Anything you did earlier with a shell is no longer available.]\n\n')
-    : '';
+  const notice = modeChanged ? buildModeNotice(options.unrestricted) : '';
 
   try {
     session.child!.stdin.write(JSON.stringify({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: notice + options.message }] },
+      // The user's text is sanitised even when there is no notice: the promise
+      // the system prompt makes — that the app's channel is only ever the app —
+      // has to hold on every turn for the agent to be able to rely on it.
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: notice + sanitizeUserMessage(options.message) }],
+      },
     }) + '\n');
   } catch (err: unknown) {
     session.busy = false;

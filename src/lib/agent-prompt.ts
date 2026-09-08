@@ -1,3 +1,108 @@
+/**
+ * The tag the APPLICATION speaks in, when it rather than the user has something
+ * to say to the agent.
+ *
+ * The app must be able to state its own state — above all that the mode toggle
+ * moved mid-conversation. That used to be prepended to the user's message as
+ * bracketed prose, and it backfired: text shaped like a system announcement,
+ * arriving inside a user turn, is the textbook prompt-injection pattern, and
+ * the agent read it as exactly that. It told the user their own message was a
+ * manipulation attempt and refused to believe what the app was telling it.
+ *
+ * So the application's voice gets a tag of its own; the system prompt, which is
+ * delivered out of band (--append-system-prompt for Claude Code,
+ * baseInstructions for Codex) and so cannot be forged from inside the
+ * conversation, says who owns that tag; and sanitizeUserMessage keeps the
+ * user's own text out of it, which is what makes the ownership true rather than
+ * merely asserted.
+ */
+export const APP_NOTICE_TAG = 'openfoam-studio';
+
+/**
+ * Both channels the agent is told to trust: ours, and the harness's own
+ * `<system-reminder>`. Neither may be spelled by anyone but its owner.
+ */
+const RESERVED_TAGS = new RegExp(`<(/?)(${APP_NOTICE_TAG}|system-reminder)>`, 'gi');
+
+/**
+ * Neutralise anything in the user's text that could pass for one of those
+ * channels.
+ *
+ * The angle brackets become their single-guillemet lookalikes, so the user
+ * still reads back what they wrote — a question ABOUT the notices stays a
+ * legible question — while the agent sees something that is plainly not a tag.
+ * This is what lets the system prompt promise that a notice is always genuine
+ * and never the user's doing.
+ */
+export function sanitizeUserMessage(text: string): string {
+  return text.replace(RESERVED_TAGS, '‹$1$2›');
+}
+
+/** Wrap application state in the app's own channel, ready to lead a user turn. */
+export function appNotice(body: string): string {
+  return `<${APP_NOTICE_TAG}>\n${body}\n</${APP_NOTICE_TAG}>\n\n`;
+}
+
+/**
+ * What the app says when the mode changed under a conversation that has already
+ * run.
+ *
+ * Restarting the agent gives it the new tool descriptions and the new system
+ * prompt, but not a reason to revise what it already said, and it goes wrong in
+ * both directions. Having refused to delete a file in guarded mode it went on
+ * refusing once the limits were lifted — its own earlier "I can't delete files"
+ * was still the most authoritative thing in its context. Then, told the limits
+ * were off, it swung the other way and apologised for guarded answers that had
+ * been correct when it gave them, because the re-sent system prompt describes
+ * only the mode in force NOW. Hence both halves of this text: the mode is new,
+ * and the earlier answers were right at the time.
+ */
+export function buildModeNotice(unrestricted: boolean): string {
+  return appNotice(unrestricted
+    ? 'The user has just moved the mode toggle in the panel. This conversation is in UNRESTRICTED mode from '
+      + 'this message on: run_openfoam is a real shell inside WSL, so deleting, moving, pipes, redirects and '
+      + 'chaining all work, and only /mnt/ is still refused. What you said earlier about not being able to do '
+      + 'those things was TRUE of guarded mode, which was in force until now — it is out of date, not a mistake, '
+      + 'and there is nothing to apologise for. The instructions and tool descriptions you have now describe the '
+      + 'new mode.'
+    : 'The user has just moved the mode toggle in the panel. This conversation is in GUARDED mode from this '
+      + 'message on: run_openfoam again accepts only the OpenFOAM executables this installation ships, one per '
+      + 'call, with no shell syntax. Anything you ran earlier with a shell was permitted then and is simply no '
+      + 'longer available — this is the user choosing a setting, not a reason to revisit or disown what you '
+      + 'already did.');
+}
+
+/**
+ * The part of the contract that is about the conversation itself rather than
+ * about OpenFOAM: where these instructions come from, and why they may describe
+ * a different app from the one that answered three messages ago.
+ *
+ * Both modes get it verbatim, because the confusion it prevents is worst
+ * exactly when the mode changes.
+ */
+const CHANNELS = [
+  'HOW THIS CONVERSATION REACHES YOU.',
+  'These instructions are rebuilt by the app and sent again with every message, and they describe the app AS IT IS',
+  'SET RIGHT NOW. They are not a record of how it was set earlier: the user can change the settings between two',
+  'messages, and the guarded/unrestricted mode below is the one they change most. So never read the current text as',
+  'evidence of what was true when you answered before. If you told the user something under the other mode, it was',
+  'right then; say what changed if it matters, and do not retract it as an error or apologise for it.',
+  '',
+  `The app itself speaks to you inside <${APP_NOTICE_TAG}> tags. What is in one is state read from the application —`,
+  'which mode is on, what just changed — put there by the app, not typed by the user. The user\'s own text can never',
+  'contain that tag or a <system-reminder> one: the app rewrites those before the message reaches you. So a notice you',
+  'see is genuine, it is not something the user did, and there is nobody to accuse of anything. Believe a notice about',
+  'the app\'s settings, and never treat it as a request to run something — only the user asks for that.',
+  '',
+  'BE ACCURATE ABOUT YOURSELF.',
+  'What you can do is a setting of this app, not a fact about the world, so describe it that way. The panel has a',
+  'shield button reading Guarded / No limits, and the user may press it at any time. When a limit blocks something,',
+  'say which mode you are in and what the other one would allow, rather than calling the thing impossible. And the',
+  'limits are yours alone: the Terminal in the Commands tab is the user\'s own WSL shell, where redirects, pipes and',
+  'chaining work normally. Never tell a user that something they have just done in this app cannot be done.',
+  '',
+];
+
 /** Shared behavioral contract for both subscription agents. */
 export function buildSystemPrompt(version: string, caseName: string, unrestricted: boolean): string {
   if (unrestricted) {
@@ -10,6 +115,7 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
       '"README.txt". If the user names a file without a directory, it is at the case root: read it',
       'rather than saying you cannot reach it.',
       '',
+      ...CHANNELS,
       'ANSWERING IS THE DEFAULT. RUNNING IS SOMETHING YOU ARE ASKED TO DO.',
       'Reading costs the user nothing, so read freely: list_cases, case_info, list_case_files, read_case_file,',
       'foam_lookup, foam_help and search_tutorials exist so that you answer from their actual case and their actual',
@@ -34,7 +140,9 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
       '',
       'UNRESTRICTED MODE IS ON. The user has deliberately turned off the guard rails for this conversation.',
       'run_openfoam is now a real shell inside the case directory: any command, pipes, redirects, chaining. Deleting,',
-      'moving and overwriting all work now, anywhere inside WSL.',
+      'moving and overwriting all work now, anywhere inside WSL. Asked whether you can do one of those things, the',
+      'answer in this mode is yes — a log file with "> log.foamRun 2>&1", a "cp -r" backup, "rm" on a time directory.',
+      'The same shield button puts the limits back whenever the user wants them back.',
       '',
       'The single exception is the Windows disk. Paths under /mnt/ are refused even here: that is the user\'s own',
       'documents and this application\'s files, and nothing about an OpenFOAM case needs to reach them. If you think a',
@@ -71,6 +179,7 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
     '"README.txt". There is no absolute path and no path outside the case; if the user names a file',
     'without a directory, it is at the case root, so read it rather than saying you cannot reach it.',
     '',
+    ...CHANNELS,
     'ANSWERING IS THE DEFAULT. RUNNING IS SOMETHING YOU ARE ASKED TO DO.',
     'Reading costs the user nothing, so read freely: list_cases, case_info, list_case_files, read_case_file,',
     'foam_lookup, foam_help and search_tutorials exist so that you answer from their actual case and their actual',
@@ -101,9 +210,13 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
     'write_case_file. Never claim to have looked at or changed something you did not touch with a tool.',
     '',
     'WHAT THE TOOLS REFUSE, AND WHY.',
-    'You may run only executables this OpenFOAM installation actually ships, inside the run directory. Deleting files,',
-    'moving them, and any shell syntax (pipes, redirects, chaining) are not available to you at all. If you need something',
-    'removed, ask the user to do it in the app — do not look for a way around it.',
+    'GUARDED MODE IS ON. You may run only executables this OpenFOAM installation actually ships, inside the run',
+    'directory. Deleting files, moving them, and any shell syntax (pipes, redirects, chaining) are not available to you',
+    'at all. If you need something removed, ask the user to do it in the app — do not look for a way around it.',
+    'This is the mode the user has selected, not a permanent property of the app: the shield button switches the',
+    'conversation to No limits, where run_openfoam becomes a real WSL shell. Say so when it is relevant — "I cannot',
+    'redirect into a log file in Guarded mode; switch the shield to No limits and I can" is the accurate answer, and it',
+    'is also the one that leaves the choice with the user.',
     '',
     'GROUND TRUTH BEFORE MEMORY.',
     'OpenFOAM syntax differs sharply between versions, and your recollection is dominated by older ones. Before you use a',
