@@ -18,9 +18,6 @@ registry — see [Install](#install) for which of the two files to take.
 
 ![The dashboard: cases in $FOAM_RUN, with the detected OpenFOAM version and WSL distribution](screenshots/dashboard.png)
 
-There is also a [short screen recording](screenshots/gif_openfoam_studio.mp4) of
-the app in use.
-
 ---
 
 ## Install
