@@ -76,6 +76,11 @@ the task needs product or historical context.
 6. Never move a published tag or replace published assets without the user's
    explicit instruction. When direct publication reused or renamed existing
    artifacts, do not claim a fresh source-to-artifact verification.
+7. GitHub offers only the **two most recent releases** as downloads. Publishing
+   a new one therefore includes deleting every older release entry with its
+   assets, in the same flow and without asking. Their tags, commits, source
+   archives and `docs/releases/` notes stay. Deleting a tag itself still needs
+   the user's explicit instruction.
 
 ## Product and safety invariants
 

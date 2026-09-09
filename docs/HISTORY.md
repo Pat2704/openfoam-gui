@@ -6,6 +6,18 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-09 — v5.2.1 and a two-release download window
+
+- Released `v5.2.1` with the ParaView detection and startup work below; notes in
+  `docs/releases/v5.2.1.md`. Direct publication flow: the existing pair was
+  renamed to the new version's names rather than rebuilt.
+- At the user's request, `RULES.md` gained *Validation, builds and publication*
+  7: GitHub offers only the two most recent releases as downloads, and every
+  publication deletes the older entries and their assets by itself. `v5.1.0` and
+  `v5.0.0` were removed under it; their tags, commits, source archives and
+  release notes remain. `v5.2.1` is the current download and `v5.2.0` the
+  rollback one.
+
 ## 2026-09-09 — ParaView: detection without a cold start, startup that reports itself
 
 - Measured on the reference machine, and the cause of both reported problems:
