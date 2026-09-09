@@ -13,9 +13,28 @@ export interface ParaViewInstallation {
 }
 
 type Candidate = { executable: string; source: string };
+type Layout = { plausible: boolean; version: string };
+
+// A cold `pvpython.exe --version` loads hundreds of megabytes of Qt, VTK and
+// Python DLLs: measured at 107 s on a first run against 3.5 s once Windows has
+// the files cached. Detection therefore reads the installation LAYOUT instead
+// of executing anything, and only falls back to running the binary for a
+// pvpython that sits outside a recognisable ParaView tree — with a timeout a
+// cold start can actually meet.
+const PROBE_TIMEOUT_MS = 150_000;
+const MAX_EXECUTED_PROBES = 3;
+const NEGATIVE_CACHE_MS = 30_000;
+/** Directories that never hold pvpython.exe, skipped while scanning a tree. */
+const SKIPPED_DIRECTORIES = /^(share|lib|lib64|libs|doc|docs|examples|materials|translations|include|python\d*|site-packages|plugins|resources|drivers|licenses|proj|fonts|kernels[-_].*|\..*)$/i;
+const EXECUTABLE_BASENAMES = new Set([
+  'pvpython.exe', 'pvpython', 'paraview.exe', 'paraview',
+  'pvbatch.exe', 'pvbatch', 'pvserver.exe', 'pvserver',
+]);
 
 let cachedInstallation: ParaViewInstallation | null = null;
 let cachedKey = '';
+let cachedAt = 0;
+let searchInFlight: { key: string; promise: Promise<ParaViewInstallation> } | null = null;
 
 function execFileText(file: string, args: string[], timeout = 15_000): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -42,16 +61,37 @@ async function isDirectory(dir: string): Promise<boolean> {
   try { return (await fs.stat(dir)).isDirectory(); } catch { return false; }
 }
 
+async function readDirectory(dir: string): Promise<Dirent[]> {
+  try { return await fs.readdir(dir, { withFileTypes: true }); } catch { return []; }
+}
+
+/** Accept what a user actually pastes: quotes, %VARIABLES% and trailing slashes. */
+export function normalizeParaViewPath(value: string): string {
+  const expanded = String(value || '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/%([^%]+)%/g, (whole, name: string) => process.env[name] ?? whole)
+    .trim();
+  // A bare drive must keep its separator: `C:` alone means that drive's
+  // current directory, which is not the same folder as `C:\`.
+  return expanded.length > 3 ? expanded.replace(/[\\/]+$/, '') : expanded;
+}
+
 /** Turn a user/registry/PATH result into the plausible pvpython executables it represents. */
 export function paraViewExecutableCandidates(value: string): string[] {
-  const clean = value.trim().replace(/^"|"$/g, '');
+  const clean = normalizeParaViewPath(value);
   if (!clean) return [];
   const base = path.basename(clean).toLowerCase();
-  const dir = base.endsWith('.exe') ? path.dirname(clean) : clean;
+  const executable = EXECUTABLE_BASENAMES.has(base) || base.endsWith('.exe');
+  const dir = executable ? path.dirname(clean) : clean;
   const out: string[] = [];
   if (base === 'pvpython.exe' || base === 'pvpython') out.push(clean);
-  if (base === 'paraview.exe' || base === 'paraview') out.push(path.join(dir, 'pvpython.exe'));
-  out.push(path.join(dir, 'pvpython.exe'), path.join(dir, 'bin', 'pvpython.exe'));
+  out.push(
+    path.join(dir, 'pvpython.exe'),
+    path.join(dir, 'bin', 'pvpython.exe'),
+    // A path pointing one level too deep, such as the install's share folder.
+    path.join(dir, '..', 'bin', 'pvpython.exe'),
+  );
   return [...new Set(out.map(p => path.resolve(p)))];
 }
 
@@ -65,148 +105,271 @@ export function compareParaViewVersions(a: string, b: string): number {
   return 0;
 }
 
-async function findPvpythonBelow(root: string, maxDepth: number): Promise<string[]> {
-  const found: string[] = [];
-  const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth < 0) return;
-    let entries: Dirent[];
-    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isFile() && entry.name.toLowerCase() === 'pvpython.exe') found.push(full);
-      else if (entry.isDirectory()) await walk(full, depth - 1);
-    }
+/**
+ * Read the version a ParaView tree advertises through its own folder names:
+ * `ParaView-6.2.0`, `ParaView 5.13`, `share/paraview-6.2`, `lib/paraview-5.11`.
+ * The install folder is the more precise of the two when they agree, because it
+ * carries the patch level that the resource folder drops.
+ */
+export function paraViewVersionFromNames(rootName: string, resourceNames: string[]): string {
+  const resource = resourceNames
+    .map(name => /^paraview[-_ ]?(\d+\.\d+(?:\.\d+)?)$/i.exec(name)?.[1] || '')
+    .filter(Boolean)
+    .sort(compareParaViewVersions)
+    .pop() || '';
+  const root = /(?:^|[^\d.])(\d+\.\d+(?:\.\d+)?)/.exec(rootName)?.[1] || '';
+  if (root && resource) {
+    const series = (value: string) => value.split('.').slice(0, 2).join('.');
+    const richer = root.split('.').length >= resource.split('.').length;
+    return series(root) === series(resource) && richer ? root : resource;
+  }
+  return root || resource;
+}
+
+/** Decide from the files around pvpython.exe whether this is a real install. */
+async function inspectLayout(executable: string): Promise<Layout> {
+  const binDir = path.dirname(executable);
+  const root = path.basename(binDir).toLowerCase() === 'bin' ? path.dirname(binDir) : binDir;
+  const [siblings, share, lib] = await Promise.all([
+    Promise.all(['paraview.exe', 'pvbatch.exe', 'pvserver.exe'].map(name => isFile(path.join(binDir, name)))),
+    readDirectory(path.join(root, 'share')),
+    readDirectory(path.join(root, 'lib')),
+  ]);
+  const resources = [...share, ...lib].filter(entry => entry.isDirectory()).map(entry => entry.name);
+  return {
+    plausible: siblings.some(Boolean) || resources.some(name => /^paraview[-_ ]?\d/i.test(name)),
+    version: paraViewVersionFromNames(path.basename(root), resources),
   };
-  await walk(root, maxDepth);
+}
+
+function installationFrom(candidate: Candidate, version: string): ParaViewInstallation {
+  return {
+    found: true,
+    pvpythonPath: path.resolve(candidate.executable),
+    version: version || 'unknown',
+    source: candidate.source,
+    searched: [],
+  };
+}
+
+async function executedVersion(executable: string): Promise<string> {
+  const output = await execFileText(executable, ['--version'], PROBE_TIMEOUT_MS);
+  return output.match(/(?:ParaView[^\d]*)?(\d+\.\d+(?:\.\d+)?)/i)?.[1] || '';
+}
+
+/**
+ * Validate a batch of candidates: the layout for every one of them, and only
+ * then, for the few that exist without a recognisable tree around them, the
+ * expensive `--version` call — sequentially, so a cold machine never pays for
+ * several ParaView start-ups at once.
+ */
+async function probeCandidates(candidates: Candidate[]): Promise<ParaViewInstallation[]> {
+  const present = (await Promise.all(candidates.map(async candidate => (
+    await isFile(candidate.executable) ? candidate : null
+  )))).filter((value): value is Candidate => Boolean(value));
+  if (!present.length) return [];
+
+  const layouts = await Promise.all(present.map(candidate => inspectLayout(candidate.executable)));
+  const accepted = present
+    .map((candidate, index) => ({ candidate, layout: layouts[index] }))
+    .filter(entry => entry.layout.plausible)
+    .map(entry => installationFrom(entry.candidate, entry.layout.version));
+  if (accepted.length) return accepted;
+
+  const results: ParaViewInstallation[] = [];
+  for (const candidate of present.slice(0, MAX_EXECUTED_PROBES)) {
+    try {
+      const version = await executedVersion(candidate.executable);
+      if (version) results.push(installationFrom(candidate, version));
+    } catch { /* not a working pvpython */ }
+  }
+  return results;
+}
+
+/**
+ * Locate pvpython.exe inside an installation tree. The two standard locations
+ * answer instantly; the pruned breadth-first walk exists for portable layouts
+ * that nest the install a folder or two below what the user pointed at.
+ */
+async function findPvpythonBelow(root: string, maxDepth: number): Promise<string[]> {
+  for (const relative of ['pvpython.exe', path.join('bin', 'pvpython.exe')]) {
+    const direct = path.join(root, relative);
+    if (await isFile(direct)) return [direct];
+  }
+  const found: string[] = [];
+  let visited = 0;
+  let level = [root];
+  for (let depth = 0; depth <= maxDepth && level.length && visited < 400; depth++) {
+    const listings = await Promise.all(level.map(readDirectory));
+    visited += level.length;
+    const next: string[] = [];
+    for (let index = 0; index < level.length; index++) {
+      for (const entry of listings[index]) {
+        const full = path.join(level[index], entry.name);
+        if (entry.isFile()) {
+          if (entry.name.toLowerCase() === 'pvpython.exe') found.push(full);
+        } else if (entry.isDirectory() && !SKIPPED_DIRECTORIES.test(entry.name)) {
+          next.push(full);
+        }
+      }
+    }
+    if (found.length) return found;
+    level = next;
+  }
   return found;
 }
 
 async function pathResults(): Promise<string[]> {
-  const results: string[] = [];
-  for (const name of ['pvpython.exe', 'paraview.exe']) {
-    try {
-      const output = await execFileText('where.exe', [name], 5_000);
-      results.push(...output.split(/\r?\n/).map(s => s.trim()).filter(Boolean));
-    } catch { /* not on PATH */ }
-  }
-  return results;
+  const outputs = await Promise.all(['pvpython.exe', 'paraview.exe'].map(
+    name => execFileText('where.exe', [name], 5_000).catch(() => ''),
+  ));
+  return outputs.flatMap(output => output.split(/\r?\n/).map(line => line.trim()).filter(Boolean));
 }
 
 async function registryResults(): Promise<string[]> {
-  const roots = [
+  const uninstallRoots = [
     'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
     'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
     'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
   ];
+  const appPaths = ['HKLM', 'HKCU'].map(
+    hive => `${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\paraview.exe`,
+  );
+  const [uninstall, apps] = await Promise.all([
+    Promise.all(uninstallRoots.map(root => execFileText('reg.exe', ['query', root, '/s'], 12_000).catch(() => ''))),
+    Promise.all(appPaths.map(key => execFileText('reg.exe', ['query', key, '/ve'], 5_000).catch(() => ''))),
+  ]);
   const results: string[] = [];
-  for (const root of roots) {
-    try {
-      const output = await execFileText('reg.exe', ['query', root, '/s'], 12_000);
-      const blocks = output.split(/\r?\n\r?\n/).filter(block => /ParaView/i.test(block));
-      for (const block of blocks) {
-        for (const match of block.matchAll(/^\s*(?:InstallLocation|DisplayIcon)\s+REG_\w+\s+(.+)$/gmi)) {
-          results.push(match[1].trim().replace(/,\d+$/, ''));
-        }
+  for (const output of uninstall) {
+    for (const block of output.split(/\r?\n\r?\n/).filter(block => /ParaView/i.test(block))) {
+      for (const match of block.matchAll(/^\s*(?:InstallLocation|DisplayIcon)\s+REG_\w+\s+(.+)$/gmi)) {
+        results.push(match[1].trim().replace(/,\d+$/, ''));
       }
-    } catch { /* missing/inaccessible registry hive */ }
+    }
   }
-  for (const hive of ['HKLM', 'HKCU']) {
-    try {
-      const output = await execFileText('reg.exe', [
-        'query', `${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\paraview.exe`, '/ve',
-      ], 5_000);
-      const match = output.match(/REG_\w+\s+(.+)$/mi);
-      if (match) results.push(match[1].trim());
-    } catch { /* no App Paths entry */ }
+  for (const output of apps) {
+    const match = output.match(/REG_\w+\s+(.+)$/mi);
+    if (match) results.push(match[1].trim());
   }
   return results;
 }
 
+/** Folders where installers and portable archives realistically land. */
 async function standardInstallResults(): Promise<string[]> {
+  const home = process.env.USERPROFILE || os.homedir();
   const roots = [...new Set([
     process.env.ProgramFiles,
     process.env['ProgramFiles(x86)'],
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs'),
-  ].filter((v): v is string => Boolean(v)))];
-  const results: string[] = [];
-  for (const root of roots) {
-    let entries: Dirent[];
-    try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !/paraview/i.test(entry.name)) continue;
-      results.push(...await findPvpythonBelow(path.join(root, entry.name), 4));
-    }
-  }
-  return results;
+    process.env.ProgramData,
+    process.env.SystemDrive ? `${process.env.SystemDrive}\\` : 'C:\\',
+    'D:\\',
+    home,
+    home && path.join(home, 'Desktop'),
+    home && path.join(home, 'Downloads'),
+  ].filter((value): value is string => Boolean(value)))];
+  const listings = await Promise.all(roots.map(readDirectory));
+  const trees = listings.flatMap((entries, index) => entries
+    .filter(entry => entry.isDirectory() && /paraview/i.test(entry.name))
+    .map(entry => path.join(roots[index], entry.name)));
+  const found = await Promise.all(trees.map(tree => findPvpythonBelow(tree, 3)));
+  return found.flat();
 }
 
 async function expandCandidate(value: string, source: string, recursive: boolean): Promise<Candidate[]> {
   const out = paraViewExecutableCandidates(value).map(executable => ({ executable, source }));
-  const clean = value.trim().replace(/^"|"$/g, '');
+  const clean = normalizeParaViewPath(value);
   if (recursive && await isDirectory(clean)) {
-    for (const executable of await findPvpythonBelow(clean, 4)) out.push({ executable, source });
+    for (const executable of await findPvpythonBelow(clean, 3)) out.push({ executable, source });
   }
   return out;
 }
 
-async function probe(candidate: Candidate): Promise<ParaViewInstallation | null> {
-  if (!await isFile(candidate.executable)) return null;
-  try {
-    const output = await execFileText(candidate.executable, ['--version']);
-    const match = output.match(/(?:ParaView[^\d]*)?(\d+\.\d+(?:\.\d+)?)/i);
-    if (!match) return null;
-    return {
-      found: true,
-      pvpythonPath: path.resolve(candidate.executable),
-      version: match[1],
-      source: candidate.source,
-      searched: [],
-    };
-  } catch { return null; }
+type SearchStep = { source: string; values: string[]; recursive: boolean };
+
+/**
+ * Sources in cost order, each one able to end the search. The custom path wins
+ * whenever it holds a usable ParaView, so saving it from the Dashboard is never
+ * refused because a machine-wide scan happened to answer first.
+ */
+function searchSteps(customPath: string): (() => Promise<SearchStep>)[] {
+  const steps: (() => Promise<SearchStep>)[] = [];
+  if (customPath) {
+    steps.push(async () => ({ source: 'Custom path', values: [customPath], recursive: true }));
+  }
+  if (process.env.OFSTUDIO_PARAVIEW_PATH) {
+    const value = process.env.OFSTUDIO_PARAVIEW_PATH;
+    steps.push(async () => ({ source: 'OFSTUDIO_PARAVIEW_PATH', values: [value], recursive: true }));
+  }
+  steps.push(async () => ({ source: 'Standard install folders', values: await standardInstallResults(), recursive: false }));
+  steps.push(async () => ({ source: 'PATH', values: await pathResults(), recursive: false }));
+  steps.push(async () => ({ source: 'Windows registry', values: await registryResults(), recursive: true }));
+  return steps;
+}
+
+async function runSearch(customPath: string): Promise<ParaViewInstallation> {
+  const searched: string[] = [];
+  const seen = new Set<string>();
+
+  for (const step of searchSteps(customPath)) {
+    const { source, values, recursive } = await step();
+    const candidates: Candidate[] = [];
+    for (const value of values) {
+      for (const candidate of await expandCandidate(value, source, recursive)) {
+        const key = candidate.executable.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(candidate);
+        searched.push(candidate.executable);
+      }
+    }
+    if (!candidates.length) continue;
+    const valid = await probeCandidates(candidates);
+    valid.sort((a, b) => compareParaViewVersions(b.version || '0', a.version || '0'));
+    if (valid[0]) return { ...valid[0], searched };
+  }
+
+  return {
+    found: false,
+    searched,
+    error: customPath
+      ? 'The selected path is not usable and no other ParaView installation was found.'
+      : 'ParaView was not found. Install it or enter its folder or pvpython.exe path.',
+  };
 }
 
 /** Find the newest usable ParaView, regardless of its versioned folder name. */
 export async function findParaView(customPath = '', refresh = false): Promise<ParaViewInstallation> {
-  const key = customPath.trim().toLowerCase();
-  if (!refresh && cachedInstallation && cachedKey === key) return cachedInstallation;
+  const clean = normalizeParaViewPath(customPath);
+  const key = clean.toLowerCase();
+  // A failed search is worth repeating soon: it now costs a few directory
+  // reads, and ParaView may have been installed since the app started.
+  const fresh = cachedInstallation?.found || Date.now() - cachedAt < NEGATIVE_CACHE_MS;
+  if (!refresh && cachedInstallation && cachedKey === key && fresh) return cachedInstallation;
+  // Dashboard and workbench often ask at the same moment; one scan answers both.
+  if (searchInFlight && searchInFlight.key === key) return searchInFlight.promise;
 
-  const candidates: Candidate[] = [];
-  if (customPath) {
-    candidates.push(...await expandCandidate(customPath, 'Custom path', true));
-    const unique = [...new Map(candidates.map(c => [c.executable.toLowerCase(), c])).values()];
-    const valid = (await Promise.all(unique.map(probe))).filter((v): v is ParaViewInstallation => Boolean(v));
-    valid.sort((a, b) => compareParaViewVersions(b.version || '0', a.version || '0'));
-    if (valid[0]) {
-      cachedInstallation = { ...valid[0], searched: unique.map(c => c.executable) };
-      cachedKey = key;
-      return cachedInstallation;
-    }
-    // A portable installation may have moved since the path was saved. Keep
-    // searching the machine so a stale override never disables discovery.
-  }
-  if (process.env.OFSTUDIO_PARAVIEW_PATH) {
-    candidates.push(...await expandCandidate(process.env.OFSTUDIO_PARAVIEW_PATH, 'OFSTUDIO_PARAVIEW_PATH', true));
-  }
-  for (const value of await pathResults()) candidates.push(...await expandCandidate(value, 'PATH', false));
-  for (const value of await registryResults()) candidates.push(...await expandCandidate(value, 'Windows registry', true));
-  for (const executable of await standardInstallResults()) candidates.push({ executable, source: 'Standard install folders' });
+  const promise = runSearch(clean).then(result => {
+    cachedInstallation = result;
+    cachedKey = key;
+    cachedAt = Date.now();
+    return result;
+  }).finally(() => {
+    if (searchInFlight?.promise === promise) searchInFlight = null;
+  });
+  searchInFlight = { key, promise };
+  return promise;
+}
 
-  const unique = [...new Map(candidates.map(c => [c.executable.toLowerCase(), c])).values()];
-  const valid = (await Promise.all(unique.map(probe))).filter((v): v is ParaViewInstallation => Boolean(v));
-  const searched = unique.map(c => c.executable);
-  valid.sort((a, b) => compareParaViewVersions(b.version || '0', a.version || '0'));
-  const result = valid[0]
-    ? { ...valid[0], searched }
-    : {
-        found: false,
-        searched,
-        error: customPath
-          ? 'The selected path is not usable and no other ParaView installation was found.'
-          : 'ParaView was not found. Install it or enter its folder or pvpython.exe path.',
-      };
-  cachedInstallation = result;
-  cachedKey = key;
-  return result;
+/**
+ * Replace the layout-derived version with the one the running engine reports.
+ * Reading it from the session costs nothing and is exact, including the
+ * release suffixes a folder name never carries.
+ */
+export function recordParaViewVersion(pvpythonPath: string, version: string): void {
+  if (!cachedInstallation?.found || !version) return;
+  if (path.resolve(cachedInstallation.pvpythonPath || '') !== path.resolve(pvpythonPath)) return;
+  cachedInstallation = { ...cachedInstallation, version };
 }
 
 export interface ParaViewArrayInfo {
@@ -332,10 +495,27 @@ export interface ParaViewWorkbenchState {
 const WORKER_SCRIPT = String.raw`
 import json, math, os, sys, traceback
 from collections import OrderedDict
+
+# Loading paraview.simple is the long pole of a cold start: hundreds of
+# megabytes of VTK and Qt libraries, minutes on a first run. Announcing each
+# phase before entering it is what lets the workbench show real progress
+# instead of a spinner that cannot say whether anything is happening.
+def stage(name):
+    sys.stdout.write('__OFSTUDIO_JSON__' + json.dumps({'id': -1, 'stage': name}) + '\n')
+    sys.stdout.flush()
+
+stage('interpreter')
 from paraview.simple import *
+stage('engine')
 
 PREFIX = '__OFSTUDIO_JSON__'
 marker, output_dir, case_name, pv_version = sys.argv[1:5]
+try:
+    from paraview import servermanager as _servermanager
+    _manager = _servermanager.vtkSMProxyManager
+    pv_version = '%d.%d.%d' % (_manager.GetVersionMajor(), _manager.GetVersionMinor(), _manager.GetVersionPatch())
+except Exception:
+    pass
 case_root = os.path.realpath(os.path.dirname(marker))
 nodes = OrderedDict()
 guides = {}
@@ -1320,6 +1500,7 @@ def standard_view(direction):
     cam.SetViewUp(*up)
     ResetCamera(view)
 
+stage('reading')
 reader = OpenFOAMReader(registrationName=os.path.basename(marker), FileName=marker)
 try: reader.SkipZeroTime = 0
 except Exception: pass
@@ -1334,6 +1515,7 @@ times = raw_times if raw_times else [0.0]
 current_time = times[-1]
 reader.UpdatePipeline(time=current_time)
 
+stage('rendering')
 view = CreateRenderView()
 view.ViewSize = [1000, 700]
 set_if_supported(view, 'UseColorPaletteForBackground', 0)
@@ -1430,18 +1612,41 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+/**
+ * The phases a session goes through before it can answer. `interpreter` and
+ * `engine` come from the worker itself, so a start that looks frozen can always
+ * be told apart from one that is merely loading ParaView's libraries — a cold
+ * pvpython needs around two minutes for that on a first run, against one second
+ * once Windows has the files cached.
+ */
+export type ParaViewStartupStage =
+  | 'locating' | 'launching' | 'interpreter' | 'engine' | 'reading' | 'rendering';
+
+export interface ParaViewStartupProgress {
+  caseName: string;
+  stage: ParaViewStartupStage;
+  elapsedMs: number;
+}
+
+const STARTUP_STAGES: ParaViewStartupStage[] = [
+  'locating', 'launching', 'interpreter', 'engine', 'reading', 'rendering',
+];
+const READY_TIMEOUT_MS = 600_000;
+const COMMAND_TIMEOUT_MS = 120_000;
+
 class ParaViewWorker {
   readonly child: ChildProcessWithoutNullStreams;
   readonly tempDir: string;
   readonly caseName: string;
   readonly pvpythonPath: string;
-  readonly version: string;
+  version: string;
   private buffer = '';
   private stderr = '';
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private alive = true;
   private readyPromise: Promise<WorkerResult>;
+  private onStage: (stage: ParaViewStartupStage) => void = () => undefined;
 
   constructor(child: ChildProcessWithoutNullStreams, tempDir: string, caseName: string, pvpythonPath: string, version: string) {
     this.child = child;
@@ -1463,10 +1668,11 @@ class ParaViewWorker {
       ));
     });
     // Register id 0 before pvpython can finish initialising and emit READY.
-    this.readyPromise = this.waitFor(0, 240_000);
+    this.readyPromise = this.waitFor(0, READY_TIMEOUT_MS);
   }
 
-  waitUntilReady(): Promise<WorkerResult> {
+  waitUntilReady(onStage: (stage: ParaViewStartupStage) => void): Promise<WorkerResult> {
+    this.onStage = onStage;
     return this.readyPromise;
   }
 
@@ -1474,7 +1680,7 @@ class ParaViewWorker {
     return this.alive;
   }
 
-  request(action: string, data: Record<string, unknown> = {}, timeout = 120_000): Promise<WorkerResult> {
+  request(action: string, data: Record<string, unknown> = {}, timeout = COMMAND_TIMEOUT_MS): Promise<WorkerResult> {
     if (!this.alive) return Promise.reject(new Error('The ParaView session is not running.'));
     const id = this.nextId++;
     const promise = this.waitFor(id, timeout);
@@ -1504,8 +1710,13 @@ class ParaViewWorker {
       if (marker < 0) continue;
       try {
         const message = JSON.parse(line.slice(marker + '__OFSTUDIO_JSON__'.length)) as {
-          id: number; ok: boolean; result?: WorkerResult; error?: string;
+          id: number; ok?: boolean; stage?: string; result?: WorkerResult; error?: string;
         };
+        if (message.stage) {
+          const stage = message.stage as ParaViewStartupStage;
+          if (STARTUP_STAGES.includes(stage)) this.onStage(stage);
+          continue;
+        }
         const pending = this.pending.get(message.id);
         if (!pending) continue;
         clearTimeout(pending.timer);
@@ -1528,10 +1739,19 @@ class ParaViewWorker {
     for (const [id] of this.pending) this.rejectPending(id, error);
   }
 
-  async stop(): Promise<void> {
+  /**
+   * `graceful` asks the worker to quit through the protocol, which is only
+   * meaningful once it answers commands. A session still loading its libraries
+   * is killed outright: waiting for a reply it cannot send is what used to make
+   * cancelling feel as stuck as the start it was meant to interrupt.
+   */
+  async stop(graceful = true): Promise<void> {
     if (this.alive) {
-      try { await this.request('quit', {}, 2_000); } catch { /* force below */ }
+      if (graceful) {
+        try { await this.request('quit', {}, 2_000); } catch { /* force below */ }
+      }
       this.alive = false;
+      this.failAll(new Error('The ParaView session was stopped.'));
       this.child.kill();
     }
     await fs.rm(this.tempDir, { recursive: true, force: true }).catch(() => undefined);
@@ -1539,44 +1759,82 @@ class ParaViewWorker {
 }
 
 let activeWorker: ParaViewWorker | null = null;
+let startup: { caseName: string; stage: ParaViewStartupStage; startedAt: number; worker: ParaViewWorker | null } | null = null;
+let startInFlight: { caseName: string; promise: Promise<ParaViewWorkbenchState> } | null = null;
 
-export async function startParaViewSession(
+async function beginSession(
+  caseName: string,
+  markerPath: string,
+  customPath: string,
+): Promise<ParaViewWorkbenchState> {
+  startup = { caseName, stage: 'locating', startedAt: Date.now(), worker: null };
+  const setStage = (stage: ParaViewStartupStage) => {
+    if (startup?.caseName === caseName) startup.stage = stage;
+  };
+  try {
+    const installation = await findParaView(customPath);
+    if (!installation.found || !installation.pvpythonPath) {
+      throw new Error(installation.error || 'ParaView was not found. Configure it from the Dashboard.');
+    }
+    if (activeWorker) {
+      const previous = activeWorker;
+      activeWorker = null;
+      await previous.stop();
+    }
+
+    setStage('launching');
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
+    const scriptPath = path.join(tempDir, 'worker.py');
+    await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
+    const child = spawn(installation.pvpythonPath, [
+      '--force-offscreen-rendering', '--opengl-window-backend', 'Win32',
+      scriptPath, markerPath, tempDir, caseName, installation.version || 'unknown',
+    ], {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
+    const worker = new ParaViewWorker(
+      child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown'
+    );
+    if (startup?.caseName === caseName) startup.worker = worker;
+    try {
+      const ready = await worker.waitUntilReady(setStage);
+      if (!ready.state) throw new Error('ParaView started without returning its pipeline state.');
+      // The engine knows its own version exactly; the installation scan only
+      // reads it from folder names.
+      worker.version = ready.state.version || worker.version;
+      recordParaViewVersion(worker.pvpythonPath, worker.version);
+      activeWorker = worker;
+      return ready.state;
+    } catch (error) {
+      await worker.stop(false);
+      throw error;
+    }
+  } finally {
+    if (startup?.caseName === caseName) startup = null;
+  }
+}
+
+/**
+ * Start a session, or join the one already starting for the same case. A second
+ * request used to queue behind the first and then restart everything from
+ * scratch, which doubled an already slow cold start.
+ */
+export function startParaViewSession(
   caseName: string,
   markerPath: string,
   customPath = '',
 ): Promise<ParaViewWorkbenchState> {
-  const installation = await findParaView(customPath);
-  if (!installation.found || !installation.pvpythonPath) {
-    throw new Error(installation.error || 'ParaView was not found. Configure it from the Dashboard.');
-  }
-  if (activeWorker) {
-    await activeWorker.stop();
-    activeWorker = null;
-  }
-
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
-  const scriptPath = path.join(tempDir, 'worker.py');
-  await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
-  const child = spawn(installation.pvpythonPath, [
-    '--force-offscreen-rendering', '--opengl-window-backend', 'Win32',
-    scriptPath, markerPath, tempDir, caseName, installation.version || 'unknown',
-  ], {
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  if (startInFlight?.caseName === caseName) return startInFlight.promise;
+  const previous = startInFlight ? startInFlight.promise.then(() => undefined, () => undefined) : Promise.resolve();
+  const promise = previous.then(() => beginSession(caseName, markerPath, customPath));
+  const entry = { caseName, promise };
+  startInFlight = entry;
+  void promise.catch(() => undefined).then(() => {
+    if (startInFlight === entry) startInFlight = null;
   });
-  const worker = new ParaViewWorker(
-    child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown'
-  );
-  try {
-    const ready = await worker.waitUntilReady();
-    if (!ready.state) throw new Error('ParaView started without returning its pipeline state.');
-    activeWorker = worker;
-    return ready.state;
-  } catch (error) {
-    await worker.stop();
-    throw error;
-  }
+  return promise;
 }
 
 export function getParaViewSession(): { caseName: string; version: string; pvpythonPath: string } | null {
@@ -1589,6 +1847,23 @@ export function getParaViewSession(): { caseName: string; version: string; pvpyt
     version: activeWorker.version,
     pvpythonPath: activeWorker.pvpythonPath,
   };
+}
+
+export function getParaViewStartup(): ParaViewStartupProgress | null {
+  if (!startup) return null;
+  return { caseName: startup.caseName, stage: startup.stage, elapsedMs: Date.now() - startup.startedAt };
+}
+
+/**
+ * Kill a session that is still starting. Deliberately outside the lifecycle
+ * queue: a cancel that waits for the start it cancels is not a cancel.
+ */
+export async function abortParaViewStartup(): Promise<boolean> {
+  const pending = startup;
+  if (!pending) return false;
+  startup = null;
+  if (pending.worker) await pending.worker.stop(false);
+  return true;
 }
 
 export async function sendParaViewCommand(action: string, data: Record<string, unknown> = {}): Promise<WorkerResult> {
@@ -1621,6 +1896,7 @@ export async function sendParaViewCameraCommand(data: Record<string, unknown>): 
 }
 
 export async function stopParaViewSession(): Promise<void> {
+  await abortParaViewStartup();
   const worker = activeWorker;
   activeWorker = null;
   if (worker) await worker.stop();

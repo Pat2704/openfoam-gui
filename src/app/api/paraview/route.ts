@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiError } from '@/lib/api-response';
 import {
+  abortParaViewStartup,
   findParaView,
   getParaViewSession,
+  getParaViewStartup,
   readParaViewRender,
   sendParaViewCameraCommand,
   sendParaViewCommand,
@@ -54,7 +56,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(status, { headers: { 'Cache-Control': 'no-store' } });
     }
     if (action === 'session') {
-      return NextResponse.json({ session: getParaViewSession() }, { headers: { 'Cache-Control': 'no-store' } });
+      // The workbench polls this while it waits, so the answer carries the
+      // startup phase as well as the finished session.
+      return NextResponse.json(
+        { session: getParaViewSession(), startup: getParaViewStartup() },
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
     }
     if (action === 'render') {
       const width = boundedInteger(url.searchParams.get('width'), 1000, 320, 1920);
@@ -76,14 +83,17 @@ export async function POST(req: NextRequest) {
     if (action === 'start') {
       const caseName = validateCaseName(typeof body.case === 'string' ? body.case : '');
       const path = requestedPath(body.path);
-      return await enqueueLifecycle(async () => {
-        const marker = createParaFoamMarker(caseName);
-        const state = await startParaViewSession(caseName, marker.windowsPath, path);
-        return NextResponse.json({ state });
-      });
+      // startParaViewSession serialises and joins starts itself, so a second
+      // request for the same case attaches to the one already loading instead
+      // of queueing behind it and then starting over.
+      const marker = createParaFoamMarker(caseName);
+      const state = await startParaViewSession(caseName, marker.windowsPath, path);
+      return NextResponse.json({ state });
     }
 
     if (action === 'stop') {
+      // Cancelling must not wait for the start it cancels.
+      await abortParaViewStartup();
       await enqueueLifecycle(stopParaViewSession);
       return NextResponse.json({ ok: true });
     }

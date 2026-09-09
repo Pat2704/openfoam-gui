@@ -12,7 +12,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
-import type { ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewWorkbenchState } from '@/lib/paraview';
+import type {
+  ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewStartupStage, ParaViewWorkbenchState,
+} from '@/lib/paraview';
 import {
   AlertTriangle, ArrowUpRight, Box, Calculator, ChevronLeft, ChevronRight, CircleDot,
   Download, Eye, EyeOff, FileBox, Filter, FolderOpen, GitFork, Grid3X3, Info, Layers3, Loader2,
@@ -91,12 +93,39 @@ const FILTER_GROUPS: { label: string; filters: FilterType[] }[] = [
   { label: 'Data analysis', filters: ['Calculator', 'Gradient', 'TemporalStatistics', 'IntegrateVariables', 'CellDatatoPointData', 'PointDatatoCellData'] },
   { label: 'Extraction and topology', filters: ['ExtractSurface', 'ExtractEdges', 'Connectivity'] },
 ];
-const STARTUP_STAGES = [
-  'Creating the paraFoam marker…',
-  'Starting the ParaView Python engine…',
-  'Reading mesh regions, fields and timesteps…',
-  'Preparing the first offscreen render…',
+// Reported by the engine itself rather than animated on a timer, so a slow
+// start can be told apart from a stuck one. A first ParaView launch loads its
+// libraries from disk and takes minutes; every later one takes seconds.
+const STARTUP_STEPS: { stage: ParaViewStartupStage; label: string }[] = [
+  { stage: 'locating', label: 'Locating the ParaView installation…' },
+  { stage: 'launching', label: 'Creating the paraFoam marker and starting pvpython…' },
+  { stage: 'interpreter', label: 'Python is up — loading the ParaView libraries…' },
+  { stage: 'engine', label: 'ParaView libraries loaded.' },
+  { stage: 'reading', label: 'Reading mesh regions, fields and timesteps…' },
+  { stage: 'rendering', label: 'Preparing the first offscreen render…' },
 ];
+/** A cold pvpython can take minutes; the ceilings only catch a real hang. */
+const START_TIMEOUT_MS = 660_000;
+const REQUEST_TIMEOUT_MS = 180_000;
+
+/**
+ * Every request the workbench makes is bounded. An unbounded fetch is what
+ * turns a session that died quietly into a spinner that never stops.
+ */
+async function timedFetch(input: string, init: RequestInit, timeout: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeout);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (cause) {
+    if (controller.signal.aborted) {
+      throw new Error(`ParaView did not answer within ${Math.round(timeout / 1000)} seconds.`);
+    }
+    throw cause;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 const EMPTY_DRAFT: PropertyDraft = {
   origin: [0, 0, 0], normal: [1, 0, 0], invert: false,
@@ -191,7 +220,8 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [path, setPath] = useState('');
   const [configLoaded, setConfigLoaded] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [startupStage, setStartupStage] = useState(0);
+  const [startupStage, setStartupStage] = useState<ParaViewStartupStage>('locating');
+  const [startupSeconds, setStartupSeconds] = useState(0);
   const [busy, setBusy] = useState(false);
   const [cameraBusy, setCameraBusy] = useState(false);
   const [error, setError] = useState('');
@@ -221,6 +251,11 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const disposedRef = useRef(false);
   const nextImageSequenceRef = useRef(0);
   const shownImageSequenceRef = useRef(0);
+  const lastSizeRef = useRef({ width: 1000, height: 700 });
+  const stoppedRef = useRef(false);
+  const wasActiveRef = useRef(active);
+  const recoveriesRef = useRef(0);
+  const imageRecoveryRef = useRef(0);
 
   const selected = useMemo(
     () => workbench?.pipeline.find(node => node.id === workbench.selectedId) || null,
@@ -231,16 +266,26 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     return query ? caseFiles.filter(file => file.path.toLowerCase().includes(query)) : caseFiles;
   }, [caseFiles, fileSearch]);
 
+  // A hidden pane measures 0x0, so the last real measurement is the honest
+  // answer: rendering at the fallback size would change the image's aspect.
+  const startupIndex = Math.max(0, STARTUP_STEPS.findIndex(step => step.stage === startupStage));
+
   const imageSize = useCallback(() => {
-    return {
-      width: Math.max(320, Math.min(1920, Math.round(viewportRef.current?.clientWidth || 1000))),
-      height: Math.max(240, Math.min(1200, Math.round(viewportRef.current?.clientHeight || 700))),
-    };
+    const width = Math.round(viewportRef.current?.clientWidth || 0);
+    const height = Math.round(viewportRef.current?.clientHeight || 0);
+    if (width > 0 && height > 0) {
+      lastSizeRef.current = {
+        width: Math.max(320, Math.min(1920, width)),
+        height: Math.max(240, Math.min(1200, height)),
+      };
+    }
+    return lastSizeRef.current;
   }, []);
 
   const showImage = useCallback((blob: Blob, sequence: number) => {
     if (sequence < shownImageSequenceRef.current || disposedRef.current) return;
     shownImageSequenceRef.current = sequence;
+    imageRecoveryRef.current = 0;
     const next = URL.createObjectURL(blob);
     if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current);
     imageUrlRef.current = next;
@@ -251,9 +296,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     const sequence = ++nextImageSequenceRef.current;
     const size = imageSize();
     const quality = interactive ? 90 : 94;
-    const response = await fetch(
+    const response = await timedFetch(
       `/api/paraview?action=render&width=${size.width}&height=${size.height}&quality=${quality}`,
       { cache: 'no-store' },
+      REQUEST_TIMEOUT_MS,
     );
     if (!response.ok) throw new Error(await errorFrom(response));
     showImage(await response.blob(), sequence);
@@ -267,11 +313,11 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     if (!options.quiet) setBusy(true);
     setError('');
     try {
-      const response = await fetch('/api/paraview', {
+      const response = await timedFetch('/api/paraview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'command', command: name, data }),
-      });
+      }, REQUEST_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       const result = await response.json() as { state?: ParaViewWorkbenchState };
       if (result.state) setWorkbench(result.state);
@@ -291,10 +337,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     setFilesLoading(true);
     setError('');
     try {
-      const response = await fetch('/api/paraview', {
+      const response = await timedFetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'command', command: 'list_case_files', data: {} }),
-      });
+      }, REQUEST_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       const result = await response.json() as { files?: ParaViewCaseFile[] };
       const files = result.files || [];
@@ -326,18 +372,24 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const start = useCallback(async (force = false) => {
     if (!caseName || starting || !configLoaded) return;
     startedCaseRef.current = caseName;
+    stoppedRef.current = false;
+    imageRecoveryRef.current = 0;
     setStarting(true);
-    setStartupStage(0);
+    setStartupStage('locating');
+    setStartupSeconds(0);
     setPlaying(false);
     setError('');
     try {
       if (!force) {
-        const sessionResponse = await fetch('/api/paraview?action=session', { cache: 'no-store' });
+        const sessionResponse = await timedFetch(
+          '/api/paraview?action=session', { cache: 'no-store' }, REQUEST_TIMEOUT_MS,
+        );
         if (sessionResponse.ok) {
           const current = await sessionResponse.json() as { session?: { caseName?: string } | null };
           if (current.session?.caseName === caseName) {
             const existing = await command('state', {}, { render: false, quiet: true });
             if (existing) {
+              recoveriesRef.current = 0;
               await fetchRender(true);
               window.setTimeout(() => void fetchRender(false), 80);
               return;
@@ -345,13 +397,14 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
           }
         }
       }
-      const response = await fetch('/api/paraview', {
+      const response = await timedFetch('/api/paraview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'start', case: caseName, path }),
-      });
+      }, START_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       const result = await response.json() as { state: ParaViewWorkbenchState };
+      recoveriesRef.current = 0;
       setWorkbench(result.state);
       await fetchRender(true);
       window.setTimeout(() => void fetchRender(false), 80);
@@ -367,11 +420,12 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const stop = useCallback(async () => {
     setPlaying(false);
     setBusy(true);
+    stoppedRef.current = true;
     try {
-      await fetch('/api/paraview', {
+      await timedFetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'stop' }),
-      });
+      }, REQUEST_TIMEOUT_MS);
       startedCaseRef.current = caseName;
       setWorkbench(null);
       setImageUrl('');
@@ -391,25 +445,77 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       setConfigLoaded(true);
     });
     reloadConfig();
+    // The saved ParaView path is a hint, not a precondition. If the config
+    // bridge never answers, open the case with automatic detection rather than
+    // leaving the tab waiting for a promise that will not settle.
+    const configFallback = window.setTimeout(() => { if (!cancelled) setConfigLoaded(true); }, 8_000);
     window.addEventListener('paraview-config-changed', reloadConfig);
     return () => {
       cancelled = true;
       disposedRef.current = true;
+      window.clearTimeout(configFallback);
       window.removeEventListener('paraview-config-changed', reloadConfig);
       if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
       if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current);
     };
   }, []);
 
+  // Ask the server which phase the engine is in, and count the seconds, so a
+  // long first launch reads as progress rather than as a hang.
   useEffect(() => {
     if (!starting) return;
-    const timer = window.setInterval(() => setStartupStage(stage => Math.min(stage + 1, STARTUP_STAGES.length - 1)), 1150);
-    return () => window.clearInterval(timer);
+    const startedAt = Date.now();
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await timedFetch('/api/paraview?action=session', { cache: 'no-store' }, 20_000);
+        if (!response.ok || cancelled) return;
+        const data = await response.json() as { startup?: { stage?: ParaViewStartupStage } | null };
+        if (data.startup?.stage && !cancelled) setStartupStage(data.startup.stage);
+      } catch { /* the start request itself reports real failures */ }
+    };
+    const timer = window.setInterval(() => {
+      setStartupSeconds(Math.round((Date.now() - startedAt) / 1000));
+      void poll();
+    }, 1_000);
+    void poll();
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [starting]);
 
+  const cancelStart = useCallback(async () => {
+    stoppedRef.current = true;
+    try {
+      await timedFetch('/api/paraview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      }, REQUEST_TIMEOUT_MS);
+    } catch { /* the pending start reports the outcome */ }
+  }, []);
+
+  /**
+   * Start on first display, and recover on a later one. Switching away and back
+   * used to be the only way out of a session that had failed or been dropped
+   * while the tab was hidden; doing it here is what makes that unnecessary.
+   */
   useEffect(() => {
-    if (active && caseName && configLoaded && startedCaseRef.current !== caseName && !starting) void start();
-  }, [active, caseName, configLoaded, start, starting]);
+    const shown = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!active || !caseName || !configLoaded || starting || stoppedRef.current) return;
+    const firstStart = startedCaseRef.current !== caseName;
+    const recover = shown && !workbench && recoveriesRef.current < 2;
+    if (!firstStart && !recover) return;
+    if (recover) recoveriesRef.current += 1;
+    void start();
+  }, [active, caseName, configLoaded, start, starting, workbench]);
+
+  // A workbench without a picture is the other half of the same problem: the
+  // state arrived, one render did not, and nothing asked again.
+  useEffect(() => {
+    if (!active || !workbench || imageUrl || starting || busy) return;
+    if (imageRecoveryRef.current >= 3) return;
+    imageRecoveryRef.current += 1;
+    void fetchRender(false).catch(() => undefined);
+  }, [active, busy, fetchRender, imageUrl, starting, workbench]);
 
   useEffect(() => {
     if (!selected) return;
@@ -704,9 +810,11 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         <div className="relative max-w-lg text-center">
           {starting ? <>
             <div className="relative mx-auto mb-5 h-16 w-16"><div className="absolute inset-0 animate-ping rounded-full border border-cyan-400/40" /><Loader2 className="absolute inset-2 h-12 w-12 animate-spin text-cyan-400" /></div>
-            <p className="font-medium">Opening {caseName}</p>
-            <p className="mt-2 min-h-5 text-xs text-white/65">{STARTUP_STAGES[startupStage]}</p>
-            <div className="mx-auto mt-4 flex w-56 gap-1">{STARTUP_STAGES.map((_, index) => <span key={index} className={`h-1 flex-1 rounded ${index <= startupStage ? 'bg-cyan-400' : 'bg-white/15'}`} />)}</div>
+            <p className="font-medium">Opening {caseName}<span className="ml-2 font-mono text-xs text-white/50">{startupSeconds}s</span></p>
+            <p className="mt-2 min-h-5 text-xs text-white/65">{STARTUP_STEPS[startupIndex].label}</p>
+            <div className="mx-auto mt-4 flex w-56 gap-1">{STARTUP_STEPS.map((step, index) => <span key={step.stage} className={`h-1 flex-1 rounded ${index <= startupIndex ? 'bg-cyan-400' : 'bg-white/15'}`} />)}</div>
+            {startupSeconds >= 20 && <p className="mx-auto mt-3 max-w-sm text-[11px] text-white/45">The first ParaView launch after a reboot loads its libraries from disk and can take a few minutes. Later ones start in seconds.</p>}
+            <Button size="sm" variant="outline" className="mt-4 border-white/25 bg-white/5 text-white hover:bg-white/10 hover:text-white" onClick={() => void cancelStart()}>Cancel</Button>
           </> : <>
             <AlertTriangle className="mx-auto mb-3 h-10 w-10 text-amber-400" />
             <p className="font-medium">ParaView workbench is not available</p>

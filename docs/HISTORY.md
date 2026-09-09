@@ -6,6 +6,58 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-09 — ParaView: detection without a cold start, startup that reports itself
+
+- Measured on the reference machine, and the cause of both reported problems:
+  `pvpython.exe --version` takes **107 s on a first run** and 3.5 s once Windows
+  has the files cached; a pvpython *script* takes ~100 s cold and 0.7 s warm.
+  Detection probed every candidate by executing it with a 15 s timeout, so
+  before ParaView had been launched once nothing was ever found — including a
+  path the user had pasted correctly. The user's guess that "it needs a first
+  launch of ParaView" was right.
+- Detection no longer executes anything in the normal case. It reads the
+  installation LAYOUT instead: pvpython.exe beside paraview.exe/pvbatch.exe, or
+  a `share/paraview-X.Y` / `lib/paraview-X.Y` folder, with the version taken
+  from those folder names (`ParaView-6.2.0` beats `paraview-6.2`, which carries
+  no patch level). Executing `--version` is now the fallback for a lone
+  pvpython outside a ParaView tree, sequential and with a 150 s timeout.
+  Measured after the change: auto-detect 6 ms, every form of pasted path 1-19 ms.
+- Sources are searched in cost order and any of them can end the search: custom
+  path, `OFSTUDIO_PARAVIEW_PATH`, standard install folders, PATH, then the
+  registry. The custom path is therefore what answers whenever it holds a
+  ParaView, which is what the Dashboard needs to save it — it refuses to save a
+  path whose source is not `Custom path`, and the fallback scan used to win that
+  race. Pasted paths now also accept quotes, `%VARIABLES%`, forward slashes,
+  trailing separators, a `bin` folder, an install root, `paraview.exe`, and a
+  path one level too deep such as `share`.
+- Standard folders now include `ProgramData`, the drive roots, the profile,
+  Desktop and Downloads, for portable unzipped installs. Registry hives are
+  queried in parallel, the tree walk checks `bin/pvpython.exe` first and prunes
+  folders that cannot hold it, and concurrent callers share one scan. A failed
+  scan is cached for 30 s only, so installing ParaView no longer requires an
+  app restart.
+- The workbench start reports real phases — `locating`, `launching`,
+  `interpreter`, `engine`, `reading`, `rendering` — the last four emitted by the
+  worker itself around `from paraview.simple import *`, which is the minutes-long
+  part of a cold start. The tab shows the phase, the elapsed seconds, a note
+  after 20 s and a Cancel button, replacing four labels animated on a 1150 ms
+  timer that finished long before the engine did.
+- Cancelling used to queue behind the start it was cancelling; it now aborts the
+  starting worker directly (3 ms, measured) and the pending start rejects. Two
+  starts for the same case join one engine instead of queueing and restarting.
+  The engine reports its own exact version, which replaces the folder-derived
+  one in the session and the Dashboard.
+- Every workbench request is bounded by an AbortController, and the tab heals
+  itself: becoming visible again restarts a session that failed while hidden,
+  and re-requests a render when the state arrived without a picture — which is
+  what the user was doing by hand when they switched tab and came back. A render
+  while the pane is hidden reuses the last measured size instead of a 1000x700
+  guess. Neither panel can spin forever on a config bridge that never answers.
+- Verified end to end against ParaView 6.2.0 and the WSL `test` case: ready in
+  21 s with live phases, exact version, JPEG render, follow-up command, clean
+  stop. `npm run check` passes (175 tests); the built artifacts contain the new
+  code and no longer contain the old.
+
 ## 2026-09-08 — v5.2.0
 
 - Released `v5.2.0`: the theme that survives a restart, the agent mode-change

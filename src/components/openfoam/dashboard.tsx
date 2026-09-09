@@ -133,13 +133,22 @@ export default function Dashboard({
       const query = new URLSearchParams({ action: 'status' });
       if (pathOverride.trim()) query.set('path', pathOverride.trim());
       if (refresh) query.set('refresh', '1');
-      const response = await fetch(`/api/paraview?${query}`);
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 180_000);
+      let response: Response;
+      try {
+        response = await fetch(`/api/paraview?${query}`, { signal: controller.signal });
+      } finally {
+        window.clearTimeout(timer);
+      }
       const data = await response.json() as ParaViewStatus;
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setParaViewStatus(data);
       if (save) {
         if (pathOverride.trim() && data.source !== 'Custom path') {
-          toast.error('The selected path is not usable. ParaView was detected elsewhere, but this path was not saved.');
+          toast.error(data.found
+            ? `That path holds no ParaView. The one in use is ${data.pvpythonPath}, so nothing was saved.`
+            : 'That path holds no ParaView, and none was found elsewhere. Nothing was saved.');
           return;
         }
         const saved = await patchFoamyConfig({ 'paraview-path': pathOverride.trim() });
@@ -188,13 +197,22 @@ export default function Dashboard({
 
   useEffect(() => {
     let cancelled = false;
+    let started = false;
     void loadFoamyConfig().then(config => {
-      if (cancelled) return;
+      if (cancelled || started) return;
+      started = true;
       const savedPath = config['paraview-path'] || '';
       setParaViewPath(savedPath);
       return detectParaView(savedPath);
     });
-    return () => { cancelled = true; };
+    // Detection must run even if the config bridge never answers, or the card
+    // would spin on "Detecting…" with nothing behind it.
+    const fallback = window.setTimeout(() => {
+      if (cancelled || started) return;
+      started = true;
+      void detectParaView('');
+    }, 8_000);
+    return () => { cancelled = true; window.clearTimeout(fallback); };
   }, [detectParaView]);
 
   useEffect(() => {
