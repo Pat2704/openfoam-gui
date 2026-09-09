@@ -15,6 +15,8 @@ import {
   buildFunctionsEntry,
   validateTypedSpec,
   resolveTemplateExtras,
+  optionalTemplateEntries,
+  parseClassDocumentation,
   tutorialExamplesFor,
   tokenizeCommand,
   parsePostProcessCommand,
@@ -370,6 +372,15 @@ test('the placeholders the installed templates actually use are classified by sh
   // `axis` is NOT a direction here: in the graph templates it means "x", "y",
   // "z" or "distance", so classifying it as a vector would offer `(0 0 0)`.
   assert.equal(kindOf('<axis>'), 'text');
+  // Nor is `<coordinate>`: `coordinateType <coordinate>;` names one of
+  // "volume", "area" or "diameter", and offering a vector for it produced a
+  // call OpenFOAM refused.
+  assert.equal(kindOf('<coordinate>'), 'text');
+  // `fieldType <fieldType>;` in the `uniform` template is a class name —
+  // volScalarField — not a field of the case.
+  assert.equal(kindOf('<fieldType>'), 'text');
+  // Zones can be named from the case, the same way patches can.
+  assert.equal(kindOf('<faceZoneName>'), 'faceZone');
   // Unrecognised placeholders stay text, so the example shows the hole.
   assert.equal(kindOf('<phaseName>'), 'text');
   assert.equal(kindOf('<triSurfaceFileName>'), 'text');
@@ -378,19 +389,83 @@ test('the placeholders the installed templates actually use are classified by sh
 test('a singular patch argument names a patch of the case', () => {
   const arg = {
     name: 'patch', kind: 'patchName' as const, listWrapped: false,
-    placeholder: '<patchName>', help: '', required: true,
+    placeholder: '<patchName>', help: '', required: true, commented: false,
   };
-  assert.equal(exampleArgValue(arg, ['movingWall', 'fixedWalls']), 'movingWall');
+  assert.equal(exampleArgValue(arg, { patches: ['movingWall', 'fixedWalls'] }), 'movingWall');
   // With no case to ask, the hole stays visible rather than naming a patch that
   // may not exist.
-  assert.equal(exampleArgValue(arg, []), '<patchName>');
+  assert.equal(exampleArgValue(arg, {}), '<patchName>');
+});
+
+test('the second patch of a difference is the other one', () => {
+  // `patchDifference(patch1=inlet, patch2=inlet)` asks OpenFOAM for a quantity
+  // that is zero by construction, which reads as a broken function rather than
+  // as an example that still needs editing.
+  const second = {
+    name: 'patch2', kind: 'patchName' as const, listWrapped: false,
+    placeholder: '<patchName2>', help: '', required: true, commented: false,
+  };
+  assert.equal(exampleArgValue(second, { patches: ['movingWall', 'fixedWalls'] }), 'fixedWalls');
+  // One patch and there is no other to name; the first is still better than a
+  // placeholder.
+  assert.equal(exampleArgValue(second, { patches: ['movingWall'] }), 'movingWall');
+});
+
+test('a direction is a direction, and a sampled line crosses the mesh', () => {
+  const bounds: [number, number, number, number, number, number] = [0, 0, 0, 0.1, 0.2, 0.01];
+  const point = (name: string) => exampleArgValue(
+    {
+      name, kind: 'point' as const, listWrapped: false,
+      placeholder: `<${name}>`, help: '', required: true, commented: false,
+    },
+    { bounds },
+  );
+  // `normal=(0 0 0)` is not a plane and `direction=(0 0 0)` is not a direction.
+  assert.equal(point('normal'), '(1 0 0)');
+  assert.equal(point('direction'), '(1 0 0)');
+  assert.equal(point('liftDir'), '(1 0 0)');
+
+  // A line of zero length is what every graph template used to be offered. The
+  // longest side here is y, so the sample runs along it through the centre.
+  assert.notEqual(point('start'), point('end'));
+  assert.ok(point('start').startsWith('(0.05 '));
+  assert.ok(point('end').startsWith('(0.05 '));
+  assert.ok(point('start').endsWith(' 0.005)'));
+
+  // An origin sits in the middle of the mesh, which is inside it whatever
+  // shape the mesh has.
+  assert.equal(point('origin'), '(0.05 0.1 0.005)');
+});
+
+test('a field argument names a field the case has written', () => {
+  const one = {
+    name: 'field', kind: 'fieldName' as const, listWrapped: false,
+    placeholder: '<fieldName>', help: '', required: true, commented: false,
+  };
+  const many = {
+    ...one, name: 'fields', kind: 'fieldList' as const,
+    listWrapped: true, placeholder: '<fieldNames>',
+  };
+  assert.equal(exampleArgValue(one, { fields: ['T', 'U'] }), 'U');
+  assert.equal(exampleArgValue(many, { fields: ['T', 'U', 'p'] }), '(p U)');
+  // With no case to ask, the pair every OpenFOAM case has.
+  assert.equal(exampleArgValue(many, {}), '(p U)');
+
+  // A time directory holds whatever the run and every earlier function object
+  // wrote into it, so the first name alphabetically is usually bookkeeping:
+  // the solved variables come first when the case has them.
+  assert.equal(exampleArgValue(one, { fields: ['C', 'Ccx', 'U', 'p', 'Vc'] }), 'p');
+  assert.equal(exampleArgValue(many, { fields: ['C', 'Ccx', 'U', 'p', 'Vc'] }), '(p U)');
+  // A case with none of them keeps its own order rather than inventing names.
+  assert.equal(exampleArgValue(one, { fields: ['Ccx', 'Vc'] }), 'Ccx');
 });
 
 test('an example value is taken from the template\'s own documentation', () => {
   // `magUInf <magUInf>; // Far field velocity magnitude; e.g., 20 m/s`
   const documented = {
     name: 'magUInf', kind: 'text' as const, listWrapped: false,
-    placeholder: '<magUInf>', help: 'Far field velocity magnitude; e.g., 20 m/s', required: true,
+    placeholder: '<magUInf>', help: 'Far field velocity magnitude; e.g., 20 m/s',
+    required: true, commented: false,
   };
   // The value, not the prose: `20 m/s` is a sentence, `20` is what the
   // dictionary accepts.
@@ -398,33 +473,52 @@ test('an example value is taken from the template\'s own documentation', () => {
 
   const vector = { ...documented, name: 'CofR', help: 'Centre of rotation; e.g., (0 0 0)' };
   assert.equal(exampleArgValue(vector), '(0 0 0)');
+
+  // `wallHeatTransferCoeff` writes `e.g, 0.7` — no second full stop. Requiring
+  // the complete `e.g.` left its Prandtl number a bare `<Pr>` in an otherwise
+  // finished call.
+  const typo = { ...documented, name: 'Pr', help: 'Laminar Prandtl number; e.g, 0.7' };
+  assert.equal(exampleArgValue(typo), '0.7');
 });
 
 test('an undocumented placeholder stays visible instead of being guessed at', () => {
   const opaque = {
     name: 'whatever', kind: 'text' as const, listWrapped: false,
-    placeholder: '<whatever>', help: '', required: true,
+    placeholder: '<whatever>', help: '', required: true, commented: false,
   };
   assert.equal(exampleArgValue(opaque), '<whatever>');
+});
+
+test('a placeholder for a list keeps the brackets the list needs', () => {
+  // `objects (<objectNames>);` unwrapped produced `objects=<objectNames>`, and
+  // OpenFOAM refused it not as an unfilled hole but as a broken list:
+  // "incorrect first token, expected <int> or '(', found the word
+  // '<objectNames>'". Filling in `p U` over the bare form failed the same way.
+  const objects = {
+    name: 'objects', kind: 'text' as const, listWrapped: true,
+    placeholder: '<objectNames>', help: '', required: true, commented: false,
+  };
+  assert.equal(exampleArgValue(objects), '(<objectNames>)');
 });
 
 test('a patch argument uses a patch the case actually has', () => {
   const arg = {
     name: 'patches', kind: 'patchList' as const, listWrapped: true,
-    placeholder: '<patchNames>', help: '', required: true,
+    placeholder: '<patchNames>', help: '', required: true, commented: false,
   };
-  assert.equal(exampleArgValue(arg, ['movingWall', 'fixedWalls']), '(movingWall)');
+  assert.equal(exampleArgValue(arg, { patches: ['movingWall', 'fixedWalls'] }), '(movingWall)');
   // With no case to ask, the placeholder stays visible rather than inventing a
-  // patch name that would fail at the first run.
-  assert.equal(exampleArgValue(arg, []), '<patchNames>');
+  // patch name that would fail at the first run — with its brackets, because
+  // the entry is a list either way.
+  assert.equal(exampleArgValue(arg, {}), '(<patchNames>)');
 });
 
 test('the call template is runnable, and names its own output directory', () => {
   const args = [
-    { name: 'start', kind: 'point' as const, listWrapped: false, placeholder: '<point>', help: '', required: true },
-    { name: 'nPoints', kind: 'number' as const, listWrapped: false, placeholder: '<number>', help: '', required: true },
-    { name: 'fields', kind: 'fieldList' as const, listWrapped: true, placeholder: '<fieldNames>', help: '', required: true },
-    { name: 'axis', kind: 'text' as const, listWrapped: false, placeholder: 'distance', help: '', required: false },
+    { name: 'start', kind: 'point' as const, listWrapped: false, placeholder: '<point>', help: '', required: true, commented: false },
+    { name: 'nPoints', kind: 'number' as const, listWrapped: false, placeholder: '<number>', help: '', required: true, commented: false },
+    { name: 'fields', kind: 'fieldList' as const, listWrapped: true, placeholder: '<fieldNames>', help: '', required: true, commented: false },
+    { name: 'axis', kind: 'text' as const, listWrapped: false, placeholder: 'distance', help: '', required: false, commented: false },
   ];
   // `name=` first, as every tutorial writes it: without it the output lands in
   // a directory named after the whole call with its spaces stripped.
@@ -592,4 +686,336 @@ test('geometry output is not offered as a chart, and extensionless probe files a
   assert.equal(isTabularOutput('U'), true);
   assert.equal(isTabularOutput('surface.vtk'), false);
   assert.equal(isTabularOutput('cut.vtp'), false);
+});
+
+
+// ── Comment attribution, which is where a reference silently lies ──
+//
+// The four fixtures below are the shapes the installed templates actually use.
+// Each one produced documentation belonging to another entry, or none at all.
+
+test('a comment above an entry introduces it, and does not belong to the one before', () => {
+  // Verbatim from `etc/caseDicts/postProcessing/fields/randomise`. The comment
+  // describes `magPerturbation`, and gluing it to the entry above gave `field`
+  // a help text about a perturbation it has nothing to do with.
+  const template = parseFunctionTemplate([
+    '\\*---------------------------------------------------------------------------*/',
+    '',
+    'field           <fieldName>;',
+    '',
+    '// Set the magnitude of the perturbation',
+    'magPerturbation <scalar>;',
+    '',
+  ].join('\n'));
+
+  const byName = Object.fromEntries(template.args.map(arg => [arg.name, arg]));
+  assert.equal(byName.field.help, '');
+  assert.equal(byName.magPerturbation.help, 'Set the magnitude of the perturbation');
+});
+
+test('an entry the template writes out commented is an option, not prose', () => {
+  // `graphCutLayerAverage` offers `distance` as the alternative to `direction`
+  // exactly this way. Read as prose it swallowed the help of the entry above
+  // and the option itself was never mentioned anywhere.
+  const template = parseFunctionTemplate([
+    '\\*---------------------------------------------------------------------------*/',
+    '',
+    'direction       <direction>; // Direction along which to graph',
+    '',
+    '//distance      <fieldName>; // Name of the distance field. Either this or',
+    '                             // direction should be specified; not both.',
+    '',
+    'nPoints         <nPoints>;   // Number of points in the graph',
+    '',
+  ].join('\n'));
+
+  const byName = Object.fromEntries(template.args.map(arg => [arg.name, arg]));
+  assert.equal(byName.direction.help, 'Direction along which to graph');
+  assert.equal(byName.direction.commented, false);
+
+  assert.equal(byName.distance.commented, true);
+  // Commented means off: it can never be something the caller MUST supply, and
+  // it never appears in the call the panel builds.
+  assert.equal(byName.distance.required, false);
+  assert.ok(byName.distance.help.includes('Name of the distance field'));
+  assert.ok(byName.distance.help.includes('not both'));
+
+  assert.equal(byName.nPoints.help, 'Number of points in the graph');
+  assert.ok(!buildCallTemplate('graphCutLayerAverage', template.args).includes('distance='));
+});
+
+test('a comment that wraps is one help text, and a blank comment line does not end it', () => {
+  // `populationBalanceSetSizeDistribution` writes its example distribution as
+  // an indented block with empty `//` lines inside it.
+  const template = parseFunctionTemplate([
+    '\\*---------------------------------------------------------------------------*/',
+    '',
+    'file  <file>; // Distribution file. E.g.:',
+    '              //',
+    '              // ( (1e-3 0.2) (2e-3 0.4) )',
+    '',
+  ].join('\n'));
+  const file = template.args.find(arg => arg.name === 'file');
+  assert.ok(file);
+  assert.ok(file.help.includes('Distribution file'));
+  assert.ok(file.help.includes('(1e-3 0.2)'));
+});
+
+test('a sub-dictionary is not flattened into the argument list', () => {
+  // The same template wires its own `distribution { Q $Q; file $file; }`.
+  // Flattened, it offered `Q` and `file` twice, the second time with the
+  // wiring itself as their value.
+  const template = parseFunctionTemplate([
+    '\\*---------------------------------------------------------------------------*/',
+    '',
+    'file                <file>;',
+    'Q                   0;',
+    '',
+    'distribution',
+    '{',
+    '    type                tabulatedDensity;',
+    '    Q                   $Q;',
+    '    file                $file;',
+    '}',
+    '',
+  ].join('\n'));
+  assert.deepEqual(template.args.map(arg => arg.name), ['file', 'Q']);
+});
+
+test('an entry wired to another is plumbing, not a parameter', () => {
+  // `CourantNo` writes `phi phi; field $phi;`. The second is the template
+  // pointing one of its own entries at the first; offering `field = $phi` as a
+  // parameter is offering the wiring.
+  const template = parseFunctionTemplate('phi             phi;\nfield           $phi;\n');
+  assert.deepEqual(template.args.map(arg => arg.name), ['phi']);
+});
+
+test('a base-interface key is noise with a value and an argument with a placeholder', () => {
+  // `yPlus` holds only the base interface and takes no arguments at all…
+  assert.deepEqual(
+    parseFunctionTemplate('writeControl    writeTime;\nexecuteControl  writeTime;\n').args,
+    [],
+  );
+  // …but `writeMesh` writes `writeControl <writeControl>;`, and dropping that
+  // offered a function with no arguments that then aborted on "Essential value
+  // for keyword 'writeControl' not set".
+  const writeMesh = parseFunctionTemplate('writeControl    <writeControl>;\n');
+  assert.equal(writeMesh.args.length, 1);
+  assert.equal(writeMesh.args[0].name, 'writeControl');
+  assert.equal(writeMesh.args[0].required, true);
+});
+
+test('a Description sentence is never read as an entry', () => {
+  const template = parseFunctionTemplate([
+    '/*--------------------------------*- C++ -*----------------------------------*\\',
+    '-------------------------------------------------------------------------------',
+    'Description',
+    '    Calculates the flow rate; the result is volumetric.',
+    '',
+    '    Two things follow:',
+    '    - the first',
+    '    - the second',
+    '',
+    '\\*---------------------------------------------------------------------------*/',
+    '',
+    'patch   <patchName>;',
+    '',
+  ].join('\n'));
+
+  assert.deepEqual(template.args.map(arg => arg.name), ['patch']);
+  // The prose keeps its shape: a list run together into the paragraph above it
+  // is the wall of text the panel exists to avoid.
+  assert.deepEqual(template.descriptionParagraphs, [
+    'Calculates the flow rate; the result is volumetric.',
+    'Two things follow:',
+    '- the first',
+    '- the second',
+  ]);
+  assert.ok(template.description.startsWith('Calculates the flow rate'));
+});
+
+test('the options a configuration hides are listed apart from its defaults', () => {
+  const template = 'fields  (<fieldNames>);\n#includeEtc "caseDicts/functions/x.cfg"\n';
+  const files = {
+    'caseDicts/functions/x.cfg': [
+      'type        volFieldValue;',
+      'libs        ("libfieldFunctionObjects.so");',
+      'operation   volAverage;',
+      '//weightField <weightFieldName>; // Field with which to weight the average',
+      '',
+    ].join('\n'),
+  };
+
+  const extras = resolveTemplateExtras(template, files);
+  assert.equal(extras.type, 'volFieldValue');
+  assert.deepEqual(extras.libs, ['libfieldFunctionObjects.so']);
+  // A commented entry has no value set, so it is not a default to override.
+  assert.deepEqual(extras.defaults.map(entry => entry.name), ['operation']);
+
+  const optional = optionalTemplateEntries(template, files);
+  assert.deepEqual(optional.map(arg => arg.name), ['weightField']);
+  assert.ok(optional[0].help.includes('weight the average'));
+});
+
+// ── The command line, against the options the installation actually has ──
+
+test('the solver option is read, and refused when this OpenFOAM has none', () => {
+  const known = ['forceCoeffsIncompressible'];
+  const offered = ['-func', '-time', '-solver', '-latestTime'];
+  const parsed = parsePostProcessCommand(
+    'foamPostProcess -func "forceCoeffsIncompressible" -solver incompressibleFluid -latestTime',
+    known, offered,
+  );
+  assert.equal(parsed.solver, 'incompressibleFluid');
+  assert.equal(parsed.latestTime, true);
+
+  // The older line has no `-solver`, and argList answers an unknown option
+  // with its whole usage screen rather than with anything about the mistake.
+  assert.throws(
+    () => parsePostProcessCommand(
+      'postProcess -func "forceCoeffsIncompressible" -solver incompressibleFluid',
+      known, ['-func', '-time', '-latestTime'],
+    ),
+    FunctionSpecError,
+  );
+});
+
+test('a solver and a field list are two different answers to the same question', () => {
+  // With `-solver` the utility loads the module and never looks at the field
+  // options, so a line carrying both hides which one is in force.
+  assert.throws(
+    () => parsePostProcessCommand(
+      'foamPostProcess -func "yPlus" -solver incompressibleFluid -fields "(U p)"',
+      ['yPlus'], ['-func', '-solver', '-fields'],
+    ),
+    FunctionSpecError,
+  );
+});
+
+test('the singular field option joins the list the utility keeps', () => {
+  const parsed = parsePostProcessCommand(
+    'foamPostProcess -func "mag(U)" -field p -fields "(U phi)"',
+    ['mag'], ['-func', '-field', '-fields'],
+  );
+  assert.deepEqual(parsed.fields, ['p', 'U', 'phi']);
+});
+
+test('the command shown carries the solver when there is one to name', () => {
+  assert.equal(
+    buildCommandTemplate('foamPostProcess', 'yPlus', { solver: 'incompressibleFluid' }),
+    'foamPostProcess -func "yPlus" -solver incompressibleFluid',
+  );
+  assert.equal(buildCommandTemplate('postProcess', 'yPlus'), 'postProcess -func "yPlus"');
+});
+
+// ── The class reference, as the installation's own source writes it ──
+
+test('a class header is read into prose, examples and a property table', () => {
+  // Trimmed from `src/functionObjects/field/fieldValues/volFieldValue/
+  // volFieldValue.H` — the shape, not an invented one.
+  const header = [
+    'Class',
+    '    Foam::functionObjects::fieldValues::volFieldValue',
+    '',
+    'Description',
+    '    Provides a \\c fvCellZone specialisation of the fieldValue function object.',
+    '',
+    '    Example of function object specification:',
+    '    \\verbatim',
+    '    volFieldValue1',
+    '    {',
+    '        type            volFieldValue;',
+    '        operation       volAverage;',
+    '    }',
+    '    \\endverbatim',
+    '',
+    'Usage',
+    '    \\table',
+    '        Property     | Description                   | Required | Default value',
+    '        cellZone     | cellZone                      | yes      |',
+    '        weightField  | Name of field to apply weighting | no    | none',
+    '    \\endtable',
+    '',
+    '    Where \\c cellZone options are:',
+    '    \\plaintable',
+    '        cellZone \\<name\\>  | Looks-up the named cellZone',
+    '        cellZone {type \\<zoneGeneratorType\\>;...} | \\\\',
+    '            Generates the cellZone locally',
+    '    \\endplaintable',
+    '',
+    'See also',
+    '    Foam::functionObjects::fieldValues::fieldValue',
+    '',
+    'SourceFiles',
+    '    volFieldValue.C',
+    '',
+    '\\*---------------------------------------------------------------------------*/',
+    '',
+    '#ifndef volFieldValue_functionObject_H',
+  ].join('\n');
+
+  const doc = parseClassDocumentation(header);
+  assert.ok(doc);
+  assert.equal(doc.className, 'Foam::functionObjects::fieldValues::volFieldValue');
+
+  // `\c fvCellZone` means "fvCellZone, in code font"; left in place the markup
+  // reads as part of the sentence.
+  const prose = doc.description.find(block => block.kind === 'text');
+  assert.ok(prose && prose.kind === 'text' && prose.text.includes('fvCellZone specialisation'));
+  assert.ok(prose.kind === 'text' && !prose.text.includes('\\c'));
+
+  // The dictionary example keeps its own nesting and loses the comment's.
+  const example = doc.description.find(block => block.kind === 'code');
+  assert.ok(example && example.kind === 'code');
+  assert.equal(example.lines[0], 'volFieldValue1');
+  assert.equal(example.lines[2], '    type            volFieldValue;');
+
+  const table = doc.usage.find(block => block.kind === 'table' && block.head);
+  assert.ok(table && table.kind === 'table');
+  assert.deepEqual(table.head, ['Property', 'Description', 'Required', 'Default value']);
+  assert.deepEqual(table.rows[0], ['cellZone', 'cellZone', 'yes', '']);
+  assert.deepEqual(table.rows[1], ['weightField', 'Name of field to apply weighting', 'no', 'none']);
+
+  // A plaintable has no header row, and a row continued onto the next line is
+  // one row: the longer cellZone forms are written that way.
+  const plain = doc.usage.find(block => block.kind === 'table' && !block.head);
+  assert.ok(plain && plain.kind === 'table');
+  assert.equal(plain.rows.length, 2);
+  assert.equal(plain.rows[0][0], 'cellZone <name>');
+  assert.ok(plain.rows[1][1].includes('Generates the cellZone locally'));
+
+  assert.deepEqual(doc.seeAlso, ['Foam::functionObjects::fieldValues::fieldValue']);
+});
+
+test('a header with no class of its own has no documentation to show', () => {
+  // Showing another class's reference would be worse than showing none, so the
+  // caller is told there is nothing rather than given a guess.
+  assert.equal(parseClassDocumentation('Description\n    Something.\n'), null);
+});
+
+test('a continuation table is not given the first property as its heading', () => {
+  // `forceCoeffs` opens a SECOND \table for its bin entries without repeating
+  // the column names. Taking the first row regardless promoted
+  // `nBin | number of data bins | yes` into a heading — a property presented
+  // as a column label. OpenFOAM's own convention settles it: a heading names
+  // its second column "Description".
+  const doc = parseClassDocumentation([
+    'Class',
+    '    Foam::functionObjects::forceCoeffs',
+    '',
+    'Usage',
+    '    \\table',
+    '        nBin         | number of data bins     | yes         |',
+    '        cumulative   | bin data accumulated    | yes         |',
+    '    \\endtable',
+    '',
+    '\\*---------------------------------------------------------------------------*/',
+  ].join('\n'));
+
+  assert.ok(doc);
+  const table = doc.usage[0];
+  assert.ok(table && table.kind === 'table');
+  assert.equal(table.head, null);
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[0][0], 'nBin');
 });

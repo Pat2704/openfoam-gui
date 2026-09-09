@@ -93,11 +93,13 @@ interface TableData {
 
 interface CatalogArg {
   name: string;
-  kind: 'number' | 'point' | 'fieldList' | 'patchList' | 'pointList' | 'text';
+  kind: 'number' | 'point' | 'fieldList' | 'patchList' | 'pointList'
+    | 'fieldName' | 'patchName' | 'cellZone' | 'faceZone' | 'text';
   listWrapped: boolean;
   placeholder: string;
   help: string;
   required: boolean;
+  commented: boolean;
 }
 
 interface CatalogDefault { name: string; value: string; help: string }
@@ -106,13 +108,56 @@ interface CatalogEntry {
   name: string;
   category: string;
   description: string;
+  descriptionParagraphs: string[];
   args: CatalogArg[];
+  /** Entries the template offers commented out: legal, documented, and off. */
+  optional: CatalogArg[];
   /** The function object class behind it. */
   type: string;
+  /** The libraries the entry loads. */
+  libs: string[];
   /** Entries that already have a value and can be overridden in the call. */
   defaults: CatalogDefault[];
   /** How the installed tutorials call it. */
   examples: string[];
+  /** Whether this template is the installation's, the site's or the user's. */
+  source: 'user' | 'site' | 'installation';
+  /** The template's path, so the reference can say where it was read from. */
+  file: string;
+}
+
+/** One piece of the class documentation, in the shape it should be rendered. */
+type DocBlock =
+  | { kind: 'text'; text: string }
+  | { kind: 'code'; lines: string[] }
+  | { kind: 'table'; head: string[] | null; rows: string[][] };
+
+/**
+ * The reference OpenFOAM ships for the class behind a configured function.
+ *
+ * The configured template is short by design — `volAverage` is one sentence —
+ * while the class header carries every property, its default, the values each
+ * enumeration accepts and a complete dictionary example. It is read from the
+ * installed source, so it describes the version in use and nothing here has to
+ * be kept in step with OpenFOAM.
+ */
+interface ClassDoc {
+  className: string;
+  description: DocBlock[];
+  usage: DocBlock[];
+  seeAlso: string[];
+  file: string;
+}
+
+/** What the open case can be asked, for the examples and the command. */
+interface CaseContext {
+  solver: string;
+  times: string[];
+  patches: string[];
+  fields: string[];
+  cellZones: string[];
+  faceZones: string[];
+  bounds?: [number, number, number, number, number, number];
 }
 
 /** Series colours, matching the palette the Monitor's residual plot uses. */
@@ -166,6 +211,61 @@ function driftBadge(drift: number | null): { label: string; className: string; t
   if (drift < 1e-3) return { label: 'settled', className: 'text-success', title: `Last two fifths differ by ${percent}` };
   if (drift < 1e-2) return { label: 'settling', className: 'text-warning', title: `Last two fifths differ by ${percent}` };
   return { label: 'drifting', className: 'text-danger', title: `Last two fifths differ by ${percent}` };
+}
+
+/**
+ * One block of class documentation.
+ *
+ * Three shapes come out of an OpenFOAM header and each wants its own: prose
+ * reads as prose, a verbatim dictionary example has to keep its indentation
+ * to be copyable, and a property table is a grid — flattened into a
+ * paragraph it becomes the wall of text the panel exists to replace.
+ */
+function DocBlockView({ block }: { block: DocBlock }) {
+  if (block.kind === 'text') {
+    return <p className="text-[10px] leading-relaxed text-muted-foreground">{block.text}</p>;
+  }
+  if (block.kind === 'code') {
+    // `overflow-x-auto` on the block itself: a long dictionary line must scroll
+    // inside its own box rather than widen the dialog, which is the same
+    // min-width trap the grid column above documents.
+    return (
+      <pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1.5 font-mono text-[10px] leading-relaxed">
+        {block.lines.join('\n')}
+      </pre>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[10px]">
+        {block.head && (
+          <thead>
+            <tr className="border-b">
+              {block.head.map((cell, index) => (
+                <th key={index} className="px-1 py-0.5 text-left font-semibold text-muted-foreground">{cell}</th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {block.rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b border-border/40 align-top">
+              {row.map((cell, index) => (
+                <td
+                  key={index}
+                  className={index === 0
+                    ? 'whitespace-nowrap px-1 py-0.5 font-mono text-foreground'
+                    : 'px-1 py-0.5 leading-snug text-muted-foreground'}
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /**
@@ -259,10 +359,20 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
    */
   const [commandText, setCommandText] = useState('');
   const [entryText, setEntryText] = useState('');
-  /** The case's own patch names, so an example uses one that exists. */
-  const [patches, setPatches] = useState<string[]>([]);
-  /** Which spelling of the utility this OpenFOAM has. */
+  /**
+   * What the case can be asked, so an example names something that exists.
+   *
+   * Patches, fields, zones, the mesh's bounding box and the solver the case
+   * declares. Every example built from it is one that can run; without it the
+   * graph functions were offered a line from `(0 0 0)` to `(0 0 0)`.
+   */
+  const [context, setContext] = useState<CaseContext | null>(null);
+  /** Which spelling of the utility this OpenFOAM has, and what it accepts. */
   const [utility, setUtility] = useState<string>(POST_PROCESS_NAMES[0]);
+  const [utilityOptions, setUtilityOptions] = useState<string[]>([]);
+  /** The class reference for the chosen function, read from the installation. */
+  const [classDoc, setClassDoc] = useState<ClassDoc | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [runOutput, setRunOutput] = useState<string | null>(null);
 
@@ -374,12 +484,13 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
    * it is 127 entries and does not change while a version stays put.
    */
   const loadCatalog = useCallback(async (force = false) => {
-    // The case's own patch names, so an example for a `<patchNames>` argument
-    // names a patch that exists instead of the word "patchName".
-    if ((force || !patches.length) && caseName) {
-      void fetch(`/api/cases/${encodeURIComponent(caseName)}?action=caseSummary`)
+    // What the case can answer about itself: patch, field and zone names, the
+    // mesh's bounding box and the solver it declares. Every example the panel
+    // builds is made of these, so a call it offers names things that exist.
+    if ((force || !context) && caseName) {
+      void fetch(`/api/postprocess?action=context&case=${encodeURIComponent(caseName)}`)
         .then(response => (response.ok ? response.json() : null))
-        .then(summary => { if (Array.isArray(summary?.patches)) setPatches(summary.patches); })
+        .then(payload => { if (payload) setContext(payload as CaseContext); })
         .catch(() => { /* an example falls back to a placeholder */ });
     }
     if (!force && catalog.length) return;
@@ -389,12 +500,32 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       if (!response.ok) throw new Error(payload.error || 'Could not read the function catalogue');
       setCatalog(payload.entries ?? []);
       // Which spelling this OpenFOAM has, so the command shown is the one that
-      // would actually run: v12 renamed postProcess to foamPostProcess.
+      // would actually run: v12 renamed postProcess to foamPostProcess. The
+      // options come with it, because -solver exists on one line and not the
+      // other and an option argList does not know is fatal.
       if (typeof payload.utility === 'string') setUtility(payload.utility);
+      if (Array.isArray(payload.options)) setUtilityOptions(payload.options);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
     }
-  }, [catalog.length, caseName, patches.length]);
+  }, [catalog.length, caseName, context]);
+
+  /**
+   * The solver to construct during a replay, when there is one to name.
+   *
+   * This is the difference between a drag coefficient and an abort. Without
+   * `-solver` the utility reads the fields off disk and builds no models, so
+   * every function that asks the registry for a momentum-transport or
+   * thermophysical model — forces, forceCoeffs, yPlus, wallShearStress,
+   * turbulenceFields — stops on "No valid model for viscous stress
+   * calculation". It is offered whenever this OpenFOAM has the option and the
+   * case declares a solver, and it can be deleted from the line like anything
+   * else.
+   */
+  const replaySolver = useMemo(
+    () => (utilityOptions.includes('-solver') ? context?.solver || '' : ''),
+    [utilityOptions, context],
+  );
 
   const openCatalog = useCallback(async () => {
     setCatalogOpen(true);
@@ -420,8 +551,10 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       setCommandText('');
       setEntryText('');
       setRunOutput(null);
-      setPatches([]);
+      setContext(null);
       setCatalog([]);
+      setUtilityOptions([]);
+      setClassDoc(null);
       // The run directory moves with the version, so what the case holds has to
       // be listed again too.
       void loadDatasets();
@@ -443,22 +576,35 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
    */
   useEffect(() => {
     if (catalogOpen || !chosen) return;
-    const call = buildCallTemplate(chosen.name, chosen.args, patches);
-    setCommandText(buildCommandTemplate(utility, call));
+    const call = buildCallTemplate(chosen.name, chosen.args, context ?? {});
+    setCommandText(buildCommandTemplate(utility, call, { solver: replaySolver }));
     setEntryText(buildFunctionsEntry(call));
     setRunOutput(null);
-  }, [catalogOpen, chosen, patches, utility]);
+  }, [catalogOpen, chosen, context, utility, replaySolver]);
 
   const chooseFunction = (entry: CatalogEntry) => {
     setChosen(entry);
     setRunOutput(null);
     // Both texts start from what the installation declares: the real argument
-    // names, examples taken from each template's own `e.g.` note, and a patch
-    // this case actually has. The user edits the text, not a set of invented
-    // controls.
-    const call = buildCallTemplate(entry.name, entry.args, patches);
-    setCommandText(buildCommandTemplate(utility, call));
+    // names, examples taken from each template's own `e.g.` note, and patches,
+    // fields and coordinates this case actually has. The user edits the text,
+    // not a set of invented controls.
+    const call = buildCallTemplate(entry.name, entry.args, context ?? {});
+    setCommandText(buildCommandTemplate(utility, call, { solver: replaySolver }));
     setEntryText(buildFunctionsEntry(call));
+
+    // The class reference behind it, fetched per function rather than with the
+    // catalogue: it is one source header each, and only the one on screen is
+    // ever read. A function whose class cannot be identified with certainty
+    // simply has none, which is the honest outcome — see readFunctionClassDoc.
+    setClassDoc(null);
+    if (!entry.type) return;
+    setDocLoading(true);
+    void fetch(`/api/postprocess?action=doc&type=${encodeURIComponent(entry.type)}`)
+      .then(response => (response.ok ? response.json() : null))
+      .then(payload => { setClassDoc(payload?.doc ?? null); })
+      .catch(() => { /* the template's own reference stands on its own */ })
+      .finally(() => setDocLoading(false));
   };
 
   const runFunction = async () => {
@@ -468,7 +614,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     try {
       // Parsed here so a mistake is reported against the line the user is
       // looking at. The server checks every piece again regardless.
-      const parsed = parsePostProcessCommand(commandText, catalog.map(entry => entry.name));
+      const parsed = parsePostProcessCommand(
+        commandText, catalog.map(entry => entry.name), utilityOptions,
+      );
       const response = await fetch('/api/postprocess', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1287,9 +1435,58 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                 <ScrollArea className="min-h-0 flex-1">
                   <div className="min-w-0 space-y-3 p-4">
                     <div className="min-w-0">
-                      <h3 className="break-words font-mono text-sm font-semibold">{chosen.name}</h3>
-                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{chosen.description || 'No description in the template.'}</p>
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <h3 className="break-words font-mono text-sm font-semibold">{chosen.name}</h3>
+                        <span className="text-[10px] text-muted-foreground">{chosen.category}</span>
+                        {chosen.source !== 'installation' && (
+                          <Badge variant="outline" className="text-[9px]" title={chosen.file}>
+                            {chosen.source === 'user' ? 'your ~/.OpenFOAM' : 'site configuration'}
+                          </Badge>
+                        )}
+                      </div>
+                      {/* The Description block with its paragraphs kept apart.
+                          `power` writes eleven list items and `flowType` three;
+                          run together they read as one unbroken sentence. */}
+                      {(chosen.descriptionParagraphs?.length
+                        ? chosen.descriptionParagraphs
+                        : [chosen.description || 'No description in the template.']
+                      ).map((paragraph, index) => (
+                        <p key={index} className="mt-1 text-xs leading-relaxed text-muted-foreground">{paragraph}</p>
+                      ))}
+                      <p className="mt-1.5 font-mono text-[10px] text-muted-foreground">
+                        {chosen.type ? <span title="The function object class this template configures">{chosen.type}</span> : null}
+                        {chosen.libs?.length
+                          ? <span title="The libraries the entry loads"> · {chosen.libs.join(' ')}</span>
+                          : null}
+                      </p>
                     </div>
+
+                    {/* Some function objects act ON a solve rather than
+                        measuring it, and those write no dataset to read back.
+                        Recognised from the class the template configures —
+                        `stopAtFile`, `adjustTimeStepToReaction` and their kind
+                        — rather than from a list written here, and
+                        deliberately narrow: `writeObjects` and `removeObjects`
+                        sit in the same category and replay perfectly well. */}
+                    {/^(stopAt|adjustTimeStep)/.test(chosen.type) ? (
+                      <Alert className="py-2">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        <AlertDescription className="text-[10px] leading-snug">
+                          This one steers a running solve — it stops it or changes its time step. It
+                          belongs in <code className="mx-1 font-mono">controlDict</code>; replayed over
+                          times already written there is nothing left for it to act on, and nothing for
+                          this tab to chart.
+                        </AlertDescription>
+                      </Alert>
+                    ) : (
+                      /* Where the numbers land. The directory is the call's own
+                         `name=`, which is why the panel insists on keeping it. */
+                      <p className="text-[10px] leading-snug text-muted-foreground">
+                        Writes under
+                        <code className="mx-1 font-mono text-foreground">postProcessing/{chosen.name}/&lt;time&gt;/</code>
+                        — the name in the call is the directory, and this tab reads it back.
+                      </p>
+                    )}
 
                     {/* ── Two editable texts, and nothing else to fill in ──
                         The command is the whole line, flags included: a pair of
@@ -1301,7 +1498,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                         <Label htmlFor="pp-command" className="text-[11px]">Run it now, over the times already written</Label>
                         <Button
                           size="sm" variant="ghost" className="ml-auto h-6 px-1.5 text-[10px]"
-                          onClick={() => setCommandText(buildCommandTemplate(utility, buildCallTemplate(chosen.name, chosen.args, patches)))}
+                          onClick={() => setCommandText(buildCommandTemplate(
+                            utility, buildCallTemplate(chosen.name, chosen.args, context ?? {}), { solver: replaySolver },
+                          ))}
                         >
                           <RefreshCw className="mr-1 h-3 w-3" /> Reset
                         </Button>
@@ -1319,6 +1518,35 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                         spellCheck={false}
                         className="mt-1 h-20 font-mono text-xs"
                       />
+                      {/* The one option worth explaining, because deleting it
+                          silently changes what the run can compute. */}
+                      {replaySolver ? (
+                        <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                          <code className="font-mono">-solver {replaySolver}</code> builds the case's
+                          models the way the run did. Without it only the fields on disk are read, and a
+                          function that needs a transport or thermophysical model — forces, y+, wall shear
+                          stress — stops instead of writing. Replace it with
+                          <code className="mx-1 font-mono">-fields &apos;(U p)&apos;</code> to read named fields
+                          and build nothing.
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                          Add <code className="font-mono">-fields &apos;(U p)&apos;</code> when the function needs
+                          a field its own call does not name; only what is named is read from disk.
+                          {utilityOptions.length && !utilityOptions.includes('-solver')
+                            ? ' This OpenFOAM has no -solver option, so a function that needs a turbulence or thermophysical model has to be run from the solver itself.'
+                            : ''}
+                        </p>
+                      )}
+                      {context?.times.length ? (
+                        <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                          Times on disk: <span className="font-mono">{context.times.slice(0, 6).join(' ')}</span>
+                          {context.times.length > 6 ? ` … ${context.times[context.times.length - 1]}` : ''}
+                          . <code className="font-mono">-time</code> takes ranges such as
+                          <code className="mx-1 font-mono">:{context.times[Math.min(1, context.times.length - 1)]}</code>
+                          or a comma-separated list; <code className="font-mono">-latestTime</code> takes the last one.
+                        </p>
+                      ) : null}
                     </div>
 
                     <div>
@@ -1326,7 +1554,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                         <Label htmlFor="pp-entry" className="text-[11px]">Or run it during the solve</Label>
                         <Button
                           size="sm" variant="ghost" className="ml-auto h-6 px-1.5 text-[10px]"
-                          onClick={() => setEntryText(buildFunctionsEntry(buildCallTemplate(chosen.name, chosen.args, patches)))}
+                          onClick={() => setEntryText(buildFunctionsEntry(buildCallTemplate(chosen.name, chosen.args, context ?? {})))}
                         >
                           <RefreshCw className="mr-1 h-3 w-3" /> Reset
                         </Button>
@@ -1388,6 +1616,25 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                         </dl>
                       )}
 
+                      {chosen.optional?.length > 0 && (
+                        <>
+                          <div className="border-t bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
+                            Also accepted — the template writes these commented out
+                          </div>
+                          <dl className="divide-y">
+                            {chosen.optional.map(arg => (
+                              <div key={arg.name} className="grid grid-cols-[104px_minmax(0,1fr)] gap-2 px-2 py-1">
+                                <dt className="min-w-0 break-words font-mono text-[10px]">{arg.name}</dt>
+                                <dd className="min-w-0 break-words text-[10px] leading-snug text-muted-foreground">
+                                  <span className="font-mono">{arg.listWrapped ? `(${arg.placeholder})` : arg.placeholder}</span>
+                                  {arg.help ? <> &mdash; {arg.help}</> : null}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </>
+                      )}
+
                       {chosen.defaults.length > 0 && (
                         <>
                           <div className="border-t bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">
@@ -1419,7 +1666,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                                 className="block w-full break-all rounded px-1 py-0.5 text-left font-mono text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
                                 title="Use this call"
                                 onClick={() => {
-                                  setCommandText(buildCommandTemplate(utility, example));
+                                  setCommandText(buildCommandTemplate(utility, example, { solver: replaySolver }));
                                   setEntryText(buildFunctionsEntry(example));
                                 }}
                               >
@@ -1431,11 +1678,58 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       )}
 
                       <p className="border-t px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
-                        Keep <code className="font-mono">name=</code>: without it the results land in a
-                        directory named after the whole call with its spaces stripped out, which cannot be
-                        read back. Fields may be listed at the end without a keyword, as the examples show.
+                        Every entry above is written <code className="font-mono">key=value</code> inside the
+                        brackets, separated by commas; a value that is a list or a vector keeps its own
+                        parentheses. Keep <code className="font-mono">name=</code>: without it the results
+                        land in a directory named after the whole call with its spaces stripped out, which
+                        cannot be read back. A field may also be given on its own, with no keyword —
+                        <code className="mx-1 font-mono">mag(U)</code> is
+                        <code className="mx-1 font-mono">mag(field=U)</code> — and several become the
+                        <code className="mx-1 font-mono">fields</code> list.
+                        <span className="mt-1 block">
+                          Read from <span className="font-mono break-all">{chosen.file}</span>.
+                        </span>
                       </p>
                     </div>
+
+                    {/* ── The class reference, from the installation's source ──
+                        The configured template above is deliberately short. The
+                        class behind it carries the property table, the values
+                        each enumeration accepts and a full dictionary example,
+                        and it is the documentation for the version installed —
+                        so it is read rather than restated here. */}
+                    {docLoading && (
+                      <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Reading the class reference…
+                      </p>
+                    )}
+                    {classDoc && (
+                      <div className="min-w-0 rounded border">
+                        <div className="flex flex-wrap items-baseline gap-x-2 border-b bg-muted/40 px-2 py-1">
+                          <span className="text-[9px] font-semibold uppercase text-muted-foreground">
+                            The class, as this OpenFOAM documents it
+                          </span>
+                          <span className="ml-auto font-mono text-[9px] text-muted-foreground">{classDoc.className}</span>
+                        </div>
+                        <div className="space-y-2 px-2 py-2">
+                          {classDoc.description.map((block, index) => (
+                            <DocBlockView key={`d${index}`} block={block} />
+                          ))}
+                          {classDoc.usage.length > 0 && (
+                            <>
+                              <div className="pt-1 text-[9px] font-semibold uppercase text-muted-foreground">Every entry it reads</div>
+                              {classDoc.usage.map((block, index) => (
+                                <DocBlockView key={`u${index}`} block={block} />
+                              ))}
+                            </>
+                          )}
+                          <p className="pt-1 text-[9px] leading-snug text-muted-foreground">
+                            Read from <span className="font-mono break-all">{classDoc.file}</span>. Entries the
+                            configured template does not fill in are set here or take the default shown.
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {runOutput !== null && (
                       <div className="rounded border">

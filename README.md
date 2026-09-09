@@ -105,9 +105,10 @@ the **OpenFOAM card in the Dashboard**.
   clipboard. Beside each series it reports the last value, the mean over the
   final fifth, the min/max and whether the quantity has settled or is still
   drifting. A case that has no function objects yet is not a dead end:
-  **Compute…** lists the ones this OpenFOAM installation ships (127 on v14),
-  with the description and input fields read from the installation's own
-  templates, and runs the one you pick over the timesteps already on disk.
+  **Compute…** lists every one this OpenFOAM offers (127 on v14, 119 on v13),
+  including any you have added under `~/.OpenFOAM`, with the description and
+  input fields read from the installation's own templates, and runs the one you
+  pick over the timesteps already on disk.
   Time series are stitched across restarts, with a later run's recomputed values
   replacing the older ones; sampled profiles keep one curve per written time and
   give you a time selector instead. **Follow** re-reads every few seconds, so a
@@ -127,11 +128,21 @@ the **OpenFOAM card in the Dashboard**.
   **Compute…** gives you two editable texts rather than a form: the whole
   command to run now, and the `functions { #includeFunc … }` entry that runs the
   same thing during the solve. Both are prefilled from the installation's own
-  template — real argument names, the examples it documents, a patch your case
-  actually has. Underneath is what is particular to that one function: its
-  arguments, the entries its configuration already sets and you can override,
-  and the calls the installed tutorials actually make, which you can click to
-  load. Copy the entry into `controlDict` yourself; the app never edits it.
+  template and from your case — real argument names, the examples the template
+  documents, patches and fields the case actually has, and a sampling line that
+  crosses its mesh instead of a point at the origin. When the case names a
+  solver and the utility takes `-solver`, the command carries it, which is what
+  lets a replay build the transport and thermophysical models: without it drag
+  and lift coefficients, y+ and wall shear stress stop instead of writing.
+
+  Underneath is the full syntax of that one function, all of it read from the
+  OpenFOAM in use: the arguments and what each one means, the entries the
+  template offers commented out, the ones its configuration already sets and you
+  can override, the calls the installed tutorials make — click to load one — and
+  then the reference for the class behind it, taken from the installed source:
+  its description, a complete dictionary example and the table of every property
+  with its default. Copy the entry into `controlDict` yourself; the app never
+  edits it.
 
   ![The Post-Process tab: the force history written by a cavity run, charted from forces.dat, with the results found in the case listed on the left and each series reporting its last value, tail mean, min/max and whether it has settled on the right](screenshots/postProcessing.png)
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real

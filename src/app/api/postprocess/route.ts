@@ -4,7 +4,9 @@ import {
   readPostProcessDataset,
   listFunctionCatalog,
   runPostProcessFunction,
-  postProcessUtilityName,
+  postProcessUtility,
+  readFunctionClassDoc,
+  getPostProcessContext,
 } from '@/lib/wsl';
 import {
   parseFoamTable,
@@ -20,11 +22,13 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 // GET /api/postprocess
 //   ?action=list&case=…                       → { datasets }
 //   ?action=data&case=…&dataset=…&file=…      → merged, thinned table + per-column stats
-//   ?action=catalog&refresh=…                 → { entries }
+//   ?action=catalog&refresh=…                 → { entries, utility, options }
+//   ?action=doc&type=…                        → { doc } — the class reference
+//   ?action=context&case=…                    → what the case can be asked
 //
 // POST /api/postprocess
-//   { action: 'run', case, spec, time, fields, region, latestTime, noZero }
-//                                              → { exitCode, output, spec }
+//   { action: 'run', case, spec, time, fields, region, solver,
+//     latestTime, noZero, constant }           → { exitCode, output, spec }
 
 export async function GET(req: NextRequest) {
   try {
@@ -101,16 +105,33 @@ export async function GET(req: NextRequest) {
 
       case 'catalog': {
         const refresh = searchParams.get('refresh') === 'true';
+        const utility = postProcessUtility();
         return NextResponse.json({
           entries: listFunctionCatalog(refresh),
-          // So the command shown carries the name this OpenFOAM actually has.
-          utility: postProcessUtilityName(),
+          // So the command shown carries the name this OpenFOAM actually has,
+          // and offers only the options it actually accepts.
+          utility: utility.name,
+          options: utility.options,
         });
+      }
+
+      case 'doc': {
+        // The class behind a configured function object, as the installation's
+        // own source documents it. Fetched when a function is chosen rather
+        // than with the catalogue: it is one header per function, and only the
+        // one on screen is ever needed.
+        const type = searchParams.get('type') || '';
+        return NextResponse.json({ doc: readFunctionClassDoc(type) });
+      }
+
+      case 'context': {
+        const caseName = validateCaseName(searchParams.get('case') || '');
+        return NextResponse.json(getPostProcessContext(caseName));
       }
 
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: list, data, catalog' },
+          { error: 'Invalid action. Use: list, data, catalog, doc, context' },
           { status: 400 },
         );
     }
@@ -145,8 +166,10 @@ export async function POST(req: NextRequest) {
       time: typeof body.time === 'string' && body.time.trim() ? body.time.trim() : undefined,
       fields: fields?.length ? fields : undefined,
       region: typeof body.region === 'string' && body.region.trim() ? body.region.trim() : undefined,
+      solver: typeof body.solver === 'string' && body.solver.trim() ? body.solver.trim() : undefined,
       latestTime: body.latestTime === true,
       noZero: body.noZero === true,
+      constant: body.constant === true,
     });
 
     return NextResponse.json({ ...result, spec });

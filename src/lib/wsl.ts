@@ -20,9 +20,13 @@ import {
   isTabularOutput,
   parseFunctionTemplate,
   resolveTemplateExtras,
+  optionalTemplateEntries,
   tutorialExamplesFor,
+  parseClassDocumentation,
   type FunctionArg,
   type FunctionDefault,
+  type ClassDocumentation,
+  type CaseContext,
 } from './postprocess';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3238,11 +3242,45 @@ export function runCheckMesh(caseName: string): CheckMeshResult {
 // zero entries — a feature that silently finds nothing, on the machine it was
 // written for. Every find in this section is `find -L`.
 
-/** Where the version's own function-object templates live. */
-function getFoamCaseDicts(): string {
+/** One place OpenFOAM looks for configured function objects. */
+interface FunctionEtcDir {
+  /** The `etc` directory itself, without the `caseDicts/...` tail. */
+  path: string;
+  /** Who put it there: what the panel tells the user about the entry. */
+  source: 'user' | 'site' | 'installation';
+}
+
+/**
+ * Every directory this installation searches for function-object templates.
+ *
+ * `findEtcDirs` in `etcFiles.H` gives the order, and `-list` reports the union
+ * of all of them — so reading only `$WM_PROJECT_DIR/etc` was narrower than the
+ * installation itself. A function object the user had written into
+ * `~/.OpenFOAM/14/caseDicts/postProcessing` was listed by OpenFOAM, absent from
+ * this catalogue, and then REFUSED by the name check as "not available in this
+ * OpenFOAM installation" — the one message that could not have been more wrong.
+ *
+ * Earlier entries win, exactly as `findConfigFile` resolves them, so a user's
+ * override of a shipped template is the one the run will use and the one shown.
+ */
+function getFunctionEtcDirs(): FunctionEtcDir[] {
   const env = getFoamEnv();
-  if (env.WM_PROJECT_DIR) return `${env.WM_PROJECT_DIR}/etc/caseDicts/postProcessing`;
-  return '';
+  const dirs: FunctionEtcDir[] = [];
+  const version = env.WM_PROJECT_VERSION || '';
+  const home = env.HOME || '';
+
+  if (home) {
+    if (version) dirs.push({ path: `${home}/.OpenFOAM/${version}`, source: 'user' });
+    dirs.push({ path: `${home}/.OpenFOAM`, source: 'user' });
+  }
+  const site = env.WM_PROJECT_SITE
+    || (env.WM_PROJECT_INST_DIR ? `${env.WM_PROJECT_INST_DIR}/site` : '');
+  if (site) {
+    if (version) dirs.push({ path: `${site}/${version}/etc`, source: 'site' });
+    dirs.push({ path: `${site}/etc`, source: 'site' });
+  }
+  if (env.WM_PROJECT_DIR) dirs.push({ path: `${env.WM_PROJECT_DIR}/etc`, source: 'installation' });
+  return dirs;
 }
 
 /**
@@ -3410,13 +3448,26 @@ export interface CatalogEntry {
   /** The directory OpenFOAM files it under — `forces`, `graphs`, `probes`, … */
   category: string;
   description: string;
+  /** The Description block with its paragraphs and list items kept apart. */
+  descriptionParagraphs: string[];
   args: FunctionArg[];
+  /**
+   * Entries the template or its configuration writes out commented: legal,
+   * documented, and off unless the call adds them.
+   */
+  optional: FunctionArg[];
   /** The function object class behind it, from the configuration it includes. */
   type: string;
+  /** The libraries the entry loads, from the same configuration. */
+  libs: string[];
   /** Entries that already have a value and can be overridden in the call. */
   defaults: FunctionDefault[];
   /** How the installed tutorials call it. */
   examples: string[];
+  /** Which of the installation's search paths this template came from. */
+  source: 'user' | 'site' | 'installation';
+  /** The template's own path, so the panel can say where the reference is. */
+  file: string;
 }
 
 let cachedCatalog: { key: string; entries: CatalogEntry[] } | null = null;
@@ -3424,21 +3475,19 @@ let cachedCatalog: { key: string; entries: CatalogEntry[] } | null = null;
 /**
  * The function objects this installation offers, with their arguments.
  *
- * Read from `etc/caseDicts/postProcessing/**`, not from a table written here:
- * on OpenFOAM 14 that directory holds 127 templates and `foamPostProcess -list`
- * reports the same 127, while v13 has 119. Reading the files instead of running
- * the utility costs no OpenFOAM startup, needs no case to be open, and gives
- * the argument list and help text in the same call — the templates declare
- * their own parameters as `<placeholder>` entries with the comment that
- * explains them.
+ * Read from `caseDicts/postProcessing/**` under every etc directory this
+ * installation searches, not from a table written here: on OpenFOAM 14 the
+ * shipped one holds 127 templates and `foamPostProcess -list` reports the same
+ * 127, while v13 has 119. Reading the files instead of running the utility
+ * costs no OpenFOAM startup, needs no case to be open, and gives the argument
+ * list and help text in the same call — the templates declare their own
+ * parameters as `<placeholder>` entries with the comment that explains them.
  */
 export function listFunctionCatalog(refresh = false): CatalogEntry[] {
-  const root = getFoamCaseDicts();
-  if (!root) return [];
-  const env = getFoamEnv();
-  const configRoot = env.WM_PROJECT_DIR ? `${env.WM_PROJECT_DIR}/etc/caseDicts/functions` : '';
+  const dirs = getFunctionEtcDirs();
+  if (!dirs.length) return [];
   const tutorials = getTutorialDirectory();
-  const key = root;
+  const key = dirs.map(dir => dir.path).join(':');
   if (!refresh && cachedCatalog && cachedCatalog.key === key) return cachedCatalog.entries;
 
   // Three sections in ONE call: the templates, the configurations they include
@@ -3446,21 +3495,30 @@ export function listFunctionCatalog(refresh = false): CatalogEntry[] {
   // the way the installed tutorials call each function. The last is the best
   // documentation there is and cannot go stale, because it is read from the
   // version in use.
-  const script = `
-find -L ${shellQuote(root)} -type f -not -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
-while IFS= read -r rel; do
-  printf 'T\\t%s\\t' "$rel"
-  base64 -w0 < ${shellQuote(root)}/"$rel"
-  printf '\\n'
-done
-find -L ${shellQuote(configRoot)} -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
-while IFS= read -r rel; do
-  printf 'C\\tcaseDicts/functions/%s\\t' "$rel"
-  base64 -w0 < ${shellQuote(configRoot)}/"$rel"
-  printf '\\n'
-done
+  //
+  // Each directory is read in the order OpenFOAM searches them, and the first
+  // copy of a name is the one that counts, both here and in the run.
+  const readDir = (dir: FunctionEtcDir, index: number) => `
+if [ -d ${shellQuote(`${dir.path}/caseDicts/postProcessing`)} ]; then
+  find -L ${shellQuote(`${dir.path}/caseDicts/postProcessing`)} -type f -not -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
+  while IFS= read -r rel; do
+    printf 'T\\t${index}\\t%s\\t' "$rel"
+    base64 -w0 < ${shellQuote(`${dir.path}/caseDicts/postProcessing`)}/"$rel"
+    printf '\\n'
+  done
+fi
+if [ -d ${shellQuote(`${dir.path}/caseDicts/functions`)} ]; then
+  find -L ${shellQuote(`${dir.path}/caseDicts/functions`)} -name '*.cfg' -printf '%P\\n' 2>/dev/null | sort |
+  while IFS= read -r rel; do
+    printf 'C\\t${index}\\tcaseDicts/functions/%s\\t' "$rel"
+    base64 -w0 < ${shellQuote(`${dir.path}/caseDicts/functions`)}/"$rel"
+    printf '\\n'
+  done
+fi`;
+
+  const script = `${dirs.map(readDir).join('\n')}
 if [ -d ${shellQuote(tutorials)} ]; then
-  printf 'X\\t'
+  printf 'X\\t0\\t-\\t'
   grep -rhs 'includeFunc' ${shellQuote(tutorials)} 2>/dev/null | head -n 2000 | base64 -w0
   printf '\\n'
 fi
@@ -3472,41 +3530,47 @@ fi
     return [];
   }
 
-  const templates: { relative: string; content: string }[] = [];
+  const templates: { relative: string; content: string; dir: FunctionEtcDir }[] = [];
   const configs: Record<string, string> = {};
   let tutorialLines: string[] = [];
 
   for (const line of output.split('\n')) {
-    const first = line.indexOf('\t');
-    if (first === -1) continue;
-    const kind = line.slice(0, first);
-    if (kind === 'X') {
-      tutorialLines = Buffer.from(line.slice(first + 1), 'base64').toString('utf-8').split('\n');
-      continue;
-    }
-    const second = line.indexOf('\t', first + 1);
-    if (second === -1) continue;
-    const relative = line.slice(first + 1, second);
-    const content = Buffer.from(line.slice(second + 1), 'base64').toString('utf-8');
-    if (kind === 'C') configs[relative] = content;
-    else if (kind === 'T') templates.push({ relative, content });
+    const parts = line.split('\t');
+    if (parts.length < 4) continue;
+    const [kind, index, relative] = parts;
+    const content = Buffer.from(parts.slice(3).join('\t'), 'base64').toString('utf-8');
+    if (kind === 'X') { tutorialLines = content.split('\n'); continue; }
+    const dir = dirs[Number(index)];
+    if (!dir) continue;
+    // Earlier directories win, which is how `findConfigFile` resolves a name.
+    if (kind === 'C') { if (!(relative in configs)) configs[relative] = content; }
+    else if (kind === 'T') templates.push({ relative, content, dir });
   }
 
   const entries: CatalogEntry[] = [];
-  for (const { relative, content } of templates) {
+  const seen = new Set<string>();
+  for (const { relative, content, dir } of templates) {
     const segments = relative.split('/');
     const name = segments.pop() || '';
-    if (!name) continue;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
     const template = parseFunctionTemplate(content);
     const extras = resolveTemplateExtras(content, configs);
     entries.push({
       name,
       category: segments.join('/') || 'general',
       description: template.description,
-      args: template.args,
+      descriptionParagraphs: template.descriptionParagraphs,
+      // The commented entries are documented options rather than arguments;
+      // they are listed on their own so the default call never carries one.
+      args: template.args.filter(arg => !arg.commented),
+      optional: optionalTemplateEntries(content, configs),
       type: extras.type,
+      libs: extras.libs,
       defaults: extras.defaults,
       examples: tutorialExamplesFor(name, tutorialLines),
+      source: dir.source,
+      file: `${dir.path}/caseDicts/postProcessing/${relative}`,
     });
   }
 
@@ -3515,34 +3579,58 @@ fi
   return entries;
 }
 
-let cachedUtility: { key: string; name: string } | null = null;
+export interface PostProcessUtility {
+  /** `foamPostProcess` or `postProcess`, whichever this installation has. */
+  name: string;
+  /**
+   * The options its own `-help` reports, `-solver` included or not.
+   *
+   * Asked rather than derived from a version number, for the same reason the
+   * name is: `-solver` is what makes the transport and thermophysical models
+   * exist during a replay, it is absent from the older line, and passing an
+   * option `argList` does not know is fatal.
+   */
+  options: string[];
+}
+
+let cachedUtility: { key: string; utility: PostProcessUtility } | null = null;
 
 /**
- * Which spelling of the retroactive utility this installation has.
+ * Which retroactive utility this installation has, and what it accepts.
  *
  * Asked once and remembered, only so the panel can SHOW the right command.
- * The run itself resolves it again inside the script, because that is the
- * answer that has to be right even if this cache is stale.
+ * The run itself resolves the name again inside the script, because that is
+ * the answer that has to be right even if this cache is stale.
  */
-export function postProcessUtilityName(): string {
+export function postProcessUtility(): PostProcessUtility {
   const key = findBashrc() || 'none';
-  if (cachedUtility && cachedUtility.key === key) return cachedUtility.name;
+  if (cachedUtility && cachedUtility.key === key) return cachedUtility.utility;
   const script = `
 ${foamSource()}
 ${POST_PROCESS_RESOLVER}
-echo "$PP"
+echo "OFSTUDIO_UTILITY=$PP"
+"$PP" -help 2>&1 | sed -n 's/^  \\(-[A-Za-z]*\\).*/OFSTUDIO_OPTION=\\1/p'
 `;
   try {
-    // The script prints the name and nothing else: sourcing the bashrc has
-    // its output suppressed, and the resolver's failure message goes to
-    // stderr, which this runner does not return.
-    const name = runInWslScript(Buffer.from(script).toString('base64'), 30000).trim();
+    const output = runInWslScript(Buffer.from(script).toString('base64'), 30000);
+    const name = output.match(/OFSTUDIO_UTILITY=(\S+)/)?.[1] ?? '';
     if (name === 'foamPostProcess' || name === 'postProcess') {
-      cachedUtility = { key, name };
-      return name;
+      const options = Array.from(new Set(
+        Array.from(output.matchAll(/OFSTUDIO_OPTION=(-[A-Za-z]+)/g)).map(match => match[1]),
+      ));
+      const utility = { name, options };
+      cachedUtility = { key, utility };
+      return utility;
     }
   } catch { /* the default below is the modern one */ }
-  return 'foamPostProcess';
+  // No options rather than a guessed list: an empty list means "unknown", and
+  // the command parser then checks only its own allowlist.
+  return { name: 'foamPostProcess', options: [] };
+}
+
+/** The utility's name alone, for the callers that only show the command. */
+export function postProcessUtilityName(): string {
+  return postProcessUtility().name;
 }
 
 export interface PostProcessRunResult {
@@ -3565,7 +3653,10 @@ export interface PostProcessRunResult {
 export function runPostProcessFunction(
   caseName: string,
   spec: string,
-  options: { time?: string; fields?: string[]; region?: string; latestTime?: boolean; noZero?: boolean } = {},
+  options: {
+    time?: string; fields?: string[]; region?: string; solver?: string;
+    latestTime?: boolean; noZero?: boolean; constant?: boolean;
+  } = {},
 ): PostProcessRunResult {
   const casePath = getCasePath(caseName);
   if (!FUNCTION_SPEC_SAFE.test(spec) || spec.length > 1024) {
@@ -3587,9 +3678,20 @@ export function runPostProcessFunction(
     if (!/^[A-Za-z][\w.]{0,63}$/.test(options.region)) throw new WslInputError('Region name is not valid');
     args.push(`-region ${shellQuote(options.region)}`);
   }
+  if (options.solver) {
+    if (!/^[A-Za-z][\w.]{0,63}$/.test(options.solver)) throw new WslInputError('Solver name is not valid');
+    // Refused rather than passed on when this OpenFOAM has no such option:
+    // `argList` treats an unknown option as fatal and answers with its usage
+    // screen, which says nothing about what the panel actually did wrong.
+    if (!postProcessUtility().options.includes('-solver')) {
+      throw new WslInputError('This OpenFOAM\'s postProcess has no -solver option');
+    }
+    args.push(`-solver ${shellQuote(options.solver)}`);
+  }
   // Switches, not values: nothing of the caller's reaches the command line.
   if (options.latestTime) args.push('-latestTime');
   if (options.noZero) args.push('-noZero');
+  if (options.constant) args.push('-constant');
 
   // An OpenFOAM binary must never run with the Windows-mounted project path as
   // its working directory — the space in the Windows user name makes it abort —
@@ -3640,9 +3742,230 @@ function stripMarkers(output: string): string {
     .trimEnd();
 }
 
+// ── The class documentation behind a configured function object ──
+
+/** `Foam::functionObjects::yPlus` → the header file that declares it. */
+let cachedClassIndex: { key: string; index: Map<string, string> } | null = null;
+
+/**
+ * Where each documented class lives in this installation's own source.
+ *
+ * Built from the `Class` line of every header, which is the one place the
+ * fully qualified name is written down. Matching on the FILE name instead
+ * looked cheaper and was wrong: `boundaryProbes` resolves to the class `sets`,
+ * and `sets.H` in this installation is a topoSet source that has nothing to do
+ * with sampling. A qualified name cannot be confused that way.
+ *
+ * A missing entry is a normal outcome — some function objects are registered
+ * under a name their header does not carry — and the panel then shows the
+ * template's own reference alone rather than another class's.
+ */
+function getClassIndex(): Map<string, string> {
+  const env = getFoamEnv();
+  const src = env.FOAM_SRC || (env.WM_PROJECT_DIR ? `${env.WM_PROJECT_DIR}/src` : '');
+  if (!src) return new Map();
+  const applications = env.WM_PROJECT_DIR ? `${env.WM_PROJECT_DIR}/applications` : '';
+  const key = `${src}:${applications}`;
+  if (cachedClassIndex && cachedClassIndex.key === key) return cachedClassIndex.index;
+
+  // `lnInclude` is a directory of symlinks to the same headers; keeping it
+  // would double every entry and point at a path that reads as a duplicate.
+  // `-n` is not decoration: without a line number a context line comes back as
+  // `path.H-    Foam::x`, and the pattern below — which anchors on the
+  // `-<line>-` separator to tell the path from the class — then matches
+  // nothing at all, so every function silently had no documentation.
+  const script = `
+grep -rns --include='*.H' -A1 '^Class$' ${shellQuote(src)}${applications ? ` ${shellQuote(applications)}` : ''} 2>/dev/null |
+  grep -v '/lnInclude/' |
+  sed -n 's|^\\(.*\\.H\\)-[0-9]\\{1,\\}-[[:space:]]*\\(Foam::[A-Za-z0-9_:]*\\)$|\\2\\t\\1|p'
+`;
+  const index = new Map<string, string>();
+  try {
+    const output = runInWslScript(Buffer.from(script).toString('base64'), 60000);
+    for (const line of output.split('\n')) {
+      const tab = line.indexOf('\t');
+      if (tab === -1) continue;
+      const className = line.slice(0, tab).trim();
+      const file = line.slice(tab + 1).trim();
+      if (className && file && !index.has(className)) index.set(className, file);
+    }
+  } catch {
+    return new Map();
+  }
+  if (index.size) cachedClassIndex = { key, index };
+  return index;
+}
+
+export interface FunctionClassDoc extends ClassDocumentation {
+  /** The header the documentation was read from, for the panel to cite. */
+  file: string;
+}
+
+const cachedClassDocs = new Map<string, FunctionClassDoc | null>();
+
+/**
+ * The installation's own reference for one function object class.
+ *
+ * The configured template is four lines and one sentence; the class header
+ * carries the property table, the allowed values of each enumeration and a
+ * complete dictionary example — the documentation OpenFOAM ships for the
+ * version that is installed. Nothing of it is written here, so it is right for
+ * v13 and v14 alike and will be right for the next one.
+ *
+ * Returns null when the class cannot be identified with certainty. That is the
+ * deliberate outcome: a reference for the wrong class would be worse than none,
+ * and the panel is complete without it.
+ */
+export function readFunctionClassDoc(type: string): FunctionClassDoc | null {
+  if (!/^[A-Za-z][A-Za-z0-9_.:]{0,63}$/.test(type)) return null;
+  const cached = cachedClassDocs.get(type);
+  if (cached !== undefined) return cached;
+
+  const index = getClassIndex();
+  // `functionObjects` first, then any other namespace, then the bare name. The
+  // qualified forms are what a function object actually declares —
+  // `Foam::functionObjects::fieldValues::volFieldValue` has two of them.
+  const candidates = Array.from(index.keys()).filter(name => name.endsWith(`::${type}`));
+  const preferred = candidates.find(name => name.startsWith('Foam::functionObjects::'))
+    ?? candidates.find(name => name === `Foam::${type}`)
+    ?? (candidates.length === 1 ? candidates[0] : undefined);
+  const file = preferred ? index.get(preferred) : undefined;
+  if (!file) { cachedClassDocs.set(type, null); return null; }
+
+  try {
+    // Only the header comment is needed, and it is always at the top. Reading
+    // 200 lines instead of the file keeps a 4000-line header out of the wire.
+    const script = `head -n 200 ${shellQuote(file)} 2>/dev/null | base64 -w0`;
+    const encoded = runInWslScript(Buffer.from(script).toString('base64'), 30000).trim();
+    const parsed = parseClassDocumentation(Buffer.from(encoded, 'base64').toString('utf-8'));
+    const doc = parsed ? { ...parsed, file } : null;
+    cachedClassDocs.set(type, doc);
+    return doc;
+  } catch {
+    return null;
+  }
+}
+
+// ── What the open case can answer about itself ──
+
+export interface PostProcessContext extends CaseContext {
+  /** `solver` in a v11+ controlDict, `application` in the older layout. */
+  solver: string;
+  /** Times already written, so a `-time` range can name one that exists. */
+  times: string[];
+}
+
+/**
+ * The case's own vocabulary, for the example values and the default command.
+ *
+ * One WSL call, all of it cheap: names out of `constant/polyMesh/boundary`,
+ * `cellZones` and `faceZones`, the fields written at the latest time, the
+ * solver from `controlDict`, and the bounding box from `constant/polyMesh/
+ * points` when that file is ASCII. The box is what turns `start=(0 0 0),
+ * end=(0 0 0)` — a line of zero length that no graph function can sample —
+ * into a line that crosses this mesh.
+ */
+export function getPostProcessContext(caseName: string): PostProcessContext {
+  const casePath = getCasePath(caseName);
+  const empty: PostProcessContext = {
+    solver: '', times: [], patches: [], fields: [], cellZones: [], faceZones: [],
+  };
+
+  const script = `
+CASE=${shellQuote(casePath)}
+SOLVER=$(sed -n 's/^solver[[:space:]]\\{1,\\}\\([A-Za-z][A-Za-z0-9_.]*\\);.*/\\1/p' "$CASE/system/controlDict" 2>/dev/null | head -1)
+if [ -z "$SOLVER" ]; then
+  SOLVER=$(sed -n 's/^application[[:space:]]\\{1,\\}\\([A-Za-z][A-Za-z0-9_.]*\\);.*/\\1/p' "$CASE/system/controlDict" 2>/dev/null | head -1)
+fi
+echo "SOLVER:$SOLVER"
+
+# Zone and patch names all sit above a lone brace, the way the boundary file
+# writes them; the same awk reads all three files.
+names() {
+  awk '{
+    line = $0
+    gsub(/^[ \\t]+|[ \\t]+$/, "", line)
+    if (line == "{" && prev ~ /^[A-Za-z][A-Za-z0-9_.:-]*$/ && prev != "FoamFile") print prev
+    if (line != "") prev = line
+  }' "$1" 2>/dev/null | head -n 200 | paste -sd, -
+}
+echo "PATCHES:$(names "$CASE/constant/polyMesh/boundary")"
+echo "CELLZONES:$(names "$CASE/constant/polyMesh/cellZones")"
+echo "FACEZONES:$(names "$CASE/constant/polyMesh/faceZones")"
+
+TIMES=$(
+  for d in "$CASE"/*/; do
+    [ -d "$d" ] || continue
+    bn=\${d%/}; bn=\${bn##*/}
+    case "$bn" in system|constant|processor*|postProcessing|dynamicCode) continue ;; esac
+    printf '%s\\n' "$bn"
+  done | grep -E '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$' | sort -gu
+)
+echo "TIMES:$(printf '%s\\n' "$TIMES" | grep -v '^$' | paste -sd, -)"
+
+# Fields as written at the latest time, falling back to 0/ for a case that has
+# not been run: those are the names a function object can actually be given.
+LAST=$(printf '%s\\n' "$TIMES" | grep -v '^$' | tail -1)
+FIELDDIR="$CASE/$LAST"
+if [ -z "$LAST" ] || [ ! -d "$FIELDDIR" ]; then FIELDDIR="$CASE/0"; fi
+echo "FIELDS:$(ls -1 "$FIELDDIR" 2>/dev/null | grep -E '^[A-Za-z][A-Za-z0-9_.]*$' | grep -v -E '^(uniform|polyMesh)$' | head -n 100 | paste -sd, -)"
+
+# The bounding box, only when the points are ASCII — a binary file would be
+# scanned as noise, and no example is better than a wrong one.
+POINTS="$CASE/constant/polyMesh/points"
+if [ -f "$POINTS" ] && head -c 4096 "$POINTS" | grep -q 'format[[:space:]]*ascii'; then
+  echo "BOUNDS:$(awk '
+    /^\\(-?[0-9.eE+-]+ -?[0-9.eE+-]+ -?[0-9.eE+-]+\\)$/ {
+      x = substr($1, 2) + 0; y = $2 + 0; z = substr($3, 1, length($3) - 1) + 0
+      if (n++ == 0) { x0 = x1 = x; y0 = y1 = y; z0 = z1 = z }
+      if (x < x0) x0 = x; if (x > x1) x1 = x
+      if (y < y0) y0 = y; if (y > y1) y1 = y
+      if (z < z0) z0 = z; if (z > z1) z1 = z
+    }
+    END { if (n > 0) printf "%.10g,%.10g,%.10g,%.10g,%.10g,%.10g", x0, y0, z0, x1, y1, z1 }
+  ' "$POINTS" 2>/dev/null)"
+fi
+`;
+
+  let output: string;
+  try {
+    output = runInWslScript(Buffer.from(script).toString('base64'), 60000);
+  } catch {
+    return empty;
+  }
+
+  const read = (prefix: string) => {
+    const line = output.split('\n').find(entry => entry.startsWith(`${prefix}:`));
+    return line ? line.slice(prefix.length + 1).trim() : '';
+  };
+  const list = (prefix: string) => read(prefix).split(',').map(item => item.trim()).filter(Boolean);
+
+  const rawBounds = list('BOUNDS').map(Number);
+  const bounds = rawBounds.length === 6 && rawBounds.every(Number.isFinite)
+    ? (rawBounds as [number, number, number, number, number, number])
+    : undefined;
+
+  return {
+    solver: read('SOLVER'),
+    times: list('TIMES'),
+    patches: list('PATCHES'),
+    fields: list('FIELDS'),
+    cellZones: list('CELLZONES'),
+    faceZones: list('FACEZONES'),
+    bounds,
+  };
+}
+
 // ── Reset all caches (called when the distro changes or on manual refresh) ──
 export function resetCache() {
   cachedCatalog = null;
+  // The catalogue, the utility and the class documentation all belong to ONE
+  // installation, so they go together — RULES calls this out, and a class
+  // reference kept from the previous version is exactly the kind of stale
+  // answer that reads as authoritative.
+  cachedUtility = null;
+  cachedClassIndex = null;
+  cachedClassDocs.clear();
   cachedBashrc = null;
   cachedRunDir = null;
   cachedTutDir = null;

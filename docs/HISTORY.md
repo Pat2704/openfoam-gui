@@ -6,6 +6,64 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
+
+Audit of the Compute panel, checked against the installed v14 and v13 rather
+than from memory: the OpenFOAM sources for `dictArgList`, `readConfigFile` and
+`foamPostProcess`, all 127 v14 and 119 v13 templates, and 127 real replays in a
+`cavity_test` case. 61 of those 127 calls failed before the change; the ones
+that failed for a reason the app owned now do not.
+
+- **`-solver` is what makes half the catalogue work.** `foamPostProcess` builds
+  no transport or thermophysical model unless it is given the solver module, so
+  `forceCoeffs`, `forces`, `yPlus`, `wallShearStress`, `turbulenceIntensity`,
+  `wallHeatTransferCoeff` and `power` all aborted on "No valid model for viscous
+  stress calculation" or "Could not find U, p". The command now carries
+  `-solver <name>` when the case declares one and the installed utility's own
+  `-help` lists the option; the panel explains what it does and what to use
+  instead. `-solver` and `-fields` are mutually exclusive in the utility, so a
+  line carrying both is refused with that reason.
+- **Comment attribution was wrong in the templates' own idiom.** A comment
+  ABOVE an entry introduces it (`randomise` gave `field` the help text of
+  `magPerturbation`); a commented-out entry is a documented option, not prose
+  (`graphCutLayerAverage`'s `distance`, `graphLayerAverage`'s `weightField`,
+  `reactionRates`'s `phase` and `writeFields`, `adjustTimeStepToReaction`'s
+  `extrapolate` — seven distinct entries across the installation, all of them
+  previously either lost or glued into a neighbour's help). Sub-dictionaries are
+  no longer flattened, so `populationBalanceSetSizeDistribution` stopped
+  offering `Q` and `file` twice, and `field $phi` wiring is no longer a
+  parameter.
+- **Syntax fixes with a failing run behind each.** A list placeholder keeps its
+  brackets (`objects=<objectNames>` was refused as a broken list, not as an
+  unfilled hole); a base-interface key with a placeholder IS an argument, which
+  is how `writeMesh` asks for `writeControl`; `e.g,` counts as an example;
+  `<coordinate>` and `<fieldType>` are not vectors and fields; `patch2` names
+  the other patch; a direction is `(1 0 0)`; and a sampled line crosses the mesh
+  instead of running from the origin to the origin.
+- **The catalogue is as wide as the installation.** Templates come from every
+  etc directory `findEtcDirs` searches — `~/.OpenFOAM/<version>`, the site
+  directories, then `$WM_PROJECT_DIR/etc` — first found winning, as
+  `findConfigFile` resolves them. A user's own function object was listed by
+  `-list` and refused by the panel as "not available in this OpenFOAM
+  installation".
+- **Each function now explains itself from the installed source.** The class
+  header behind a template carries the property table, the values each
+  enumeration accepts and a complete dictionary example; those are parsed and
+  shown, with the file they came from. 119 of the 127 types resolve through an
+  index of `Class` lines; the other eight are registered under a family name
+  their header does not carry and show nothing rather than another class's
+  reference. `foamInfo` was rejected for this: it prompts when a name is
+  ambiguous and answers `sets` with a topoSet source.
+- The panel also states where the output lands, the times on disk, the libraries
+  the entry loads, and warns only on the functions that really do steer a solve
+  (`stopAt*`, `adjustTimeStep*`) — `writeObjects` and `removeObjects` share
+  their category and replay perfectly well.
+- Left alone, verified as genuine case mismatches rather than app defects: the
+  remaining failures in `cavity_test` are chemistry, multiphase, lagrangian and
+  compressible functions on a laminar incompressible cavity, and the calls whose
+  placeholders no case can supply (`<triSurfaceFileName>`, `<phaseName>`,
+  `<rhoInf>`, …), which stay visible as holes with the panel saying so.
+
 ## 2026-09-09 — v5.2.2: switcher, agent case changes, honest charts
 
 - Released `v5.2.2`; notes in `docs/releases/v5.2.2.md`.
