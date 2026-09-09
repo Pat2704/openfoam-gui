@@ -44,7 +44,7 @@ import { join, resolve, dirname } from 'path';
 import { tmpdir, homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { expectedToken } from '@/lib/agent-token';
-import { buildModeNotice, sanitizeUserMessage } from '@/lib/agent-prompt';
+import { buildCaseNotice, buildModeNotice, sanitizeUserMessage } from '@/lib/agent-prompt';
 
 // ── Finding the binary ──────────────────────────────────────────────────────
 
@@ -531,6 +531,8 @@ interface Session {
   systemPrompt: string;
   /** The user switched the guard rails off for this conversation. */
   unrestricted: boolean;
+  /** The case that was open the last time this conversation was told. */
+  caseName: string;
   buffer: string;
   listeners: Set<(event: AgentEventOut) => void>;
   /** A turn is in flight; a second message must wait for `done`. */
@@ -794,6 +796,8 @@ export interface SendOptions {
   effort: Effort;
   systemPrompt: string;
   unrestricted: boolean;
+  /** The case open in the app right now, '' when none is selected. */
+  caseName: string;
 }
 
 /**
@@ -818,6 +822,7 @@ export function send(
       effort: options.effort,
       systemPrompt: options.systemPrompt,
       unrestricted: options.unrestricted,
+      caseName: options.caseName,
       buffer: '',
       listeners: new Set(),
       busy: false,
@@ -847,6 +852,14 @@ export function send(
    * bracketed prose glued to the front of the user's own message.
    */
   const modeChanged = session.hasRun && session.unrestricted !== options.unrestricted;
+  /**
+   * The open case changed under a conversation that has already run. The new
+   * system prompt names it, but everything the agent remembers is about the
+   * previous one, so the switch is announced for the same reason the mode one
+   * is — see buildCaseNotice.
+   */
+  const caseChanged = session.hasRun && session.caseName !== options.caseName;
+  const previousCase = session.caseName;
 
   const hadChild = session.child !== null;
   if (settingsChanged && hadChild) {
@@ -856,6 +869,7 @@ export function send(
   session.effort = options.effort;
   session.systemPrompt = options.systemPrompt;
   session.unrestricted = options.unrestricted;
+  session.caseName = options.caseName;
 
   session.listeners.add(listener);
   session.lastUsed = Date.now();
@@ -872,7 +886,8 @@ export function send(
 
   session.busy = true;
   session.hasRun = true;
-  const notice = modeChanged ? buildModeNotice(options.unrestricted) : '';
+  const notice = (modeChanged ? buildModeNotice(options.unrestricted) : '')
+    + (caseChanged ? buildCaseNotice(options.caseName, previousCase) : '');
 
   try {
     session.child!.stdin.write(JSON.stringify({

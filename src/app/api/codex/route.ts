@@ -36,7 +36,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Choose an available Codex model and reasoning level.' }, { status: 400 });
     }
     let version = ''; try { version = getOpenFOAMVersion().trim(); } catch { /* installation may be starting */ }
-    const prompt = buildSystemPrompt(version, typeof body.caseName === 'string' ? body.caseName : '', body.unrestricted === true)
+    const caseName = typeof body.caseName === 'string' ? body.caseName : '';
+    const prompt = buildSystemPrompt(version, caseName, body.unrestricted === true)
       .split('Claude').join('Codex');
     const encoder = new TextEncoder(); let listener: ((e: PanelEvent) => void) | null = null;
     const stream = new ReadableStream<Uint8Array>({
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest) {
           if (event.t === 'done') { closed = true; if (listener) unsubscribe(id, listener); try { controller.close(); } catch { /* gone */ } }
         };
         void send({ sessionId: id, message, model: model.id, effort: body.effort,
-          systemPrompt: prompt, unrestricted: body.unrestricted === true }, listener).catch(e => {
+          systemPrompt: prompt, unrestricted: body.unrestricted === true, caseName }, listener).catch(e => {
           listener?.({ t: 'error', message: e instanceof Error ? e.message : String(e) });
           listener?.({ t: 'done', ok: false });
         });

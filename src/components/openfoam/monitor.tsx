@@ -20,7 +20,7 @@ import {
   ResponsiveContainer, ReferenceLine
 } from 'recharts';
 import { confirmDialog } from '@/components/ui/confirm-host';
-import { parseAllResiduals, type ResidualPoint } from '@/lib/residuals';
+import { parseAllResiduals, residualLogDomain, type ResidualPoint } from '@/lib/residuals';
 
 interface ProcessRow {
   pid: string; user: string; cpu: string; mem: string;
@@ -576,6 +576,30 @@ export default function Monitor({ caseName, active = true }: {
     }
   }, [selectedLog]);
 
+  /**
+   * The window the residual curves are drawn in, read from the data.
+   *
+   * The reasoning, and the fixed axis this replaced, are in residualLogDomain.
+   */
+  const residualScale = useMemo(
+    () => residualLogDomain(residualData.data, residualData.fields),
+    [residualData],
+  );
+
+  /**
+   * Values a logarithmic axis cannot place become gaps rather than points.
+   * `connectNulls` then bridges them, instead of Recharts drawing a curve down
+   * to negative infinity.
+   */
+  const residualChartData = useMemo(() => residualData.data.map(point => {
+    const row: ResidualPoint = { time: point.time };
+    for (const field of residualData.fields) {
+      const value = point[field];
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) row[field] = value;
+    }
+    return row;
+  }), [residualData]);
+
   const simTime = useMemo(() => getLastSimTime(logContent), [logContent]);
   const lastTimestepResidual = useMemo(() => parseResiduals(logContent), [logContent]);
   const lastResLine = useMemo(() => getLastResidualLine(logContent), [logContent]);
@@ -924,7 +948,7 @@ export default function Monitor({ caseName, active = true }: {
                   <span>|</span>
                   <span>{residualData.fields.length} fields</span>
                   <span>|</span>
-                  <span>Log Y scale</span>
+                  <span>Log Y scale · {residualScale.domain[0].toExponential(0)} to {residualScale.domain[1].toExponential(0)}</span>
                 </div>
                 <div className="rounded-lg border border-border/40 p-2 bg-muted/5 min-h-[250px]">
                   <ResponsiveContainer width="100%" height={380}>
@@ -933,7 +957,7 @@ export default function Monitor({ caseName, active = true }: {
                         LineChart only accepts Line as a graphical child — the
                         Area/Line pairs were silently dropped, which is why the
                         chart drew axes and grid but no curves. */}
-                    <ComposedChart data={residualData.data} margin={{ top: 10, right: 10, left: 10, bottom: 45 }}>
+                    <ComposedChart data={residualChartData} margin={{ top: 10, right: 10, left: 10, bottom: 45 }}>
                       <defs>
                         {residualData.fields.map((field, i) => (
                           <linearGradient key={field} id={`fill-${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -950,17 +974,21 @@ export default function Monitor({ caseName, active = true }: {
                         label={{ value: 'Time (s)', position: 'insideBottom', offset: -5, fontSize: 10 }}
                         scale="linear"
                         type="number"
-                        domain={[0, 'dataMax']}
-                        allowDataOverflow
+                        // A run restarted from latestTime does not begin at 0,
+                        // and forcing the origin squeezed its whole history
+                        // into the right-hand edge.
+                        domain={['dataMin', 'dataMax']}
                       />
                       <YAxis
                         scale="log"
+                        type="number"
                         tick={{ fontSize: 9 }}
-                        ticks={[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]}
+                        width={64}
+                        ticks={residualScale.ticks}
                         tickFormatter={(v: number) => v.toExponential(0)}
                         label={{ value: 'Residual', angle: -90, position: 'insideLeft', offset: -5, fontSize: 10 }}
-                        domain={[1e-8, 1]}
-                        allowDataOverflow
+                        domain={residualScale.domain}
+                        allowDataOverflow={false}
                       />
                       <Tooltip
                         // The tokens in globals.css are complete colours —
@@ -987,7 +1015,11 @@ export default function Monitor({ caseName, active = true }: {
                         iconSize={10}
                         wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
                       />
-                      <ReferenceLine y={1e-6} stroke="#22c55e" strokeDasharray="6 3" label={{ value: '1e-6', fontSize: 9, fill: '#22c55e', position: 'left' }} />
+                      {/* The convergence marker belongs on the chart only
+                          when the chart reaches it. */}
+                      {1e-6 >= residualScale.domain[0] && 1e-6 <= residualScale.domain[1] && (
+                        <ReferenceLine y={1e-6} stroke="#22c55e" strokeDasharray="6 3" label={{ value: '1e-6', fontSize: 9, fill: '#22c55e', position: 'left' }} />
+                      )}
                       {/* Flat array, NOT <React.Fragment> per field: Recharts
                           discovers its graphical children by scanning the chart's
                           direct children, and a Fragment hides them — the chart

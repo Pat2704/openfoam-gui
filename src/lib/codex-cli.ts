@@ -10,7 +10,7 @@ import { homedir } from 'os';
 import { Rpc } from './codex-rpc';
 import definitions from '../../electron/mcp/openfoam-tools.json';
 import { callTool } from './agent-policy';
-import { buildModeNotice, sanitizeUserMessage } from './agent-prompt';
+import { buildCaseNotice, buildModeNotice, sanitizeUserMessage } from './agent-prompt';
 import { CODEX_CONFIG, modelChoices, panelEvents, type PanelEvent, type CodexModel } from './codex-protocol';
 
 const run = promisify(execFile);
@@ -19,6 +19,8 @@ interface Install { path: string; version: string; source: string }
 interface Session {
   threadId?: string; turnId?: string; busy: boolean; interrupted: boolean;
   unrestricted: boolean; started: number; listeners: Set<Listener>; context: string;
+  /** The case that was open the last time this thread was told. */
+  caseName: string;
 }
 const sessions = new Map<string, Session>();
 let install: Install | null = null;
@@ -191,18 +193,24 @@ export async function logout() {
 }
 
 export async function send(options: { sessionId: string; message: string; model: string; effort: string;
-  systemPrompt: string; unrestricted: boolean }, listener: Listener) {
+  systemPrompt: string; unrestricted: boolean; caseName: string }, listener: Listener) {
   let session = sessions.get(options.sessionId);
   if (session?.busy) throw new Error('Codex is already working on this conversation.');
   if (!session) {
     if (sessions.size >= 32) throw new Error('Too many Codex conversations. Close an existing conversation first.');
-    session = { busy: false, interrupted: false, unrestricted: false, started: 0, context: '', listeners: new Set() };
+    session = { busy: false, interrupted: false, unrestricted: false, started: 0, context: '',
+      caseName: options.caseName, listeners: new Set() };
     sessions.set(options.sessionId, session);
   }
   // Resuming re-applies baseInstructions, which describe only the mode in force
   // NOW — so a thread that has already run needs the change announced, exactly
   // as on the Claude side. `started` is the marker that it has run.
   const modeChanged = session.started > 0 && session.unrestricted !== options.unrestricted;
+  // Same reasoning for the open case: resuming re-applies the instructions,
+  // but not a reason to stop working on the case the thread is full of.
+  const caseChanged = session.started > 0 && session.caseName !== options.caseName;
+  const caseNotice = caseChanged ? buildCaseNotice(options.caseName, session.caseName) : '';
+  session.caseName = options.caseName;
   session.busy = true; session.interrupted = false; session.started = Date.now();
   session.listeners.add(listener); session.unrestricted = options.unrestricted;
   try {
@@ -226,7 +234,7 @@ export async function send(options: { sessionId: string; message: string; model:
     const result = await rpc.request('turn/start', { threadId: session.threadId, model: options.model, effort: options.effort,
       environments: [],
       input: [{ type: 'text',
-        text: (modeChanged ? buildModeNotice(options.unrestricted) : '') + sanitizeUserMessage(options.message),
+        text: (modeChanged ? buildModeNotice(options.unrestricted) : '') + caseNotice + sanitizeUserMessage(options.message),
         text_elements: [] }] });
     if (session.busy) session.turnId = result.turn.id;
     if (session.interrupted && session.turnId) await rpc.request('turn/interrupt', { threadId: session.threadId, turnId: session.turnId });

@@ -52,7 +52,9 @@ the task needs product or historical context.
    currently stands. Documentation is not source. Keep the incremental caches;
    never delete `.next/cache`, `node_modules`,
    `electron/resources/bin/node.exe` or the Electron Builder cache to force a
-   clean build.
+   clean build. Only the current version's pair may remain as artifacts: delete
+   any older version's `.exe` and `.zip` from `dist-electron/` and `Working/` in
+   the same change, so neither folder offers a build that is not the app.
 3. After an Electron build, the agent decides whether further verification is
    warranted from the change's blast radius, the build output and any
    packaged-only behavior it could affect. Use the smallest relevant check when

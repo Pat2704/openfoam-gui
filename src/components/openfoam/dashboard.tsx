@@ -355,6 +355,14 @@ export default function Dashboard({
     setCreating(false);
   };
 
+  /**
+   * Tell the rest of the app that the set of cases changed, so the switcher
+   * chips in the header can drop the ones that no longer exist.
+   */
+  const announceCaseListChange = () => {
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('case-list-changed'));
+  };
+
   const handleDeleteCase = async (name: string) => {
     setDeleting(name);
     // Optimistic UI: immediately remove the case from the list, then confirm with fetch
@@ -367,6 +375,7 @@ export default function Dashboard({
       });
       if (res.ok) {
         if (selectedCase === name) onSelectCase('');
+        announceCaseListChange();
         toast.success(`"${name}" deleted`);
         await fetchAll(true); onRefresh();
       } else {
@@ -446,6 +455,7 @@ export default function Dashboard({
         toast.success(`"${oldName}" renamed to "${data.caseName}"`);
         // If the renamed case was open, switch the selection to the new name
         if (selectedCase === oldName) onSelectCase(data.caseName);
+        announceCaseListChange();
         setRenameDialogCase(null);
         await fetchAll(true); onRefresh();
       } else {

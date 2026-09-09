@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAllResiduals, residualsToTable } from '../src/lib/residuals.ts';
+import { parseAllResiduals, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
 
 // The shape `foamRun` writes, which is what almost every log looks like.
 const FOAM_RUN_LOG = `
@@ -74,4 +74,42 @@ test('a field with no residual at a timestep is a gap, never a zero', () => {
 
 test('a log with no residuals at all yields an empty table rather than a broken one', () => {
   assert.deepEqual(residualsToTable('blockMesh finished\nEnd\n'), { columns: [], rows: [] });
+});
+
+test('the residual axis covers the residuals that are there, not a fixed range', () => {
+  // Initial residuals above 1 are ordinary at the first timestep, and a
+  // converged run goes well below 1e-8. The old axis was pinned to [1e-8, 1]
+  // and clipped both ends.
+  const big = residualLogDomain([{ time: 1, p: 42 }, { time: 2, p: 3e-11 }], ['p']);
+  assert.deepEqual(big.domain, [1e-11, 100]);
+  assert.equal(big.ticks[0], 1e-11);
+  assert.equal(big.ticks[big.ticks.length - 1], 100);
+
+  // A short, tidy run gets a tick on every decade.
+  const small = residualLogDomain([{ time: 1, Ux: 1 }, { time: 2, Ux: 2e-4 }], ['Ux']);
+  assert.deepEqual(small.domain, [1e-4, 1]);
+  assert.deepEqual(small.ticks, [1e-4, 1e-3, 1e-2, 1e-1, 1]);
+});
+
+test('values a logarithmic axis cannot place are left out of the range', () => {
+  // OpenFOAM writes `Initial residual = 0` for a field it did not solve, and
+  // log10(0) would take the axis to minus infinity.
+  const { domain } = residualLogDomain(
+    [{ time: 1, Ux: 0.5, Uy: 0 }, { time: 2, Ux: 1e-3, Uy: 0 }],
+    ['Ux', 'Uy'],
+  );
+  assert.deepEqual(domain, [1e-3, 1]);
+});
+
+test('a log with no positive residual still yields a usable axis', () => {
+  const { domain, ticks } = residualLogDomain([{ time: 1, Ux: 0 }], ['Ux']);
+  assert.deepEqual(domain, [1e-8, 1]);
+  assert.ok(ticks.length > 1);
+});
+
+test('a single residual value still spans a decade', () => {
+  // One point is not a flat line on the frame's edge.
+  const { domain } = residualLogDomain([{ time: 1, p: 1e-5 }], ['p']);
+  assert.equal(domain[0], 1e-5);
+  assert.ok(domain[1] > domain[0]);
 });

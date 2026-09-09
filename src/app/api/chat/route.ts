@@ -209,8 +209,17 @@ export async function POST(req: NextRequest) {
     const activeCaseName = typeof body?.caseName === 'string' && body.caseName
       ? validateCaseName(body.caseName)
       : '';
+    const priorCase = sessionCaseContext.get(sessionId)?.caseName || '';
     if (activeCaseName) {
       sections.push(`[Active case: ${activeCaseName}]`);
+    }
+    // The history is full of the previous case. Saying the subject changed is
+    // what stops the model answering about files the user switched away from.
+    if (history.length && priorCase && priorCase !== activeCaseName) {
+      sections.push(activeCaseName
+        ? `[The user switched the open case from "${priorCase}" to "${activeCaseName}". Everything earlier in this `
+          + `conversation is about "${priorCase}" and does not describe the new case.]`
+        : `[The user closed the case "${priorCase}". No case is open now; ask which one to work on.]`);
     }
     if (body?.fileContext?.path && typeof body.fileContext.content === 'string') {
       sections.push(`[File open in editor: ${body.fileContext.path}]\n\`\`\`\n${body.fileContext.content}\n\`\`\``);

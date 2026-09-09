@@ -51,6 +51,11 @@ export interface ChartExportSource {
   xLabel: string;
   yLabel: string;
   logScale: boolean;
+  /** The window the chart on screen was zoomed to, when it was. */
+  xDomain?: [number, number];
+  yDomain?: [number, number];
+  /** The shape the user dragged the chart into, width / height. */
+  aspect?: number;
   /** Suggested file name without an extension. */
   fileName: string;
   /** Suggested chart title. */
@@ -201,19 +206,46 @@ export default function ChartExportDialog({
   // they change them here. Keyed on the source so reopening on another dataset
   // does not carry the previous one's labels.
   const [syncedFor, setSyncedFor] = useState<string | null>(null);
+  /**
+   * The window and the shape of the figure, both draggable in the preview.
+   *
+   * They start from the chart the user was looking at: having zoomed in on the
+   * interesting decade and pulled the plot into the shape they wanted, opening
+   * this dialog should not throw that away and offer the whole dataset again.
+   */
+  const [viewport, setViewport] = useState<{ x: [number, number]; y: [number, number] } | null>(null);
   if (open && source && syncedFor !== source.fileName) {
     setSyncedFor(source.fileName);
-    setOptions(current => ({
-      ...current,
-      title: source.title,
-      xLabel: source.xLabel,
-      yLabel: source.yLabel,
-      logScale: source.logScale,
-    }));
+    setViewport(source.xDomain && source.yDomain ? { x: source.xDomain, y: source.yDomain } : null);
+    setOptions(current => {
+      const height = source.aspect
+        ? Math.max(400, Math.min(2400, Math.round(current.width / source.aspect)))
+        : current.height;
+      return {
+        ...current,
+        title: source.title,
+        xLabel: source.xLabel,
+        yLabel: source.yLabel,
+        logScale: source.logScale,
+        height,
+      };
+    });
   }
   if (!open && syncedFor !== null) setSyncedFor(null);
 
   const colors = resolveColors(options);
+
+  // A log axis cannot draw a value at or below zero, but one such sample is no
+  // reason to refuse the axis for the whole figure — those points become gaps,
+  // exactly as they do on the chart this dialog was opened from.
+  const logUsable = useMemo(() => {
+    if (!source) return false;
+    return source.rows.some(row => source.series.some(series => {
+      const value = row[series.index];
+      return typeof value === 'number' && Number.isFinite(value) && value > 0;
+    }));
+  }, [source]);
+  const logScale = options.logScale && logUsable;
 
   const chartRows = useMemo(() => {
     if (!source) return [];
@@ -221,23 +253,13 @@ export default function ChartExportDialog({
       const point: Record<string, number | undefined> = { x: row[0] ?? undefined };
       for (const series of source.series) {
         const value = row[series.index];
-        point[`c${series.index}`] = value === null || !Number.isFinite(value) ? undefined : value;
+        const drawable = value !== null && Number.isFinite(value) && (!logScale || value > 0);
+        point[`c${series.index}`] = drawable ? value : undefined;
       }
       return point;
     });
-  }, [source]);
+  }, [source, logScale]);
 
-  // A log axis cannot draw a value at or below zero. Residual plots are the
-  // main reason this control exists, and they are all positive; anything else
-  // silently falls back rather than exporting an empty frame.
-  const logUsable = useMemo(() => {
-    if (!source) return false;
-    return source.rows.every(row => source.series.every(series => {
-      const value = row[series.index];
-      return value === null || !Number.isFinite(value) || value > 0;
-    }));
-  }, [source]);
-  const logScale = options.logScale && logUsable;
 
   // ── The space the drawn furniture needs, reserved before the chart is laid
   //    out so that curves never run under the title or the legend.
@@ -268,7 +290,8 @@ export default function ChartExportDialog({
         dataKey="x"
         type="number"
         scale="linear"
-        domain={['dataMin', 'dataMax']}
+        domain={viewport ? viewport.x : ['dataMin', 'dataMax']}
+        allowDataOverflow={Boolean(viewport)}
         stroke={colors.foreground}
         tick={{ fontSize: options.fontSize, fill: colors.foreground }}
         tickFormatter={formatTick}
@@ -279,7 +302,9 @@ export default function ChartExportDialog({
       />
       <YAxis
         scale={logScale ? 'log' : 'linear'}
-        domain={['auto', 'auto']}
+        type="number"
+        domain={viewport ? viewport.y : ['auto', 'auto']}
+        allowDataOverflow={Boolean(viewport)}
         stroke={colors.foreground}
         tick={{ fontSize: options.fontSize, fill: colors.foreground }}
         tickFormatter={formatTick}
@@ -409,12 +434,16 @@ export default function ChartExportDialog({
     rebuild();
     if (!holder) return;
     const observer = new MutationObserver(schedule);
-    observer.observe(holder, { childList: true, subtree: true, attributes: true });
+    // characterData included: recharts reuses its tick <text> nodes and only
+    // rewrites their content, so a change of axis window mutated nothing the
+    // observer was watching — the preview, and therefore the file, kept the
+    // previous framing.
+    observer.observe(holder, { childList: true, subtree: true, attributes: true, characterData: true });
     return () => {
       observer.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [open, holder, buildSvg, chartRows, logScale, source]);
+  }, [open, holder, buildSvg, chartRows, logScale, source, viewport]);
 
   const download = (blob: Blob, extension: string) => {
     const url = URL.createObjectURL(blob);
@@ -478,6 +507,128 @@ export default function ChartExportDialog({
   const PREVIEW_HEIGHT = 430;
   const scale = Math.min(PREVIEW_WIDTH / options.width, PREVIEW_HEIGHT / options.height, 1);
 
+  /**
+   * Pan, zoom and resize, done ON the preview.
+   *
+   * The preview is the document that will be written, so a gesture here is not
+   * a way of inspecting the figure — it IS the edit. Dragging moves the window
+   * over the data, the wheel scales it around the pointer, and the corner
+   * handle changes the output size, which is what gives the saved figure its
+   * shape. All three work in output pixels and divide by `scale`, so the
+   * picture follows the pointer at whatever zoom the preview happens to be at.
+   */
+  const previewRef = useRef<HTMLDivElement>(null);
+  const panRef = useRef<{ x: number; y: number } | null>(null);
+  const resizeRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+
+  const plotArea = React.useCallback(() => {
+    const box = previewRef.current?.getBoundingClientRect();
+    if (!box || !source) return null;
+    // Mirrors the margins the chart above is built with, in output units.
+    const left = (options.showAxisLabels && options.yLabel.trim() ? options.fontSize * 1.8 : 0) + options.fontSize * 5;
+    const right = options.fontSize * 2;
+    const bottom = (options.showAxisLabels && options.xLabel.trim() ? options.fontSize * 2.6 : options.fontSize) + 30;
+    const width = options.width - left - right;
+    const height = options.height - topMargin - bottom;
+    if (width < 40 || height < 40) return null;
+    return {
+      left: box.left + left * scale,
+      top: box.top + topMargin * scale,
+      width: width * scale,
+      height: height * scale,
+      bottom: box.top + (topMargin + height) * scale,
+    };
+  }, [source, options, topMargin, scale]);
+
+  /** The window a gesture starts from: the explicit one, or what the data spans. */
+  const currentWindow = React.useCallback((): { x: [number, number]; y: [number, number] } | null => {
+    if (viewport) return viewport;
+    if (!source) return null;
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const row of source.rows) {
+      const x = row[0];
+      if (typeof x === 'number' && Number.isFinite(x)) {
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+      }
+      for (const series of source.series) {
+        const value = row[series.index];
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+        if (logScale && value <= 0) continue;
+        if (value < yMin) yMin = value;
+        if (value > yMax) yMax = value;
+      }
+    }
+    if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return null;
+    if (xMax === xMin) { xMin -= 0.5; xMax += 0.5; }
+    if (yMax === yMin) { if (logScale) { yMin /= 2; yMax *= 2; } else { yMin -= 0.5; yMax += 0.5; } }
+    return { x: [xMin, xMax], y: [yMin, yMax] };
+  }, [viewport, source, logScale]);
+
+  const scaleRange = (range: [number, number], factor: number, anchor: number, logarithmic: boolean): [number, number] => {
+    if (logarithmic) {
+      const low = Math.log10(range[0]);
+      const high = Math.log10(range[1]);
+      const pivot = low + (high - low) * anchor;
+      const nextLow = pivot - (pivot - low) * factor;
+      const nextHigh = pivot + (high - pivot) * factor;
+      if (nextHigh - nextLow < 0.05 || nextHigh - nextLow > 40) return range;
+      return [Math.pow(10, nextLow), Math.pow(10, nextHigh)];
+    }
+    const pivot = range[0] + (range[1] - range[0]) * anchor;
+    const low = pivot - (pivot - range[0]) * factor;
+    const high = pivot + (range[1] - pivot) * factor;
+    if (!Number.isFinite(low) || !Number.isFinite(high) || high - low <= 0) return range;
+    return [low, high];
+  };
+
+  const previewWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    const area = plotArea();
+    const window = currentWindow();
+    if (!area || !window) return;
+    event.preventDefault();
+    const anchorX = Math.min(1, Math.max(0, (event.clientX - area.left) / area.width));
+    const anchorY = Math.min(1, Math.max(0, (area.bottom - event.clientY) / area.height));
+    const factor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
+    setViewport({
+      x: event.altKey ? window.x : scaleRange(window.x, factor, anchorX, false),
+      y: event.shiftKey ? window.y : scaleRange(window.y, factor, anchorY, logScale),
+    });
+  };
+
+  const previewPan = (event: React.PointerEvent<HTMLDivElement>) => {
+    const origin = panRef.current;
+    const area = plotArea();
+    const window = currentWindow();
+    if (!origin || !area || !window) return;
+    const dx = event.clientX - origin.x;
+    const dy = event.clientY - origin.y;
+    if (!dx && !dy) return;
+    panRef.current = { x: event.clientX, y: event.clientY };
+    const shiftX = -(dx / area.width) * (window.x[1] - window.x[0]);
+    let nextY: [number, number];
+    if (logScale) {
+      const low = Math.log10(window.y[0]);
+      const high = Math.log10(window.y[1]);
+      const shift = (dy / area.height) * (high - low);
+      nextY = [Math.pow(10, low + shift), Math.pow(10, high + shift)];
+    } else {
+      const shift = (dy / area.height) * (window.y[1] - window.y[0]);
+      nextY = [window.y[0] + shift, window.y[1] + shift];
+    }
+    setViewport({ x: [window.x[0] + shiftX, window.x[1] + shiftX], y: nextY });
+  };
+
+  const previewResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const origin = resizeRef.current;
+    if (!origin) return;
+    setOptions(current => ({
+      ...current,
+      width: Math.max(400, Math.min(4000, Math.round(origin.width + (event.clientX - origin.x) / scale))),
+      height: Math.max(300, Math.min(3000, Math.round(origin.height + (event.clientY - origin.y) / scale))),
+    }));
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[86vh] sm:max-w-5xl flex-col gap-0 overflow-hidden p-0">
@@ -492,14 +643,50 @@ export default function ChartExportDialog({
         </DialogHeader>
 
         <div className="grid min-h-0 flex-1 grid-cols-[1fr_290px] overflow-hidden">
-          <div className="flex min-h-0 items-center justify-center overflow-auto bg-[repeating-conic-gradient(var(--muted)_0%_25%,transparent_0%_50%)] bg-[length:20px_20px] p-4">
-            <div className="shadow-lg ring-1 ring-border" style={{ width: options.width * scale, height: options.height * scale }}>
+          <div className="flex min-h-0 flex-col items-center justify-center overflow-auto bg-[repeating-conic-gradient(var(--muted)_0%_25%,transparent_0%_50%)] bg-[length:20px_20px] p-4">
+            <div
+              className="relative shadow-lg ring-1 ring-border"
+              style={{ width: options.width * scale, height: options.height * scale }}
+            >
               {/* The exported document, scaled. Not a second rendering of it. */}
               <div
-                style={{ width: options.width, height: options.height, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+                ref={previewRef}
+                className="touch-none select-none"
+                style={{
+                  width: options.width, height: options.height,
+                  transform: `scale(${scale})`, transformOrigin: 'top left',
+                  cursor: 'grab',
+                }}
+                onWheel={previewWheel}
+                onPointerDown={event => {
+                  if (event.button !== 0) return;
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  panRef.current = { x: event.clientX, y: event.clientY };
+                }}
+                onPointerMove={previewPan}
+                onPointerUp={() => { panRef.current = null; }}
+                onPointerCancel={() => { panRef.current = null; }}
+                onDoubleClick={() => setViewport(null)}
                 dangerouslySetInnerHTML={{ __html: markup }}
               />
+              <div
+                role="separator"
+                aria-label="Resize the exported figure"
+                title="Drag to change the size of the file"
+                className="absolute -bottom-1.5 -right-1.5 h-5 w-5 cursor-nwse-resize rounded-sm border-b-2 border-r-2 border-border bg-background/70 hover:border-brand"
+                onPointerDown={event => {
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  resizeRef.current = { x: event.clientX, y: event.clientY, width: options.width, height: options.height };
+                }}
+                onPointerMove={previewResize}
+                onPointerUp={() => { resizeRef.current = null; }}
+                onPointerCancel={() => { resizeRef.current = null; }}
+              />
             </div>
+            <p className="mt-3 text-[10px] text-muted-foreground">
+              Drag the figure to pan · wheel to zoom (Shift: X only, Alt: Y only) · double-click to fit · drag the corner to resize
+            </p>
           </div>
 
           <div className="flex min-h-0 flex-col border-l">

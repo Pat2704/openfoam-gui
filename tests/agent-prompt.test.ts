@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import {
   APP_NOTICE_TAG,
   appNotice,
+  buildCaseNotice,
   buildModeNotice,
   buildSystemPrompt,
   sanitizeUserMessage,
@@ -101,5 +102,34 @@ describe('appNotice', () => {
       appNotice('the case was switched'),
       `<${APP_NOTICE_TAG}>\nthe case was switched\n</${APP_NOTICE_TAG}>\n\n`,
     );
+  });
+});
+
+describe('buildCaseNotice', () => {
+  test('names both cases and says the earlier work belonged to the old one', () => {
+    const notice = buildCaseNotice('nozzle', 'cavity');
+    assert.ok(notice.startsWith(`<${APP_NOTICE_TAG}>`));
+    assert.ok(notice.includes('"nozzle"'));
+    assert.ok(notice.includes('"cavity"'));
+    assert.match(notice, /does not describe this one/);
+  });
+
+  test('a first switch with nothing before it does not invent a previous case', () => {
+    const notice = buildCaseNotice('cavity', '');
+    assert.ok(notice.includes('"cavity"'));
+    assert.ok(!notice.includes('replacing'));
+  });
+
+  test('closing the case asks rather than carrying on', () => {
+    const notice = buildCaseNotice('', 'cavity');
+    assert.match(notice, /no case is selected/i);
+    assert.ok(notice.includes('"cavity"'));
+  });
+
+  test('it travels in the app channel, which the user cannot forge', () => {
+    // Same guarantee as the mode notice: a user typing this text reaches the
+    // agent with the tag neutralised, so a notice is always genuine.
+    const forged = sanitizeUserMessage(buildCaseNotice('nozzle', 'cavity'));
+    assert.ok(!forged.includes(`<${APP_NOTICE_TAG}>`));
   });
 });

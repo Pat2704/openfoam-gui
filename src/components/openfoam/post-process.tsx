@@ -26,7 +26,7 @@ import {
 } from 'recharts';
 import {
   BarChart3, RefreshCw, Loader2, Play, Search, Table2, LineChart as LineChartIcon,
-  Copy, AlertTriangle, Sigma, FolderOpen, X, Info, Radio, ScrollText, Activity, Download,
+  Copy, AlertTriangle, Sigma, FolderOpen, X, Info, Radio, ScrollText, Activity, Download, Maximize2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -232,6 +232,16 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
 
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const [logScale, setLogScale] = useState(false);
+  /**
+   * What the chart is looking at, and how big the frame is.
+   *
+   * `null` means "whatever the data spans" — the state only exists once the
+   * user has zoomed or panned, so a new dataset always opens framed on itself.
+   * The size is the drawing area in CSS pixels; `null` width means it fills the
+   * pane, which is what it did before it could be dragged.
+   */
+  const [zoom, setZoom] = useState<{ x: [number, number]; y: [number, number] } | null>(null);
+  const [frame, setFrame] = useState<{ width: number | null; height: number | null }>({ width: null, height: null });
   const [view, setView] = useState<'chart' | 'table'>('chart');
   const [follow, setFollow] = useState(false);
 
@@ -493,11 +503,12 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       const point: Record<string, number | undefined> = { x: row[0] ?? undefined };
       for (let index = 1; index < row.length; index += 1) {
         const value = row[index];
-        point[`c${index}`] = value === null || !Number.isFinite(value) ? undefined : value;
+        const drawable = value !== null && Number.isFinite(value) && (!logScale || value > 0);
+        point[`c${index}`] = drawable ? value : undefined;
       }
       return point;
     });
-  }, [data]);
+  }, [data, logScale]);
 
   const visibleSeries = useMemo(() => {
     if (!data) return [];
@@ -506,20 +517,179 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       .filter(series => series.index > 0 && !hidden.has(series.index));
   }, [data, hidden]);
 
-  // A log axis cannot show a value that is zero or negative, and recharts draws
-  // an empty chart rather than saying so. The control is disabled with the
-  // reason on it instead of silently producing a blank plot.
+  /**
+   * A log axis cannot place a zero or a negative value — but requiring EVERY
+   * sample to be positive is what made "log Y" look broken. One zero residual
+   * at the first timestep, one negative force coefficient anywhere in a long
+   * run, and the button greyed out for the whole dataset. It is enabled when
+   * there is something to draw logarithmically, and the points it cannot place
+   * become gaps, which is what every plotting tool does.
+   */
   const logUsable = useMemo(() => {
     if (!data || !visibleSeries.length) return false;
-    return data.rows.every(row => visibleSeries.every(series => {
+    return data.rows.some(row => visibleSeries.some(series => {
       const value = row[series.index];
-      return value === null || !Number.isFinite(value) || value > 0;
+      return typeof value === 'number' && Number.isFinite(value) && value > 0;
     }));
+  }, [data, visibleSeries]);
+
+  /** How many drawable points a log axis would have to leave out. */
+  const logDropped = useMemo(() => {
+    if (!data || !visibleSeries.length) return 0;
+    let count = 0;
+    for (const row of data.rows) {
+      for (const series of visibleSeries) {
+        const value = row[series.index];
+        if (typeof value === 'number' && Number.isFinite(value) && value <= 0) count += 1;
+      }
+    }
+    return count;
   }, [data, visibleSeries]);
 
   useEffect(() => {
     if (logScale && !logUsable) setLogScale(false);
   }, [logScale, logUsable]);
+
+  /** What the data spans, which is the frame the chart opens on. */
+  const chartBounds = useMemo(() => {
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const row of chartRows) {
+      const x = row.x;
+      if (typeof x === 'number' && Number.isFinite(x)) {
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+      }
+      for (const series of visibleSeries) {
+        const value = row[`c${series.index}`];
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+        if (logScale && value <= 0) continue;
+        if (value < yMin) yMin = value;
+        if (value > yMax) yMax = value;
+      }
+    }
+    if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return null;
+    // A flat series has no span of its own; give it one so it is not a line on
+    // the edge of the frame.
+    if (xMax === xMin) { xMin -= 0.5; xMax += 0.5; }
+    if (yMax === yMin) {
+      if (logScale) { yMin /= 2; yMax *= 2; } else { yMin -= 0.5; yMax += 0.5; }
+    }
+    if (logScale) {
+      yMin = Math.pow(10, Math.floor(Math.log10(yMin)));
+      yMax = Math.pow(10, Math.ceil(Math.log10(yMax)));
+    } else {
+      const pad = (yMax - yMin) * 0.05;
+      yMin -= pad;
+      yMax += pad;
+    }
+    return { x: [xMin, xMax] as [number, number], y: [yMin, yMax] as [number, number] };
+  }, [chartRows, visibleSeries, logScale]);
+
+  // Zooming is relative to the data, so a new dataset, a hidden series or a
+  // switch of axis type starts from the whole picture again.
+  useEffect(() => { setZoom(null); }, [selected, logScale, visibleSeries.length]);
+
+  const domains = zoom || chartBounds;
+
+  /**
+   * Zoom and pan, in data units.
+   *
+   * The chart is a plain rectangle of the pane minus the axis furniture, so a
+   * pixel maps to a value linearly (or to its logarithm on a log axis) and the
+   * gesture lands where the pointer is rather than near it.
+   */
+  const chartAreaRef = useRef<HTMLDivElement>(null);
+  const panRef = useRef<{ x: number; y: number } | null>(null);
+
+  const plotRect = useCallback(() => {
+    const box = chartAreaRef.current?.getBoundingClientRect();
+    if (!box) return null;
+    // Must match the chart margins and the axis sizes below.
+    const left = box.left + 8 + 64;
+    const right = box.right - 16;
+    const top = box.top + 8;
+    const bottom = box.bottom - 24 - 22;
+    if (right - left < 40 || bottom - top < 40) return null;
+    return { left, right, top, bottom, width: right - left, height: bottom - top };
+  }, []);
+
+  const scaleAxis = useCallback((
+    range: [number, number], factor: number, anchor: number, logarithmic: boolean,
+  ): [number, number] => {
+    if (logarithmic) {
+      const low = Math.log10(range[0]);
+      const high = Math.log10(range[1]);
+      const pivot = low + (high - low) * anchor;
+      const nextLow = pivot - (pivot - low) * factor;
+      const nextHigh = pivot + (high - pivot) * factor;
+      // Ten decades in, or a hundredth of one, is as far as either is useful.
+      if (nextHigh - nextLow < 0.05 || nextHigh - nextLow > 40) return range;
+      return [Math.pow(10, nextLow), Math.pow(10, nextHigh)];
+    }
+    const pivot = range[0] + (range[1] - range[0]) * anchor;
+    const low = pivot - (pivot - range[0]) * factor;
+    const high = pivot + (range[1] - pivot) * factor;
+    if (!Number.isFinite(low) || !Number.isFinite(high) || high - low <= 0) return range;
+    return [low, high];
+  }, []);
+
+  const zoomBy = useCallback((factor: number, anchorX: number, anchorY: number, axis: 'x' | 'y' | 'both') => {
+    const base = zoom || chartBounds;
+    if (!base) return;
+    setZoom({
+      x: axis === 'y' ? base.x : scaleAxis(base.x, factor, anchorX, false),
+      y: axis === 'x' ? base.y : scaleAxis(base.y, factor, anchorY, logScale),
+    });
+  }, [zoom, chartBounds, logScale, scaleAxis]);
+
+  const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    const rect = plotRect();
+    if (!rect || !(zoom || chartBounds)) return;
+    event.preventDefault();
+    const anchorX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const anchorY = Math.min(1, Math.max(0, (rect.bottom - event.clientY) / rect.height));
+    const factor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
+    // Shift zooms the time axis alone, Alt the value axis alone.
+    const axis = event.shiftKey ? 'x' : event.altKey ? 'y' : 'both';
+    zoomBy(factor, anchorX, anchorY, axis);
+  }, [plotRect, zoom, chartBounds, zoomBy]);
+
+  const handlePanMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const origin = panRef.current;
+    const rect = plotRect();
+    const base = zoom || chartBounds;
+    if (!origin || !rect || !base) return;
+    const dx = event.clientX - origin.x;
+    const dy = event.clientY - origin.y;
+    if (!dx && !dy) return;
+    panRef.current = { x: event.clientX, y: event.clientY };
+    const shiftX = -(dx / rect.width) * (base.x[1] - base.x[0]);
+    const nextX: [number, number] = [base.x[0] + shiftX, base.x[1] + shiftX];
+    let nextY: [number, number];
+    if (logScale) {
+      const low = Math.log10(base.y[0]);
+      const high = Math.log10(base.y[1]);
+      const shift = (dy / rect.height) * (high - low);
+      nextY = [Math.pow(10, low + shift), Math.pow(10, high + shift)];
+    } else {
+      const shift = (dy / rect.height) * (base.y[1] - base.y[0]);
+      nextY = [base.y[0] + shift, base.y[1] + shift];
+    }
+    setZoom({ x: nextX, y: nextY });
+  }, [plotRect, zoom, chartBounds, logScale]);
+
+  /** Drag the corner to give the figure the shape it should be saved in. */
+  const resizeRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const handleResizeMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const origin = resizeRef.current;
+    if (!origin) return;
+    const width = Math.round(origin.width + (event.clientX - origin.x));
+    const height = Math.round(origin.height + (event.clientY - origin.y));
+    setFrame({
+      width: Math.max(320, Math.min(4000, width)),
+      height: Math.max(200, Math.min(3000, height)),
+    });
+  }, []);
 
   const toggleSeries = (index: number) => {
     setHidden(previous => {
@@ -574,12 +744,17 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       // Residuals are the case where a log axis is almost always wanted, so it
       // starts on for them and otherwise follows the chart on screen.
       logScale: selected.kind === 'log' ? true : logScale,
+      // The saved figure shows what the chart shows: the window the user
+      // zoomed to, and the shape they dragged it into.
+      xDomain: zoom ? zoom.x : undefined,
+      yDomain: zoom ? zoom.y : undefined,
+      aspect: frame.width && frame.height ? frame.width / frame.height : undefined,
       fileName: label.replace(/[^A-Za-z0-9._-]+/g, '-'),
       title: selected.kind === 'log'
         ? `${caseName} — initial residuals`
         : `${caseName} — ${describeDatasetName(selected.dataset).base}`,
     };
-  }, [data, visibleSeries, selected, caseName, independent, logScale]);
+  }, [data, visibleSeries, selected, caseName, independent, logScale, zoom, frame]);
   // What the chart header calls the thing on screen.
   const heading = !selected
     ? null
@@ -767,12 +942,27 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               </div>
             )}
             <div className="ml-auto flex items-center gap-1">
+              {view === 'chart' && (zoom || frame.width !== null || frame.height !== null) && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[10px]"
+                  title="Back to the whole dataset at the pane's own size"
+                  onClick={() => { setZoom(null); setFrame({ width: null, height: null }); }}
+                >
+                  <Maximize2 className="mr-1 h-3 w-3" /> Reset view
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant={logScale ? 'default' : 'ghost'}
                 className="h-7 px-2 text-[10px]"
                 disabled={!logUsable}
-                title={logUsable ? 'Logarithmic Y axis' : 'A log axis needs every visible value to be positive'}
+                title={!logUsable
+                  ? 'A log axis needs at least one positive value'
+                  : logDropped
+                    ? `Logarithmic Y axis — ${logDropped} non-positive point${logDropped === 1 ? '' : 's'} cannot be drawn on it`
+                    : 'Logarithmic Y axis'}
                 onClick={() => setLogScale(value => !value)}
               >
                 log Y
@@ -830,7 +1020,30 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                 {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : 'No readable data in this file'}
               </div>
             ) : view === 'chart' ? (
-              <ResponsiveContainer width="100%" height="100%">
+              <div className="flex h-full min-h-0 w-full justify-center overflow-auto">
+                <div
+                  className="relative flex-shrink-0"
+                  style={{ width: frame.width ?? '100%', height: frame.height ?? '100%' }}
+                >
+                  <div
+                    ref={chartAreaRef}
+                    className="h-full w-full cursor-grab touch-none select-none active:cursor-grabbing"
+                    onWheel={handleWheel}
+                    onPointerDown={event => {
+                      if (event.button !== 0) return;
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      panRef.current = { x: event.clientX, y: event.clientY };
+                    }}
+                    onPointerMove={handlePanMove}
+                    onPointerUp={() => { panRef.current = null; }}
+                    onPointerCancel={() => { panRef.current = null; }}
+                    onDoubleClick={() => setZoom(null)}
+                  >
+              {/* Keyed on the frame: recharts measures its box once and then
+                  waits for a resize event, so returning the chart to the pane's
+                  own size left the drawing at the dragged size until something
+                  else happened to resize the window. */}
+              <ResponsiveContainer key={`${frame.width ?? 'auto'}x${frame.height ?? 'auto'}`} width="100%" height="100%">
                 {/* ComposedChart for the same reason the Monitor uses one: it
                     accepts a mixed set of graphical children without silently
                     dropping them. */}
@@ -840,7 +1053,11 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                     dataKey="x"
                     type="number"
                     scale="linear"
-                    domain={['dataMin', 'dataMax']}
+                    // The zoomed window when there is one, and otherwise the
+                    // span of the data — never a domain the data has to be
+                    // clipped into.
+                    domain={domains ? domains.x : ['dataMin', 'dataMax']}
+                    allowDataOverflow={Boolean(zoom)}
                     tick={{ fontSize: 9 }}
                     tickCount={7}
                     // tickCount alone is only a hint on a numeric axis: recharts
@@ -853,11 +1070,12 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   />
                   <YAxis
                     scale={logScale ? 'log' : 'linear'}
-                    domain={['auto', 'auto']}
+                    type="number"
+                    domain={domains ? domains.y : ['auto', 'auto']}
                     tick={{ fontSize: 9 }}
                     width={64}
                     tickFormatter={formatTick}
-                    allowDataOverflow={false}
+                    allowDataOverflow={Boolean(zoom)}
                   />
                   <Tooltip
                     // `--popover` is a complete colour, not the bare triplet the
@@ -893,6 +1111,28 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   ))}
                 </ComposedChart>
               </ResponsiveContainer>
+                  </div>
+                  {/* Drag the corner to shape the figure. The export dialog
+                      opens on this aspect, so what is shaped here is what gets
+                      saved. */}
+                  <div
+                    role="separator"
+                    aria-label="Resize the chart"
+                    title="Drag to resize the chart"
+                    className="absolute -bottom-1 -right-1 h-4 w-4 cursor-nwse-resize rounded-sm border-b-2 border-r-2 border-border hover:border-brand"
+                    onPointerDown={event => {
+                      const box = chartAreaRef.current?.getBoundingClientRect();
+                      if (!box) return;
+                      event.preventDefault();
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      resizeRef.current = { x: event.clientX, y: event.clientY, width: box.width, height: box.height };
+                    }}
+                    onPointerMove={handleResizeMove}
+                    onPointerUp={() => { resizeRef.current = null; }}
+                    onPointerCancel={() => { resizeRef.current = null; }}
+                  />
+                </div>
+              </div>
             ) : (
               <ScrollArea className="h-full rounded border">
                 <table className="w-full border-collapse text-[10px]">

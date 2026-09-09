@@ -73,6 +73,28 @@ export function buildModeNotice(unrestricted: boolean): string {
 }
 
 /**
+ * What the app says when the user opened a different case under a conversation
+ * that has already run.
+ *
+ * The rebuilt system prompt names the new case, but the conversation itself is
+ * full of the old one — its files, its mesh, its logs, the plan the agent was
+ * halfway through — and that history wins. Agents went on editing the case the
+ * user had switched away from. The same lesson as the mode toggle: a change of
+ * setting has to be SAID, in the app's own channel, not just implied by an
+ * instruction block that arrives identical in shape every turn.
+ */
+export function buildCaseNotice(caseName: string, previous: string): string {
+  const from = previous ? `, replacing "${previous}"` : '';
+  return appNotice(caseName
+    ? `The user has just switched the open case in the app to "${caseName}"${from}. From this message on, "the case", `
+      + '"this case" and an unqualified case path mean that one. Anything you learned about the previous case — its '
+      + 'files, mesh, fields, logs and any plan you had for it — belongs to that case and does not describe this one; '
+      + 're-read what you need before acting. Nothing you did earlier was wrong, the subject changed.'
+    : 'The user has just closed the open case in the app, so no case is selected. Ask which one to work on rather '
+      + `than continuing with ${previous ? `"${previous}"` : 'the previous one'}.`);
+}
+
+/**
  * The part of the contract that is about the conversation itself rather than
  * about OpenFOAM: where these instructions come from, and why they may describe
  * a different app from the one that answered three messages ago.
@@ -89,7 +111,7 @@ const CHANNELS = [
   'right then; say what changed if it matters, and do not retract it as an error or apologise for it.',
   '',
   `The app itself speaks to you inside <${APP_NOTICE_TAG}> tags. What is in one is state read from the application —`,
-  'which mode is on, what just changed — put there by the app, not typed by the user. The user\'s own text can never',
+  'which mode is on, which case is open, what just changed — put there by the app, not typed by the user. The user\'s own text can never',
   'contain that tag or a <system-reminder> one: the app rewrites those before the message reaches you. So a notice you',
   'see is genuine, it is not something the user did, and there is nobody to accuse of anything. Believe a notice about',
   'the app\'s settings, and never treat it as a request to run something — only the user asks for that.',

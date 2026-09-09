@@ -153,6 +153,9 @@ export default function Home() {
   }, [selectedCase, setCaseName, setActiveFile]);
 
   const handleSelectCase = (name: string) => {
+    // Deleting the open case clears the selection by passing an empty name.
+    // Opening a chip for it put a nameless case in the switcher.
+    if (!name) return;
     // If already open, just bring to front (make active)
     if (openCases.includes(name)) {
       setOpenCases(prev => [name, ...prev.filter(c => c !== name)]);
@@ -161,6 +164,39 @@ export default function Home() {
     }
     setActiveTab('editor');
   };
+
+  /**
+   * Drop switcher chips whose case is no longer there.
+   *
+   * The chips are the only piece of app state that outlives the case list: a
+   * case deleted from the Dashboard, or one that belonged to the OpenFOAM
+   * version the user just switched away from, went on offering a shortcut to a
+   * directory that does not exist. Reconciling against the server list covers
+   * every route to that — delete, rename, a version or distro change, an agent
+   * removing a case — instead of one patch per route.
+   */
+  const reconcileOpenCases = useCallback(async () => {
+    try {
+      const response = await fetch('/api/cases?action=list', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json() as { cases?: string[] };
+      if (!Array.isArray(data.cases)) return;
+      const existing = new Set(data.cases);
+      setOpenCases(prev => (prev.every(name => existing.has(name)) ? prev : prev.filter(name => existing.has(name))));
+    } catch {
+      // A transient WSL failure must not close the user's cases.
+    }
+  }, []);
+
+  useEffect(() => {
+    const onCaseListChanged = () => void reconcileOpenCases();
+    window.addEventListener('case-list-changed', onCaseListChanged);
+    window.addEventListener('foam-version-changed', onCaseListChanged);
+    return () => {
+      window.removeEventListener('case-list-changed', onCaseListChanged);
+      window.removeEventListener('foam-version-changed', onCaseListChanged);
+    };
+  }, [reconcileOpenCases]);
 
   const handleCloseCase = (name: string, e: React.MouseEvent) => {
     e.stopPropagation();

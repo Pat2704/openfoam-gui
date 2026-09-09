@@ -229,7 +229,16 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [draft, setDraft] = useState<PropertyDraft>(EMPTY_DRAFT);
   const [displayDraft, setDisplayDraft] = useState<DisplayDraft>({ opacity: 1, lineWidth: 1, pointSize: 3 });
   const [playing, setPlaying] = useState(false);
-  const [filterChoice, setFilterChoice] = useState<FilterType | undefined>();
+  /**
+  * The filter picker is an action menu, not a stored choice, so its value is
+  * cleared after every pick. It must be cleared to '' rather than to undefined:
+  * a Radix Select whose `value` becomes undefined turns UNCONTROLLED and keeps
+  * showing the item it last displayed, and picking that same item again matches
+  * its internal state and fires no change — so after deleting a Clip the menu
+  * still read "Clip" and would not add another one until something else had
+  * been chosen in between.
+  */
+  const [filterChoice, setFilterChoice] = useState<FilterType | ''>('');
   const [viewportTool, setViewportTool] = useState<ViewportTool>('camera');
   const [fileDialogOpen, setFileDialogOpen] = useState(false);
   const [caseFiles, setCaseFiles] = useState<ParaViewCaseFile[]>([]);
@@ -750,7 +759,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   };
 
   const addFilter = (filter: FilterType) => {
-    setFilterChoice(undefined);
+    setFilterChoice('');
     void command('add_filter', { filter });
   };
 

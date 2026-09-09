@@ -140,6 +140,7 @@ export async function POST(req: NextRequest) {
             effort,
             unrestricted,
             systemPrompt: buildSystemPrompt(foamVersion, caseName, unrestricted),
+            caseName,
           },
           listener,
         );
