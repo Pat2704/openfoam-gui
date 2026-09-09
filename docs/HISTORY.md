@@ -6,6 +6,53 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-09 — v5.2.2: switcher, agent case changes, honest charts
+
+- Released `v5.2.2`; notes in `docs/releases/v5.2.2.md`.
+- RULES 2 of *Validation, builds and publication* gained a clause at the user's
+  request: only the current version's pair may remain in `dist-electron/` and
+  `Working/`, older artifacts are deleted in the same change. The stale `v5.1.0`
+  pair was removed under it.
+- **Switcher chips.** `page.tsx` reconciles the open-case chips against
+  `/api/cases?action=list` on a new `case-list-changed` event (dispatched by the
+  Dashboard after a delete or rename) and on `foam-version-changed`. It covers
+  every route to a vanished case rather than one patch per route.
+  `handleSelectCase('')` — how the Dashboard clears the selection after deleting
+  the open case — used to add a nameless chip; it now returns early. Verified in
+  the app: a deleted case's chip goes, and switching OF 13 -> 14 dropped
+  `nozzle_test`, which exists only under 13.
+- **Agents and the open case.** The rebuilt system prompt named the new case,
+  but the conversation is full of the old one and history wins, so both agents
+  kept working on it. `buildCaseNotice` in `agent-prompt.ts` announces the
+  switch in the app's own `<openfoam-studio>` channel, exactly as the mode
+  change is announced; `claude-cli.ts` and `codex-cli.ts` track the last
+  announced case per session, and both routes pass it. FOAMy's `/api/chat` adds
+  the same statement when the session's previous case differs. Unit-tested; not
+  exercised against a live subscription agent.
+- **Monitor residuals.** The axis was pinned to `[1e-8, 1]` with
+  `allowDataOverflow`, so anything outside was clipped, and zero residuals — what
+  OpenFOAM writes for a field it did not solve — went to minus infinity. New
+  pure `residualLogDomain()` in `residuals.ts` reads whole decades from the data;
+  non-positive samples become gaps; the X axis spans `dataMin..dataMax` instead
+  of forcing 0. Measured on the local `cavity` log: the axis went from a fixed
+  1e-8..1 to 1e-7..1e-3, and X now starts at 10.56 rather than 0. The local
+  `combustor` log carries 339 zero residuals.
+- **Post-Process.** `logUsable` required EVERY sample to be positive, so one
+  zero disabled the button for a whole dataset — measured: `combustor` disabled
+  before, enabled after, with its 339 points drawn as gaps. The chart gained
+  pan, wheel zoom (Shift/Alt for one axis), double-click fit, a corner resize
+  handle and Reset view; the ResponsiveContainer is keyed on the frame because
+  recharts otherwise keeps the dragged size until some other resize event.
+- **Export dialog.** The window and shape travel into it and can be dragged on
+  the preview, which is the file. Found and fixed while verifying: its rebuild
+  observer watched childList/attributes only, and recharts rewrites tick text
+  in place, so a changed axis window left the preview — and the saved file —
+  showing the previous framing.
+- **ParaView filter picker.** `setFilterChoice(undefined)` turned the Radix
+  Select uncontrolled, so it kept displaying the deleted filter and re-picking
+  it fired no change. It resets to `''` now. Verified end to end against
+  ParaView 6.2.0: Clip added, deleted, added again.
+
 ## 2026-09-09 — v5.2.1 and a two-release download window
 
 - Released `v5.2.1` with the ParaView detection and startup work below; notes in
