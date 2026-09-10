@@ -847,7 +847,22 @@ export default function MeshViewer({ caseName, active = true }: {
     setShowAxes(false);
 
     try {
-      const res = await fetch(`/api/mesh?case=${encodeURIComponent(caseName)}`);
+      // The server answers 409 when the boundary file says the surface is large:
+      // asking now spares the minutes of extraction the old after-the-fact
+      // prompt came at the end of.
+      let confirmedLarge = false;
+      let res = await fetch(`/api/mesh?case=${encodeURIComponent(caseName)}`);
+      if (res.status === 409) {
+        const info = await res.json().catch(() => ({} as { estimatedTriangles?: number }));
+        const ok = await confirmDialog(
+          `This mesh's boundary is about ${Number(info.estimatedTriangles || 0).toLocaleString()} triangles. ` +
+          `Extracting it takes a while and displaying it may make the view sluggish. Load it anyway?`,
+          { title: 'Large mesh', confirmLabel: 'Load', destructive: false }
+        );
+        if (!ok) { setLoading(false); return; }
+        confirmedLarge = true;
+        res = await fetch(`/api/mesh?case=${encodeURIComponent(caseName)}&confirm=1`);
+      }
       if (!res.ok) {
         const msg = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(msg.error || `HTTP ${res.status}`);
@@ -861,7 +876,7 @@ export default function MeshViewer({ caseName, active = true }: {
       );
       const positions = new Float32Array(buf, 4 + headerLen);
 
-      if (header.triangles > LARGE_MESH_TRIANGLES) {
+      if (header.triangles > LARGE_MESH_TRIANGLES && !confirmedLarge) {
         const ok = await confirmDialog(
           `This surface has ${header.triangles.toLocaleString()} triangles. ` +
           `Displaying it may make the view sluggish. Load it anyway?`,

@@ -145,15 +145,18 @@ export async function POST(
       case 'deleteBatch': {
         const paths: string[] = Array.isArray(body.paths) ? body.paths : [];
         let deleted = 0;
+        const failed: string[] = [];
         for (const p of paths) {
           try {
             deletePath(caseName, p);
             deleted++;
           } catch {
-            /* continue with the rest of the batch */
+            // Continue with the rest of the batch, but report it: the File
+            // Editor tells the user which ones were left.
+            failed.push(String(p));
           }
         }
-        return NextResponse.json({ success: true, deleted });
+        return NextResponse.json({ success: true, deleted, failed });
       }
       case 'deleteTimesteps': {
         const result = deleteAllTimesteps(caseName);

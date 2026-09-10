@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardTitle, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -50,19 +50,40 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
   const [openFile, setOpenFile] = useState<{ path: string; content: string; size: number; truncated: boolean; binary: boolean } | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
 
+  const [lsError, setLsError] = useState<string | null>(null);
+  // Each folder and each file is one WSL call, so clicking through quickly can
+  // have answers arrive out of order; only the latest of each may land.
+  const lsRequestRef = useRef(0);
+  const fileRequestRef = useRef(0);
+
   const fetchLs = useCallback(async (path: string) => {
+    const request = ++lsRequestRef.current;
     setLoading(true);
+    setLsError(null);
     try {
       const res = await fetch(`/api/foam-files?action=ls&section=${section}&path=${encodeURIComponent(path)}`, {
         cache: 'no-store',
       });
-      const data = await res.json();
-      setLsResult(data);
-      if (data.rootDir) setRootDir(data.rootDir);
+      const data = await res.json().catch(() => ({}));
+      if (request !== lsRequestRef.current) return;
+      if (!res.ok) {
+        // A server or WSL failure is not a missing directory. It used to be
+        // shown as "Directory not found — the section may not be available in
+        // this installation", sending the user after the wrong problem.
+        setLsResult(null);
+        setLsError(data.error || `The folder could not be read (HTTP ${res.status}).`);
+      } else {
+        setLsResult(data);
+        if (data.rootDir) setRootDir(data.rootDir);
+      }
     } catch {
-      setLsResult({ exists: false, rootDir: '', relPath: path, items: [] });
+      if (request === lsRequestRef.current) {
+        setLsResult(null);
+        setLsError('The app could not reach its server.');
+      }
+    } finally {
+      if (request === lsRequestRef.current) setLoading(false);
     }
-    setLoading(false);
   }, [section]);
 
   // Fetch root dir on mount
@@ -79,6 +100,9 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
       openFileReader(item);
       return;
     }
+    // A file still being read would otherwise open over the new folder.
+    fileRequestRef.current++;
+    setFileLoading(false);
     setOpenFile(null);
     setCurrentPath(item.path);
     fetchLs(item.path);
@@ -94,6 +118,7 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
   };
 
   const openFileReader = async (item: FoamFileItem) => {
+    const request = ++fileRequestRef.current;
     setFileLoading(true);
     setOpenFile(null);
     try {
@@ -101,19 +126,25 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
         cache: 'no-store',
       });
       const data = await res.json();
+      if (request !== fileRequestRef.current) return;
       if (data.success) {
         setOpenFile({ path: item.path, content: data.content, size: data.size, truncated: data.truncated, binary: false });
       } else {
-        setOpenFile({ path: item.path, content: data.content || 'Unable to read the file', size: data.size || 0, truncated: false, binary: data.binary });
+        setOpenFile({ path: item.path, content: data.content || data.error || 'Unable to read the file', size: data.size || 0, truncated: false, binary: data.binary });
       }
     } catch {
+      if (request !== fileRequestRef.current) return;
       setOpenFile({ path: item.path, content: 'Network error', size: 0, truncated: false, binary: false });
+    } finally {
+      if (request === fileRequestRef.current) setFileLoading(false);
     }
-    setFileLoading(false);
   };
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text).then(() => toast.success('Copied to clipboard'));
+    navigator.clipboard.writeText(text).then(
+      () => toast.success('Copied to clipboard'),
+      () => toast.error('Could not copy: the clipboard refused it'),
+    );
   };
 
   // Breadcrumb segments
@@ -184,6 +215,14 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
                 <div className="text-center py-8 text-muted-foreground">
                   <Loader2 className="w-5 h-5 mx-auto mb-2 animate-spin" />
                   <p className="text-xs">Loading…</p>
+                </div>
+              ) : lsError ? (
+                <div className="text-center py-8 text-muted-foreground text-xs">
+                  <AlertCircle className="w-5 h-5 mx-auto mb-2 text-danger" />
+                  <p className="text-danger">{lsError}</p>
+                  <Button size="sm" variant="outline" className="h-6 text-[11px] px-2 mt-2" onClick={() => fetchLs(currentPath)}>
+                    <RefreshCw className="w-3 h-3 mr-1" /> Try again
+                  </Button>
                 </div>
               ) : !lsResult || !lsResult.exists ? (
                 <div className="text-center py-8 text-muted-foreground text-xs">

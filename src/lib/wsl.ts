@@ -28,6 +28,7 @@ import {
   type ClassDocumentation,
   type CaseContext,
 } from './postprocess';
+import { parseCheckMeshOutput } from './check-mesh';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EVERY child_process call in this file MUST pass `windowsHide: true`.
@@ -1498,11 +1499,26 @@ echo "DBG:done"
   }
 }
 
-export function createCase(caseName: string, template?: string): string {
+/**
+ * Make a case folder with empty 0/, system/ and constant/.
+ *
+ * An existing name is refused unless `allowExisting` says the caller already
+ * asked the user (the wizard's "Overwrite"): `mkdir -p` alone reported
+ * "created" for a case that was already there, possibly full of results. The
+ * run directory itself may still be missing on a fresh install, hence `-p` on
+ * the parent only.
+ */
+export function createCase(caseName: string, options: { allowExisting?: boolean } = {}): string {
   const safeName = validateCaseName(caseName);
   const casePath = getCasePath(safeName);
+  const refuseExisting = options.allowExisting
+    ? ''
+    : `{ test ! -e ${shellQuote(casePath)} || { echo "A case called ${safeName} already exists" >&2; exit 1; }; mkdir -- ${shellQuote(casePath)}; } && `;
   try {
-    runInWsl(`mkdir -p -- ${shellQuote(`${casePath}/0`)} ${shellQuote(`${casePath}/system`)} ${shellQuote(`${casePath}/constant`)} && echo "OK"`);
+    runInWsl(
+      `mkdir -p -- ${shellQuote(path.posix.dirname(casePath))} && ${refuseExisting}` +
+      `mkdir -p -- ${shellQuote(`${casePath}/0`)} ${shellQuote(`${casePath}/system`)} ${shellQuote(`${casePath}/constant`)} && echo "OK"`,
+    );
     return safeName;
   } catch (e: any) {
     throw new Error(`Case creation failed: ${e.message}`);
@@ -1538,23 +1554,50 @@ export function listTutorialCategories(): { name: string; path: string }[] {
   }
 }
 
-// ── Tutorial cases inside a category (one level deep) ──
-export function listTutorialCases(categoryPath: string): { name: string; fullPath: string }[] {
-  const category = validatePathWithin(getTutorialDirectory(), categoryPath, 'Tutorial category');
-  try {
-    return runInWsl(`find ${shellQuote(category)} -mindepth 1 -maxdepth 1 -type d -printf '%p\\n' 2>/dev/null`)
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map(p => p.replace(/\/+$/, ''))
-      .map(p => ({
-        name: p.split('/').pop() || '',
-        fullPath: p,
-      }))
-      .filter(c => c.name);
-  } catch {
-    return [];
-  }
+// ── Tutorials inside a category, at any depth ──
+//
+// A category's first level is not always its tutorials. `mesh/`, `multiRegion/`
+// and `legacy/` group them one or two folders deeper (`mesh/snappyHexMesh/
+// flange`), and on v9-v10 the whole tree is grouped by solver
+// (`incompressible/simpleFoam/pitzDaily`). Listing only the first level offered
+// those group folders as tutorials, and copying one produced a "case" with no
+// system/ that nothing could run.
+//
+// So: a folder with system/ is a tutorial, and is not descended into. A folder
+// with its own Allrun but no system/ is a wrapper whose Allrun drives the cases
+// under it (hopperParticles, wingMotion) — listed as well, since those cases
+// often depend on each other, but only if a real case sits below it. Anything
+// else is only walked through. `"$1"/*/` also follows directory links.
+export function listTutorialCases(categoryPath: string): { name: string; fullPath: string; wrapper?: boolean }[] {
+  const category = validatePathWithin(getTutorialDirectory(), categoryPath, 'Tutorial category').replace(/\/+$/, '');
+  const script = `
+walk() {
+  local d
+  for d in "$1"/*/; do
+    [ -d "$d" ] || continue
+    d=\${d%/}
+    if [ -d "$d/system" ]; then printf 'C\\t%s\\n' "$d"; continue; fi
+    [ -f "$d/Allrun" ] && printf 'W\\t%s\\n' "$d"
+    [ "$2" -lt 4 ] && walk "$d" $(( $2 + 1 ))
+  done
+}
+walk ${shellQuote(category)} 1
+exit 0
+`;
+  // No catch: a failed listing is an error the Dashboard shows, not an empty
+  // category.
+  const entries = runInWslScript(Buffer.from(script).toString('base64'), 30000)
+    .split('\n')
+    .map(line => line.replace(/\r$/, '').split('\t'))
+    .filter(([kind, p]) => (kind === 'C' || kind === 'W') && !!p && p.startsWith(`${category}/`));
+  const cases = entries.filter(([kind]) => kind === 'C').map(([, p]) => p);
+  return entries
+    .filter(([kind, p]) => kind === 'C' || cases.some(c => c.startsWith(`${p}/`)))
+    .map(([kind, p]) => ({
+      name: p.slice(category.length + 1),
+      fullPath: p,
+      ...(kind === 'W' ? { wrapper: true } : {}),
+    }));
 }
 
 export function copyTutorial(tutorialPath: string, newCaseName: string): string {
@@ -1563,9 +1606,18 @@ export function copyTutorial(tutorialPath: string, newCaseName: string): string 
   const safeName = validateCaseName(newCaseName);
   const destinationPath = `${runDir}/${safeName}`;
   try {
+    // `mkdir` is the existence check that counts: it fails atomically if the
+    // name exists. `test` alone left a gap — two quick copies (Enter pressed
+    // twice) could both pass it, and the second `cp -r` into the directory the
+    // first had just made nested the tutorial inside the new case. `test` stays
+    // only for its clearer message. Copying `src/.` into the directory made
+    // here gives the same layout, and a copy that fails halfway removes only
+    // what this call created.
     runInWsl(
       `test ! -e ${shellQuote(destinationPath)} || { echo "Case already exists" >&2; exit 1; }; ` +
-      `cp -r -- ${shellQuote(sourcePath)} ${shellQuote(destinationPath)} && echo "OK"`,
+      `mkdir -- ${shellQuote(destinationPath)} || exit 1; ` +
+      `cp -r -- ${shellQuote(`${sourcePath}/.`)} ${shellQuote(destinationPath)} || { rm -rf -- ${shellQuote(destinationPath)}; exit 1; }; ` +
+      `echo "OK"`,
       60000
     );
     return safeName;
@@ -1901,40 +1953,50 @@ mv -- "$SRC" "$DST" && echo "OK" || echo "ERROR: could not move ${safeFrom}"
 // ── Delete all timestep dirs except 0 ──
 export function deleteAllTimesteps(caseName: string): { deleted: string[]; count: number } {
   const casePath = getCasePath(caseName);
+  // Three things this used to get wrong:
+  //  - only a folder named exactly "0" was spared, so a case that starts
+  //    elsewhere (kivaTest starts at -180 and has no 0/) lost its initial
+  //    conditions. The earliest time is now spared as well as 0;
+  //  - processor*/<time> folders were never touched, although the Monitor's
+  //    count and message promise them;
+  //  - any failure was swallowed and reported as "Deleted 0 timesteps".
+  //    Errors go to stderr, which is what runInWslScript reports.
+  const bashScript = `
+CASEPATH=${shellQuote(casePath)}
+cd "$CASEPATH" || { echo "the case folder was not found" >&2; exit 1; }
+isnum() { printf '%s' "$1" | grep -qE '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'; }
+count=0
+deleted=""
+clean() {
+  local dir="$1" prefix="$2" first d bn
+  first=$(for d in "$dir"/*/; do bn=$(basename "$d"); isnum "$bn" && printf '%s\\n' "$bn"; done | sort -g | head -n 1)
+  for d in "$dir"/*/; do
+    [ -d "$d" ] || continue
+    bn=$(basename "$d")
+    [ "$bn" = "0" ] && continue
+    [ "$bn" = "$first" ] && continue
+    isnum "$bn" || continue
+    rm -rf -- "$dir/$bn" || { echo "could not delete $prefix$bn" >&2; exit 1; }
+    deleted="$deleted $prefix$bn"
+    count=$((count + 1))
+  done
+}
+clean "$CASEPATH" ""
+for p in "$CASEPATH"/processor*/; do
+  [ -d "$p" ] && clean "\${p%/}" "$(basename "$p")/"
+done
+echo "DELETED:$count:$deleted"
+`;
+  let output: RegExpMatchArray | null;
   try {
-    const bashScript = [
-      `CASEPATH=${shellQuote(casePath)}`,
-      `cd "$CASEPATH" || exit 1`,
-      `count=0`,
-      `deleted=""`,
-      `for d in "$CASEPATH"/*/; do`,
-      `  [ -d "$d" ] || continue`,
-      `  bn=$(basename "$d")`,
-      `  [ "$bn" = "0" ] && continue`,
-      `  case "$bn" in`,
-      `    0|system|constant|processor*|postProcessing) continue ;;`,
-      `  esac`,
-      `  if printf '%s' "$bn" | grep -qE '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'; then`,
-      `    rm -rf "$CASEPATH/$bn"`,
-      `    deleted="$deleted $bn"`,
-      `    count=$((count + 1))`,
-      `  fi`,
-      `done`,
-      `echo "DELETED:$count:$deleted"`,
-    ].join('\n');
-
-    const b64 = Buffer.from(bashScript).toString('base64');
-    const output = runInWslScript(b64, 120000)
+    output = runInWslScript(Buffer.from(bashScript).toString('base64'), 120000)
       .trim()
       .match(/DELETED:(\d+):(.*)/);
-
-    if (output) {
-      return { count: parseInt(output[1]), deleted: output[2].trim().split(/\s+/).filter(Boolean) };
-    }
-    return { deleted: [], count: 0 };
-  } catch {
-    return { deleted: [], count: 0 };
+  } catch (e: any) {
+    throw new Error(`Could not delete the timesteps: ${e.message}`);
   }
+  if (!output) throw new Error('Could not delete the timesteps: the script gave no result');
+  return { count: parseInt(output[1]), deleted: output[2].trim().split(/\s+/).filter(Boolean) };
 }
 
 // ── Normalize a user command to handle common issues ──
@@ -2337,18 +2399,29 @@ export function listLogFiles(caseName: string): string[] {
 export function cloneCase(sourceName: string, newName: string): string {
   const srcPath = getCasePath(sourceName);
   const dstPath = getCasePath(newName);
-  // Avoid embedding newName directly to prevent odd quoting; refer to $DST in message
+  // Errors go to stderr: runInWslScript reports only that, so an "ERROR: …"
+  // echoed to stdout used to reach the user as the raw wsl command line. The
+  // folder is made with plain `mkdir` (atomic, fails if it exists) and every
+  // copy is checked — a `cp` that failed used to leave a clone without, say,
+  // controlDict and still report "cloned". A failed copy removes the half-made
+  // clone, which this call created and nothing else owns.
   const b64 = Buffer.from(`
 SRC=${shellQuote(srcPath)}
 DST=${shellQuote(dstPath)}
-if [ -d "$DST" ]; then echo "ERROR: case already exists: $DST"; exit 1; fi
-mkdir -p "$DST"
+if [ -e "$DST" ]; then echo "a case with this name already exists" >&2; exit 1; fi
+mkdir -- "$DST" || { echo "the new case folder could not be created" >&2; exit 1; }
 for d in 0 system constant; do
-  if [ -d "$SRC/$d" ]; then cp -r "$SRC/$d" "$DST/"; fi
+  if [ -d "$SRC/$d" ]; then
+    cp -r -- "$SRC/$d" "$DST/" || { rm -rf -- "$DST"; echo "$d/ could not be copied, so nothing was cloned" >&2; exit 1; }
+  fi
 done
 echo "OK: cloned"
 `).toString('base64');
-  return runInWslScript(b64, 30000).trim();
+  try {
+    return runInWslScript(b64, 30000).trim();
+  } catch (e: any) {
+    throw new Error(`Clone failed: ${e.message}`);
+  }
 }
 
 // ── Rename a case directory in $FOAM_RUN ──
@@ -2365,11 +2438,19 @@ export function renameCase(oldName: string, newName: string): string {
   const b64 = Buffer.from(`
 SRC=${shellQuote(oldPath)}
 DST=${shellQuote(newPath)}
-if [ ! -d "$SRC" ]; then echo "ERROR: case not found: $SRC"; exit 1; fi
-if [ -e "$DST" ]; then echo "ERROR: a case with this name already exists: $DST"; exit 1; fi
-mv -- "$SRC" "$DST" && echo "OK: renamed" || { echo "ERROR: mv failed"; exit 1; }
+if [ ! -d "$SRC" ]; then echo "the case was not found" >&2; exit 1; fi
+if [ -e "$DST" ]; then echo "a case with this name already exists" >&2; exit 1; fi
+mv -- "$SRC" "$DST" || { echo "the folder could not be moved" >&2; exit 1; }
+echo "OK: renamed"
 `).toString('base64');
-  const result = runInWslScript(b64, 30000).trim();
+  // Refusals are written to stderr, the stream runInWslScript reports; on
+  // stdout they reached the user as the raw wsl command line instead.
+  let result: string;
+  try {
+    result = runInWslScript(b64, 30000).trim();
+  } catch (e: any) {
+    throw new Error(`Rename failed: ${e.message}`);
+  }
   if (!result.startsWith('OK')) {
     throw new Error(result.replace(/^ERROR:\s*/, '') || 'Rename failed');
   }
@@ -2407,6 +2488,8 @@ export interface BCValidationResult {
   }[];
   meshPatches: string[];
   warnings: string[];
+  /** False when there was no mesh to check the patches against. */
+  meshChecked?: boolean;
 }
 
 /**
@@ -2521,10 +2604,15 @@ function parseInGroups(body: string): string[] {
 }
 
 /** The patches of `constant/polyMesh/boundary`, with their groups. */
-function parsePolyMeshBoundary(text: string): MeshPatch[] {
+export function parsePolyMeshBoundary(text: string): MeshPatch[] {
   const clean = stripFoamComments(text);
   const patches: MeshPatch[] = [];
-  const re = /([A-Za-z_][A-Za-z0-9_.\-]*)\s*\{/g;
+  // A patch name is any word OpenFOAM accepts: everything up to whitespace, a
+  // brace, a semicolon, a bracket or a quote. snappyHexMesh names patches after
+  // the surface regions (`motorBike_frt-fairing:001%1`), and an identifier-only
+  // pattern skipped every one of them — so their groups were then reported as
+  // "not a patch or group of this mesh".
+  const re = /([^\s{};()"]+)\s*\{/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(clean)) !== null) {
     const name = m[1];
@@ -2767,6 +2855,16 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
 
     const meshPatches = boundaryFile ? parsePolyMeshBoundary(boundaryFile) : [];
     result.meshPatches = meshPatches.map(p => p.name);
+    result.meshChecked = meshPatches.length > 0;
+    // No boundary file at all — before blockMesh, or a case that only has
+    // processor* meshes. Every entry used to come back valid with no word about
+    // it, and the panel said "All BCs are valid". (A multi-region case has
+    // already said why it skips.)
+    if (!boundaryFile && result.warnings.length === 0) {
+      result.warnings.push(
+        'Patches not checked: this case has no mesh yet — run blockMesh (or reconstructPar for a decomposed case).'
+      );
+    }
 
     // ── 2. The fields ──
     const zeroDir = runInWsl(
@@ -3190,41 +3288,35 @@ export interface CheckMeshResult {
 
 export function runCheckMesh(caseName: string): CheckMeshResult {
   const casePath = getCasePath(caseName);
+  // Through the script runner, with checkMesh's exit status captured inside the
+  // script and `exit 0` at the end: runInWsl returns stdout only on success, so
+  // a checkMesh that stopped with a FOAM FATAL reached the panel as the bare
+  // wsl command line, next to a "Mesh issues detected" banner about a check
+  // that had never run. The report itself is read by parseCheckMeshOutput.
+  const script = `cd ${shellQuote(casePath)} || { echo "the case folder was not found" >&2; exit 1; }
+${foamSource()}checkMesh 2>&1
+echo "__CHECKMESH_EXIT__$?"
+exit 0
+`;
+  let out: string;
   try {
-    const raw = foamExec('checkMesh 2>&1', casePath, 60000);
-    const lines = raw.split('\n');
-
-    const overallStats: { key: string; value: string }[] = [];
-    const failedChecks: { severity: 'fail' | 'warning'; message: string }[] = [];
-    let meshOk = false;
-
-    for (const line of lines) {
-      if (line.match(/^<<Writing/)) continue;
-      const statMatch = line.match(/^Overall\s+(.+?)\s*=\s*(.+)/);
-      if (statMatch) {
-        overallStats.push({ key: statMatch[1].trim(), value: statMatch[2].trim() });
-      }
-      const failMatch = line.match(/^\*\*\*\*(.+)/);
-      if (failMatch) {
-        failedChecks.push({ severity: 'fail', message: failMatch[1].trim() });
-      }
-      const warnMatch = line.match(/^-->(.+)/);
-      if (warnMatch) {
-        failedChecks.push({ severity: 'warning', message: warnMatch[1].trim() });
-      }
-    }
-
-    const okLine = lines.find(l => l.includes('Mesh OK') || l.includes('Failed'));
-    if (okLine) {
-      meshOk = okLine.includes('Mesh OK');
-    } else {
-      meshOk = failedChecks.filter(c => c.severity === 'fail').length === 0;
-    }
-
-    return { success: true, raw, overallStats, failedChecks, meshOk };
+    out = runInWslScript(Buffer.from(script).toString('base64'), 60000);
   } catch (e: any) {
-    return { success: false, raw: e.message, overallStats: [], failedChecks: [], meshOk: false };
+    const timedOut = /ETIMEDOUT|timed out/i.test(String(e.message));
+    return {
+      success: false,
+      raw: timedOut ? 'checkMesh did not finish within 60 s.' : e.message,
+      overallStats: [], failedChecks: [], meshOk: false,
+    };
   }
+  const exitCode = Number((out.match(/__CHECKMESH_EXIT__(\d+)/) || [])[1] ?? 0);
+  const raw = out.replace(/\n?__CHECKMESH_EXIT__\d+\s*$/, '').trimEnd();
+  const report = parseCheckMeshOutput(raw);
+  if (!report.verdictFound && exitCode !== 0) {
+    // It stopped before judging the mesh; the reason is in `raw`.
+    return { success: false, raw, overallStats: [], failedChecks: [], meshOk: false };
+  }
+  return { success: true, raw, overallStats: report.overallStats, failedChecks: report.failedChecks, meshOk: report.meshOk };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4043,25 +4135,36 @@ export function wslPathToWindows(posixPath: string): string {
  * Run surfaceMeshTriangulate on a case and return where to read the result.
  * Throws if the case has no mesh yet (no constant/polyMesh).
  */
-export function extractCaseSurface(caseName: string, timeout = 120000): SurfaceExtraction {
+export async function extractCaseSurface(caseName: string, timeout = 120000): Promise<SurfaceExtraction> {
   const casePath = getCasePath(caseName);
   const src = foamSource();
 
+  // The markers and the final `exit 0` are there so their text reaches the
+  // checks below: a script that exits non-zero hands back stderr, which here
+  // is nothing but the command line (a 375-character base64 blob on screen).
+  // Asynchronous because surfaceMeshTriangulate can run for up to two minutes
+  // on a large case, and the synchronous runner froze every other request of
+  // the server — Monitor, Dashboard, all of it — for that whole time.
   const script = `
-${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 1; }
-[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 1; }
+${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 0; }
+[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 0; }
 rm -f ${shellQuote(SURFACE_STL_NAME)}
 surfaceMeshTriangulate ${shellQuote(SURFACE_STL_NAME)} 2>&1
+exit 0
 `;
-  const out = runInWslScript(Buffer.from(script).toString('base64'), timeout);
+  const out = await runInWslScriptAsync(Buffer.from(script).toString('base64'), timeout);
 
   if (out.includes('__NO_CASE__')) throw new Error(`Case not found: ${caseName}`);
   if (out.includes('__NO_MESH__')) {
     throw new Error('This case has no mesh yet — run blockMesh first.');
   }
   if (/FOAM FATAL/.test(out)) {
-    const detail = out.split('\n').find(l => l.trim() && !l.startsWith('-->')) || 'unknown error';
-    throw new Error(`surfaceMeshTriangulate failed: ${detail.trim()}`);
+    // The reason is the line after "FOAM FATAL ERROR"; the first line of the
+    // output is OpenFOAM's banner.
+    const lines = out.split('\n').map(l => l.trim()).filter(Boolean);
+    const fatal = lines.findIndex(l => /FOAM FATAL/.test(l));
+    const detail = (fatal >= 0 && lines[fatal + 1]) || 'unknown error';
+    throw new Error(`surfaceMeshTriangulate failed: ${detail}`);
   }
 
   // "surfZone 0 : movingWall" — the patch list, in write order.
@@ -4071,6 +4174,38 @@ surfaceMeshTriangulate ${shellQuote(SURFACE_STL_NAME)} 2>&1
     windowsPath: wslPathToWindows(`${casePath}/${SURFACE_STL_NAME}`),
     patchNames,
   };
+}
+
+/**
+ * About how many triangles the boundary surface will have, read from the
+ * mesh's own `constant/polyMesh/boundary` before anything is extracted, or null
+ * when that file cannot be read. Two per face: blockMesh and snappyHexMesh
+ * faces are mostly quads. Processor patches are not part of the surface.
+ *
+ * It lets the Mesh tab ask about a large mesh BEFORE the minutes of
+ * extraction, instead of after them.
+ */
+export function estimateBoundaryTriangles(caseName: string): number | null {
+  let text = '';
+  try {
+    text = runInWsl(`cat -- ${shellQuote(`${getCasePath(caseName)}/constant/polyMesh/boundary`)} 2>/dev/null`, 10000);
+  } catch {
+    return null;
+  }
+  if (!text.trim()) return null;
+  const clean = stripFoamComments(text);
+  const re = /([^\s{};()"]+)\s*\{/g;
+  let faces = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(clean)) !== null) {
+    const open = m.index + m[0].length - 1;
+    const body = extractBraceBlock(clean, open);
+    if (body === null) continue;
+    re.lastIndex = open + body.length + 2;
+    if (m[1] === 'FoamFile' || /\btype\s+processor(Cyclic)?\s*;/.test(body)) continue;
+    faces += Number((body.match(/\bnFaces\s+(\d+)\s*;/) || [])[1] || 0);
+  }
+  return faces * 2;
 }
 
 /** Delete the temp STL. Safe to call even if extraction failed. */
@@ -4100,11 +4235,14 @@ export function createParaFoamMarker(caseName: string): ParaFoamMarker {
   const casePath = getCasePath(caseName);
   const src = foamSource();
   const script = `
-${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 1; }
-[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 1; }
-paraFoam -touch 2>&1 || { echo "__PARAFOAM_FAILED__"; exit 1; }
+${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 0; }
+[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 0; }
+paraFoam -touch 2>&1 || { echo "__PARAFOAM_FAILED__"; exit 0; }
 find . -maxdepth 1 -type f -name '*.OpenFOAM' -printf '__MARKER__%f\n' | head -1
 `;
+  // The markers above exit 0 on purpose: runInWslScript returns stdout only on
+  // success, and throws with stderr (here, nothing but the command line)
+  // otherwise — so with `exit 1` the checks below never saw their marker.
   const out = runInWslScript(Buffer.from(script).toString('base64'), 30_000);
   if (out.includes('__NO_CASE__')) throw new Error(`Case not found: ${caseName}`);
   if (out.includes('__NO_MESH__')) throw new Error('This case has no mesh yet — run blockMesh first.');

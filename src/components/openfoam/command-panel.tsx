@@ -15,6 +15,7 @@ import {
   Grid3x3, Layers, Zap, Trash2, Loader2, Tag
 } from 'lucide-react';
 import { getCommandsForVersion, parseMajorVersion } from '@/lib/openfoam-data';
+import { flavourForVersion } from '@/lib/case-templates';
 
 /**
  * One entry of the command list, as /api/commands?action=catalog returns it.
@@ -278,6 +279,10 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
   // takes, and for a machine where WSL cannot be reached at all.
   const [catalog, setCatalog] = useState<CatalogCommand[] | null>(null);
   const [catalogVersion, setCatalogVersion] = useState<string>('');
+  // Polling gives up when the installation never answers; the subtitle used to
+  // keep saying "reading the installation…" regardless.
+  const [catalogFailed, setCatalogFailed] = useState(false);
+  const retryCatalogRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let cancelled = false;
@@ -296,14 +301,22 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
         // Still building. It is one WSL call, so this is seconds, not minutes —
         // but give up rather than poll forever if WSL never answers.
         if (attempt < 15) timer = setTimeout(() => void poll(attempt + 1), 2000);
+        else setCatalogFailed(true);
       } catch {
-        if (!cancelled && attempt < 3) timer = setTimeout(() => void poll(attempt + 1), 3000);
+        if (cancelled) return;
+        if (attempt < 3) timer = setTimeout(() => void poll(attempt + 1), 3000);
+        else setCatalogFailed(true);
       }
     };
     void poll(0);
+    retryCatalogRef.current = () => {
+      if (timer) clearTimeout(timer);
+      setCatalogFailed(false);
+      void poll(0);
+    };
 
     // Switching the selected OpenFOAM version changes the whole list.
-    const onVersionChanged = () => { setCatalog(null); void poll(0); };
+    const onVersionChanged = () => { setCatalog(null); setCatalogFailed(false); void poll(0); };
     window.addEventListener('foam-version-changed', onVersionChanged);
     return () => {
       cancelled = true;
@@ -619,9 +632,34 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
 
   const insertCommand = (cmd: string) => setTerm(prev => ({ ...prev, input: cmd }));
 
+  // v9-v10 have no foamRun: the solver is the executable named by `application`
+  // in the case's controlDict, so on those installations the two run buttons
+  // use that name, and disappear if it cannot be read. An unknown version
+  // keeps foamRun — the same call flavourForVersion makes for the wizard.
+  const isLegacy = flavourForVersion(foamMajorVersion) === 'legacy';
+  const [legacyApp, setLegacyApp] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isLegacy || !caseName) { setLegacyApp(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent('system/controlDict')}`, { cache: 'no-store' });
+        const data = res.ok ? await res.json() : null;
+        const match = typeof data?.content === 'string' ? data.content.match(/^\s*application\s+([A-Za-z][\w.-]*)\s*;/m) : null;
+        if (!cancelled) setLegacyApp(match ? match[1] : null);
+      } catch {
+        if (!cancelled) setLegacyApp(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isLegacy, caseName]);
+  const runner = isLegacy ? legacyApp : 'foamRun';
+
   const quickCommands = [
-    { label: 'foamRun', cmd: 'foamRun', icon: <Play className="w-3 h-3" /> },
-    { label: 'foamRun > log &', cmd: 'foamRun > log.foamRun 2>&1 &', icon: <Play className="w-3 h-3" /> },
+    ...(runner ? [
+      { label: runner, cmd: runner, icon: <Play className="w-3 h-3" /> },
+      { label: `${runner} > log &`, cmd: `${runner} > log.${runner} 2>&1 &`, icon: <Play className="w-3 h-3" /> },
+    ] : []),
     { label: 'blockMesh', cmd: 'blockMesh', icon: <Grid3x3 className="w-3 h-3" /> },
     // Plain snappyHexMesh: -overwrite is a deprecated no-op on both 13 and 14
     // ("Deprecated option, this is now default behaviour" in its own -help),
@@ -667,7 +705,12 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
             {catalog
               ? `${versionedCommands.length} commands read from the OpenFOAM ${catalogVersion || foamMajorVersion || ''} installation`
               : foamMajorVersion !== null
-                ? `Built-in list for OpenFOAM v${foamMajorVersion} (${versionedCommands.length}) — reading the installation…`
+                ? catalogFailed
+                  ? <>
+                      Built-in list for OpenFOAM v{foamMajorVersion} ({versionedCommands.length}) — the installation&apos;s own list could not be read.{' '}
+                      <button type="button" className="underline hover:text-foreground" onClick={() => retryCatalogRef.current()}>Try again</button>
+                    </>
+                  : `Built-in list for OpenFOAM v${foamMajorVersion} (${versionedCommands.length}) — reading the installation…`
                 : versionLoading
                   ? 'Detecting version…'
                   : 'Version not detected — showing the built-in list'}
@@ -843,7 +886,7 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
               <div className="flex items-center gap-2 p-1.5">
                 <span className="text-green-500 font-mono text-xs font-bold select-none">$</span>
                 <input value={term.input} onChange={(e) => setTerm(prev => ({ ...prev, input: e.target.value }))} onKeyDown={handleKeyDown} placeholder={`${caseName} $`} className="flex-1 font-mono text-xs bg-transparent focus:outline-none placeholder:text-muted-foreground/40" disabled={term.running} spellCheck={false} />
-                <Button size="sm" className="h-6 px-2" disabled={term.running || !term.input.trim()} onClick={() => executeCommand(term.input)}><Send className="w-3 h-3" /></Button>
+                <Button size="sm" className="h-6 px-2" aria-label="Run command" title="Run command" disabled={term.running || !term.input.trim()} onClick={() => executeCommand(term.input)}><Send className="w-3 h-3" /></Button>
               </div>
             </div>
           </CardContent>

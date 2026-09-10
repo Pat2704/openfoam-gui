@@ -56,7 +56,15 @@ export default function CheckMeshPanel({ caseName }: { caseName: string }) {
           };
       setCheckMeshResult(data);
       if (!data.success) {
-        toast.error('checkMesh failed: ' + (data.raw || 'unknown error'));
+        // The first line of the output is OpenFOAM's banner; the reason is the
+        // line after "FOAM FATAL ERROR", or failing that a line that says what
+        // could not be found or done.
+        const lines = (data.raw || '').split('\n').map(l => l.trim()).filter(Boolean);
+        const fatal = lines.findIndex(l => /FOAM FATAL/.test(l));
+        const reason = (fatal >= 0 && lines[fatal + 1])
+          || lines.find(l => /cannot|not found|unable|did not finish|timed out/i.test(l))
+          || lines[lines.length - 1] || 'unknown error';
+        toast.error('checkMesh could not run: ' + reason.slice(0, 200));
       } else if (data.meshOk) {
         toast.success('Mesh OK');
       } else {
@@ -97,14 +105,20 @@ export default function CheckMeshPanel({ caseName }: { caseName: string }) {
     {showCheckMesh && checkMeshResult && (
       <CardContent className="px-3 pb-3">
         {/* Overall verdict */}
+        {/* A checkMesh that could not run judged nothing: it used to show the
+            red "Mesh issues detected" banner beside its own error message. */}
         <div className={`flex items-center gap-2 p-2.5 rounded-md mb-3 text-sm font-medium ${
-          checkMeshResult.meshOk
-            ? 'bg-green-500/10 text-green-400 border border-green-500/30'
-            : 'bg-red-500/10 text-red-400 border border-red-500/30'
+          !checkMeshResult.success
+            ? 'bg-amber-500/10 text-amber-500 border border-amber-500/30'
+            : checkMeshResult.meshOk
+              ? 'bg-green-500/10 text-green-400 border border-green-500/30'
+              : 'bg-red-500/10 text-red-400 border border-red-500/30'
         }`}>
-          {checkMeshResult.meshOk
-            ? <><CheckCircle2 className="w-4 h-4" /> Mesh OK — no issues detected</>
-            : <><XCircleIcon className="w-4 h-4" /> Mesh issues detected</>}
+          {!checkMeshResult.success
+            ? <><AlertTriangle className="w-4 h-4" /> checkMesh could not run — the reason is in the output below</>
+            : checkMeshResult.meshOk
+              ? <><CheckCircle2 className="w-4 h-4" /> Mesh OK — no issues detected</>
+              : <><XCircleIcon className="w-4 h-4" /> Mesh issues detected</>}
         </div>
 
         {/* Mesh stats table */}
@@ -146,7 +160,7 @@ export default function CheckMeshPanel({ caseName }: { caseName: string }) {
         )}
 
         {/* Raw output toggle */}
-        <details className="mt-3">
+        <details className="mt-3" open={!checkMeshResult.success}>
           <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
             Raw checkMesh output
           </summary>

@@ -20,6 +20,7 @@ interface BCData {
   fields: { name: string; patches: { patch: string; type: string; valid: boolean; note?: string }[] }[];
   meshPatches: string[];
   warnings: string[];
+  meshChecked?: boolean;
 }
 
 export default function BCValidationPanel({ caseName }: { caseName: string }) {
@@ -67,7 +68,9 @@ export default function BCValidationPanel({ caseName }: { caseName: string }) {
         const totalPatches = data.fields.reduce((s: number, f: BCData['fields'][number]) => s + f.patches.length, 0);
         const invalidPatches = data.fields.reduce(
           (s: number, f: BCData['fields'][number]) => s + f.patches.filter(p => !p.valid).length, 0);
-        if (invalidPatches === 0) toast.success('All BCs are valid');
+        // Without a mesh nothing was compared, so "valid" would be a guess.
+        if (data.meshChecked === false) toast.info('Patches not checked: this case has no mesh yet');
+        else if (invalidPatches === 0) toast.success('All BCs are valid');
         else toast.warning(`${invalidPatches}/${totalPatches} BCs have issues`);
       }
     } catch {

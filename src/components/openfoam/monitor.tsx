@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { parseAllResiduals, residualLogDomain, type ResidualPoint } from '@/lib/residuals';
+import { isProcessForCase } from '@/lib/case-processes';
 
 interface ProcessRow {
   pid: string; user: string; cpu: string; mem: string;
@@ -29,22 +30,6 @@ interface ProcessRow {
   startDatetime: string; // DD/MM HH:mm
   command: string;
   cwd?: string; // working directory of the process — used to tell which case it belongs to
-}
-
-// A process belongs to the active case when its working directory is the case
-// directory (runDir/caseName). We match on the path tail so we don't need to
-// know runDir on the client. Falls back to "unknown" when cwd is unavailable
-// (older backend or readlink denied) — those processes are kept in the list but
-// never counted as running for the active case, avoiding false "RUNNING" badges.
-function isProcessForCase(p: ProcessRow, caseName: string): boolean {
-  if (!p.cwd || !caseName) return false;
-  const cwd = p.cwd.replace(/\/+$/, '');
-  // Match the case dir itself, anything ending in /<caseName> (e.g. run/cavity),
-  // or anything UNDER the case dir (e.g. run/cavity/processor0 for decomposed
-  // parallel runs where each rank keeps its cwd in a processor subdir).
-  return cwd === caseName
-    || cwd.endsWith('/' + caseName)
-    || cwd.includes('/' + caseName + '/');
 }
 
 // Derive a short case label from a process cwd (last path segment).
@@ -144,6 +129,11 @@ export default function Monitor({ caseName, active = true }: {
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [availableLogs, setAvailableLogs] = useState<string[]>([]);
   const [logContent, setLogContent] = useState('');
+  // Whether the log is still on its way, read, or failed to read. An empty
+  // string alone could not tell a log with nothing in it yet from a failed
+  // read, and both used to show "Loading..." for ever.
+  const [logState, setLogState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [logError, setLogError] = useState('');
   const [tailLines, setTailLines] = useState('200');
   const [processes, setProcesses] = useState<ProcessRow[]>([]);
   const [timeSteps, setTimeSteps] = useState<string[]>([]);
@@ -177,6 +167,7 @@ export default function Monitor({ caseName, active = true }: {
   const [showResidualChart, setShowResidualChart] = useState(false);
   const [residualChartLoading, setResidualChartLoading] = useState(false);
   const [residualData, setResidualData] = useState<{ data: ResidualPoint[]; fields: string[] }>({ data: [], fields: [] });
+  const [residualError, setResidualError] = useState<string | null>(null);
   const [residualLog, setResidualLog] = useState<string>(''); // log file used for chart
 
 
@@ -184,7 +175,7 @@ export default function Monitor({ caseName, active = true }: {
   const [deletingTimesteps, setDeletingTimesteps] = useState(false);
   const handleDeleteTimesteps = async () => {
     if (timeSteps.length <= 1) { toast.info('No timesteps to delete'); return; }
-    if (!(await confirmDialog(`Delete ${timeSteps.length - 1} timestep folders (all except 0/)?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
+    if (!(await confirmDialog(`Delete ${timeSteps.length - 1} timestep folders (all except the initial time)?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
     setDeletingTimesteps(true);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
@@ -231,9 +222,11 @@ export default function Monitor({ caseName, active = true }: {
     }
     setResidualLog(logFile);
     setResidualChartLoading(true);
+    setResidualError(null);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(logFile)}&maxLines=50000`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const content = data.content || '';
       if (content.startsWith('Log not found')) {
         setResidualData({ data: [], fields: [] });
@@ -242,8 +235,10 @@ export default function Monitor({ caseName, active = true }: {
         const parsed = parseAllResiduals(content);
         setResidualData(parsed);
       }
-    } catch {
+    } catch (e) {
+      // A failed read is not a log without residuals, which is what it said.
       setResidualData({ data: [], fields: [] });
+      setResidualError(e instanceof Error ? e.message : String(e));
     }
     setResidualChartLoading(false);
   }, [caseName, selectedLog, availableLogs]);
@@ -275,12 +270,18 @@ export default function Monitor({ caseName, active = true }: {
     const request = (async () => {
       try {
         const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=logs&log=${encodeURIComponent(selectedLog)}&tail=${tailLines}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         setLogContent(data.content || '');
+        setLogState('ready');
         const logs: string[] = data.availableLogs || [];
         setAvailableLogs(logs);
-      } catch { /* silent */ }
+      } catch (e) {
+        // A refresh that fails after the log was shown keeps what is on
+        // screen; only a log that never loaded reports the error.
+        setLogError(e instanceof Error ? e.message : String(e));
+        setLogState(prev => (prev === 'ready' ? prev : 'error'));
+      }
     })();
     fetchingLogsRef.current = request;
     try { await request; } finally {
@@ -568,6 +569,7 @@ export default function Monitor({ caseName, active = true }: {
   useEffect(() => {
     if (selectedLog) {
       setLogContent('');
+      setLogState('loading');
       setLogSearch('');
       setShowSearch(false);
       fetchLogs();
@@ -935,6 +937,12 @@ export default function Monitor({ caseName, active = true }: {
               <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
                 <Loader2 className="w-5 h-5 mr-2 animate-spin" /> Loading residuals from <span className="font-mono mx-1">{residualLog || '...'}</span>...
               </div>
+            ) : residualError ? (
+              <div className="text-center py-8 text-sm">
+                <LineChartIcon className="w-10 h-10 mx-auto mb-2 opacity-20" />
+                <p className="text-danger">Could not read the residuals: {residualError}</p>
+                <p className="text-xs mt-1 text-muted-foreground">Press Refresh to try again.</p>
+              </div>
             ) : residualData.fields.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground text-sm">
                 <LineChartIcon className="w-10 h-10 mx-auto mb-2 opacity-20" />
@@ -1129,7 +1137,11 @@ export default function Monitor({ caseName, active = true }: {
               {selectedLog ? (
                 <pre ref={outputRef}
                   className="absolute inset-0 p-3 text-xs font-mono whitespace-pre-wrap break-words text-foreground/80 overflow-y-auto bg-black/5 dark:bg-black/20 rounded-b-lg">
-                  {logContent || 'Loading...'}
+                  {logContent || (logState === 'loading'
+                    ? 'Loading...'
+                    : logState === 'error'
+                      ? `Could not read the log: ${logError}`
+                      : 'The log is empty so far.')}
                 </pre>
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">

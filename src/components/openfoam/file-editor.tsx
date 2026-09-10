@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Label } from '@/components/ui/label';
 import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
+import { isProcessForCase } from '@/lib/case-processes';
 
 // Canonical timestep regex: matches integer (0, 100), decimal (0.001, 1.5),
 // and scientific notation (1e-5, 1.5E-3, 1e+5). Mirrors the WSL-side regex in
@@ -48,7 +49,7 @@ function sameDirectoryMap(a: Record<string, FileItem[]>, b: Record<string, FileI
 }
 
 export default function FileEditor({ caseName, active = true }: { caseName: string; active?: boolean }) {
-  const { setActiveFile } = useCaseContext();
+  const { setActiveFile, setUnsavedFile } = useCaseContext();
   // directories maps a relative dir path to its contents (array of FileItem).
   // First-level dirs: key = dir name (e.g. '0', 'system', 'constant', '0.5')
   // Nested dirs:     key = full relative path (e.g. 'constant/polyMesh')
@@ -410,18 +411,26 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent(filePath)}`, {
         cache: 'no-store',
       });
-      const data = await res.json();
-      const content = data.content || '';
-      // The fingerprint is taken AFTER the read, not before: a write landing
-      // between the two would otherwise be remembered as already seen and the
-      // editor would sit on stale text believing it was current.
-      const stamp = await fetchStamp(filePath);
-      fileCacheRef.current.set(filePath, { content, stamp });
-      openStampRef.current = stamp;
-      setFileContent(content);
-      setOriginalContent(content);
-      setCurrentFile(filePath);
-      setActiveFile({ path: filePath, content });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // A failed read (WSL busy, the 10 s timeout, a file removed meanwhile)
+        // used to open as an EMPTY file marked "Saved" — and was cached that
+        // way — so the next Save replaced the real file with nothing. Leave
+        // whatever is open alone and say why this one did not open.
+        toast.error(data?.error ? `Could not open ${filePath}: ${data.error}` : `Could not open ${filePath}`);
+      } else {
+        const content = data.content || '';
+        // The fingerprint is taken AFTER the read, not before: a write landing
+        // between the two would otherwise be remembered as already seen and the
+        // editor would sit on stale text believing it was current.
+        const stamp = await fetchStamp(filePath);
+        fileCacheRef.current.set(filePath, { content, stamp });
+        openStampRef.current = stamp;
+        setFileContent(content);
+        setOriginalContent(content);
+        setCurrentFile(filePath);
+        setActiveFile({ path: filePath, content });
+      }
     } catch {
       toast.error('Error loading');
     }
@@ -467,6 +476,20 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     const dir = newFileDir === '__root__' ? '' : newFileDir;
     const filePath = dir ? `${dir}/${newFileName.trim()}` : newFileName.trim();
     try {
+      // "New file" writes an empty file through the same call as Save, so a
+      // name that already existed (0/U) was emptied and reported as "Created".
+      // Ask first — and if the check itself fails, do not guess.
+      const stat = await fetch(
+        `/api/cases/${encodeURIComponent(caseName)}?action=stat&path=${encodeURIComponent(filePath)}`,
+        { cache: 'no-store' },
+      );
+      const info = await stat.json().catch(() => ({}));
+      if (!stat.ok) {
+        toast.error(info?.error ? `Could not check ${filePath}: ${info.error}` : `Could not check whether ${filePath} exists`);
+        return;
+      }
+      if (info.exists && !(await confirmDialog(`"${filePath}" already exists. Replace it with an empty file?`,
+        { title: 'File exists', confirmLabel: 'Replace', destructive: true }))) return;
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'write', path: filePath, content: '' }),
@@ -484,13 +507,39 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         body: JSON.stringify({ action: 'mkdir', dirPath: newDirName.trim() }),
       });
       if (res.ok) { toast.success(`Folder: ${newDirName}`); setNewDirName(''); fetchCaseInfo(); }
-    } catch { toast.error('Error'); }
+      else {
+        const d = await res.json().catch(() => ({}));
+        toast.error(d.error ? `Could not create the folder: ${d.error}` : 'Could not create the folder');
+      }
+    } catch { toast.error('Could not create the folder: the app could not reach its server'); }
   };
 
   const handleDeleteTimesteps = async () => {
-    const tsDirs = allDirNames.filter(d => !NON_TIMESTEP_DIRS.has(d) && !d.startsWith('processor') && TIMESTEP_RE.test(d));
+    // The same rule as the server: 0 and the earliest time stay — a case need
+    // not start at 0 (kivaTest starts at -180).
+    const times = allDirNames.filter(d => !d.startsWith('processor') && TIMESTEP_RE.test(d));
+    const earliest = times.reduce<string | null>((a, b) => (a === null || parseFloat(b) < parseFloat(a) ? b : a), null);
+    const tsDirs = times.filter(d => d !== '0' && d !== earliest);
     if (tsDirs.length === 0) { toast.info('No timesteps to delete'); return; }
-    if (!(await confirmDialog(`Delete ${tsDirs.length} timestep folders (all except 0/)?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
+    // The Monitor disables its own Clean TS while the case runs; this one did
+    // not know. Deleting time folders the solver is still writing leaves
+    // half-written directories and a latestTime restart that does not match the
+    // run. If the check itself fails, nothing is deleted.
+    try {
+      const res = await fetch('/api/wsl?action=processes', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const processes: { cwd?: string }[] = Array.isArray(data.processes) ? data.processes : [];
+      const running = processes.filter(p => isProcessForCase(p, caseName)).length;
+      if (running > 0) {
+        toast.error(`"${caseName}" is running (${running} process${running === 1 ? '' : 'es'}). Stop it before deleting its timesteps.`);
+        return;
+      }
+    } catch {
+      toast.error('Could not check whether the case is running, so its timesteps were left alone.');
+      return;
+    }
+    if (!(await confirmDialog(`Delete ${tsDirs.length} timestep folders (all except the initial time), and the same times inside processor*/ if the case is decomposed?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
     setDeletingTimesteps(true);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
@@ -600,15 +649,25 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'deleteBatch', paths: items }),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json();
-        toast.success(data.message);
-        if (items.includes(currentFile || '')) { setCurrentFile(null); setFileContent(''); setOriginalContent(''); setActiveFile(null); }
-        setSelectedItems(new Set());
-        setMultiSelectMode(false);
+        // The server skips what it cannot delete and carries on, so success can
+        // be partial. It used to be reported as an empty success toast.
+        const failed: string[] = Array.isArray(data.failed) ? data.failed : [];
+        if (failed.length) {
+          toast.warning(`Deleted ${items.length - failed.length} of ${items.length}. Not deleted: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`);
+        } else {
+          toast.success(`Deleted ${items.length} item${items.length === 1 ? '' : 's'}`);
+        }
+        const gone = items.filter(p => !failed.includes(p));
+        if (gone.includes(currentFile || '')) { setCurrentFile(null); setFileContent(''); setOriginalContent(''); setActiveFile(null); }
+        setSelectedItems(new Set(failed));
+        setMultiSelectMode(failed.length > 0);
         fetchCaseInfo();
+      } else {
+        toast.error(data.error ? `Could not delete: ${data.error}` : 'Could not delete the selection');
       }
-    } catch { toast.error('Error'); }
+    } catch { toast.error('Could not delete the selection: the app could not reach its server'); }
   };
 
   const toggleSelection = (path: string) => {
@@ -652,6 +711,10 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
 
   const isModified = fileContent !== originalContent;
   useEffect(() => { isModifiedRef.current = isModified; }, [isModified]);
+  // Published for the app: this editor is remounted per case, so switching or
+  // renaming the case would discard the buffer — those paths ask first.
+  useEffect(() => { setUnsavedFile(isModified && currentFile ? currentFile : null); }, [isModified, currentFile, setUnsavedFile]);
+  useEffect(() => () => setUnsavedFile(null), [setUnsavedFile]);
 
   // Build top-level dir list
   const allDirNames = Object.keys(directories).filter(k => k !== '_root' && !k.includes('/'));
@@ -695,7 +758,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               {multiSelectMode && (() => {
                 const isSel = selectedItems.has(itemPath);
                 return (
-                  <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleDirSelection(itemPath)}>
+                  <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleDirSelection(itemPath)} aria-label={`Select ${item.name}/`} aria-pressed={isSel}>
                     <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'} flex items-center justify-center`}>
                       {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
                     </div>
@@ -722,7 +785,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   legitimately need 0.orig, and moving a folder is a rename. */}
               <button
                 type="button"
-                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
                 onClick={(e) => { e.stopPropagation(); startRename(itemPath, true); }}
                 title="Rename or move folder"
                 aria-label={`Rename folder ${item.name}`}
@@ -733,7 +796,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               {(depth === 0 && !isStandardDir) || depth > 0 ? (
                 <button
                   type="button"
-                  className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
                   onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${item.name}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(itemPath); }}
                   title="Delete folder"
                   aria-label={`Delete folder ${item.name}`}
@@ -766,7 +829,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         return (
           <div key={itemPath} className="flex items-center gap-0 group">
             {multiSelectMode && (
-              <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleSelection(itemPath)}>
+              <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleSelection(itemPath)} aria-label={`Select ${item.name}`} aria-pressed={isSel}>
                 <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
                   {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
                 </div>
@@ -784,7 +847,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
             </button>
             <button
               type="button"
-              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
+              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
               onClick={(e) => { e.stopPropagation(); startRename(itemPath, false); }}
               title="Rename or move file"
               aria-label={`Rename ${item.name}`}
@@ -800,7 +863,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 with no warning and no undo. */}
             <button
               type="button"
-              className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 mr-1"
+              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 mr-1"
               title={`Delete ${item.name}`}
               aria-label={`Delete ${item.name}`}
               onClick={async (e) => {
@@ -871,7 +934,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               onClick={deleteSelected}>
               <Trash2 className="w-3 h-3 mr-0.5" /> Delete
             </Button>
-            <Button size="sm" variant="ghost" className="h-6 w-6 p-0"
+            <Button size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label="Clear the selection" title="Clear the selection"
               onClick={() => { setSelectedItems(new Set()); }}>
               <XCircle className="w-3 h-3" />
             </Button>
@@ -891,8 +954,13 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                       {/* Dir header */}
                       <div className="flex items-center gap-0">
                         {multiSelectMode && (
-                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleDirSelection(d)}>
-                            <div className="w-3 h-3 rounded border border-muted-foreground" />
+                          // Same checked look as the other folders below: this box
+                          // never showed its state, so 0/, system/ or constant/
+                          // could sit in a delete selection unnoticed.
+                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleDirSelection(d)} aria-label={`Select ${d}/`} aria-pressed={selectedItems.has(d)}>
+                            <div className={`w-3 h-3 rounded border ${selectedItems.has(d) ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                              {selectedItems.has(d) && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
+                            </div>
                           </button>
                         )}
                         <button
@@ -942,7 +1010,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                     <div key={`other-${dir}`}>
                       <div className="flex items-center gap-0 group">
                         {multiSelectMode && (
-                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(dir)}>
+                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(dir)} aria-label={`Select ${dir}/`} aria-pressed={isSel}>
                             <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
                               {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
                             </div>
@@ -959,7 +1027,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                         </button>
                         <button
                           type="button"
-                          className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
                           onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${dir}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(dir); }}
                           title="Delete folder"
                           aria-label={`Delete folder ${dir}`}
@@ -995,7 +1063,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                     return (
                       <div key={item.path} className="flex items-center gap-0 group">
                         {multiSelectMode && (
-                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(item.path)}>
+                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(item.path)} aria-label={`Select ${item.name}`} aria-pressed={isSel}>
                             <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
                               {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
                             </div>
@@ -1014,7 +1082,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                             it asks before destroying the file. */}
                         <button
                           type="button"
-                          className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
                           title={`Delete ${item.name}`}
                           aria-label={`Delete ${item.name}`}
                           onClick={async (e) => {
@@ -1051,13 +1119,13 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
             <Input value={newFileName} onChange={(e) => setNewFileName(e.target.value)}
               placeholder="name or subdir/file..." className="h-7 text-xs"
               onKeyDown={(e) => e.key === 'Enter' && createNewFile()} />
-            <Button size="sm" className="h-7 w-7 p-0" onClick={createNewFile}><Plus className="w-3 h-3" /></Button>
+            <Button size="sm" className="h-7 w-7 p-0" onClick={createNewFile} aria-label="Create file" title="Create file"><Plus className="w-3 h-3" /></Button>
           </div>
           <div className="flex gap-1">
             <Input value={newDirName} onChange={(e) => setNewDirName(e.target.value)}
               placeholder="new folder..." className="h-7 text-xs"
               onKeyDown={(e) => e.key === 'Enter' && createDirectory()} />
-            <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={createDirectory}>
+            <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={createDirectory} aria-label="Create folder" title="Create folder">
               <FolderPlus className="w-3 h-3" />
             </Button>
           </div>
@@ -1107,10 +1175,25 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 <Button size="sm" variant="ghost" onClick={() => currentFile && startRename(currentFile, false)} title="Rename or move this file">
                   <Pencil className="w-3 h-3 mr-1" /> Rename
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => { setFileContent(originalContent); toast.info('Changes discarded'); }}>
+                {/* Undo throws away every unsaved edit at once, so it asks — and
+                    there is nothing to throw away while the file is unmodified. */}
+                <Button size="sm" variant="ghost" disabled={!isModified} onClick={async () => {
+                  if (await confirmDialog('Discard every unsaved change to this file?',
+                    { title: 'Discard changes', confirmLabel: 'Discard', destructive: true })) {
+                    setFileContent(originalContent);
+                    toast.info('Changes discarded');
+                  }
+                }}>
                   <RotateCcw className="w-3 h-3 mr-1" /> Undo
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => { navigator.clipboard.writeText(fileContent); toast.success('Copied'); }}>
+                <Button size="sm" variant="ghost" aria-label="Copy the file's contents" title="Copy the file's contents" onClick={() => {
+                  // "Copied" only once the clipboard has taken it: it can refuse
+                  // (window not focused), and the toast used to say so regardless.
+                  navigator.clipboard.writeText(fileContent).then(
+                    () => toast.success('Copied'),
+                    () => toast.error('Could not copy: the clipboard refused it'),
+                  );
+                }}>
                   <Copy className="w-3 h-3" />
                 </Button>
                 <Button
@@ -1143,7 +1226,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 {searchTerm && (
                   <span className="text-[10px] text-muted-foreground flex-shrink-0">{searchMatches} results</span>
                 )}
-                <button onClick={() => { setSearchVisible(false); setSearchTerm(''); }} className="p-0.5 hover:bg-muted rounded">
+                <button onClick={() => { setSearchVisible(false); setSearchTerm(''); }} className="p-0.5 hover:bg-muted rounded" aria-label="Close search">
                   <X className="w-3 h-3 text-muted-foreground" />
                 </button>
               </div>

@@ -38,7 +38,7 @@ import { confirmDialog } from '@/components/ui/confirm-host';
 import { caseNameProblem } from '@/lib/case-name';
 import {
   DEFAULT_MESH, TURBULENCE_MODELS,
-  buildField, estimateTurbulence, findSolver, flavourForVersion,
+  buildField, defaultBC, estimateTurbulence, findSolver, flavourForVersion,
   generateBlockMeshDict, generateControlDict, generateFvSchemes, generateFvSolution,
   generateGravity, generateTransportProperties, generateTurbulenceProperties,
   generateFieldFile, meshPatches, meshProblems, runCommand, solverChoices, syncFieldPatches,
@@ -140,7 +140,8 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
     epsilon: turbEstimate.epsilon,
     omega: turbEstimate.omega,
     nu: Number(nu) || 1e-5,
-  }), [inletVelocity, turbEstimate, nu]);
+    turbulence,
+  }), [inletVelocity, turbEstimate, nu, turbulence]);
 
   const [fields, setFields] = useState<FieldConfig[]>(() => {
     const p = meshPatches(DEFAULT_MESH);
@@ -182,12 +183,13 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   }, []);
 
   // Refuse to silently write into a case that already exists (see handleCreate).
-  const refreshCases = useCallback(async () => {
+  const refreshCases = useCallback(async (): Promise<string[] | null> => {
     try {
       const res = await fetch('/api/cases?action=list');
       const data = await res.json();
-      if (Array.isArray(data?.cases)) setExistingCases(data.cases);
+      if (Array.isArray(data?.cases)) { setExistingCases(data.cases); return data.cases; }
     } catch { /* not fatal: handleCreate asks again */ }
+    return null;
   }, []);
   useEffect(() => { void refreshCases(); }, [refreshCases]);
 
@@ -225,11 +227,29 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   // momentumTransport but has no k/epsilon/nut fails on startup.
   useEffect(() => {
     const needed = turbulenceFieldNames(turbulence);
+    const patches = meshPatches(mesh);
     setFields(prev => {
       const have = new Set(prev.map(f => f.fieldName));
       const missing = needed.filter(n => !have.has(n));
-      if (missing.length === 0) return prev;
-      return [...prev, ...missing.map(n => buildField(n, meshPatches(mesh), fieldCtx, flavour))];
+      // nut is needed by every RAS model, so it survives a model change — but
+      // its wall function depends on the model (Spalart-Allmaras has no k).
+      // Only a wall function the wizard chose itself is swapped; an edit stays.
+      const NUT_DEFAULTS = ['nutkWallFunction', 'nutUSpaldingWallFunction'];
+      let changed = false;
+      const updated = prev.map(f => {
+        if (f.fieldName !== 'nut') return f;
+        const boundaryConditions = f.boundaryConditions.map(bc => {
+          const patch = patches.find(p => p.name === bc.name);
+          if (!patch || patch.role !== 'wall' || !NUT_DEFAULTS.includes(bc.type)) return bc;
+          const type = defaultBC('nut', patch, fieldCtx).type;
+          if (type === bc.type) return bc;
+          changed = true;
+          return { ...bc, type };
+        });
+        return changed ? { ...f, boundaryConditions } : f;
+      });
+      if (missing.length === 0 && !changed) return prev;
+      return [...updated, ...missing.map(n => buildField(n, patches, fieldCtx, flavour))];
     });
     // Same reasoning as above — only the model change should trigger this.
   }, [turbulence]);
@@ -250,9 +270,11 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   const fvSchemes = systemOverrides.fvSchemes ?? generateFvSchemes(sysOpts);
   const fvSolution = systemOverrides.fvSolution ?? generateFvSolution(sysOpts);
 
-  const transportName = transportFileName(flavour);
+  // icoFoam on 10 reads physicalProperties, so the major version takes part.
+  const detectedMajor = parseInt((detectedVersion || '').match(/\d+/)?.[0] ?? '', 10);
+  const transportName = transportFileName(flavour, solver, Number.isFinite(detectedMajor) ? detectedMajor : null);
   const turbulenceName = turbulenceFileName(flavour);
-  const transportProps = constantOverrides[transportName] ?? generateTransportProperties(nu, flavour);
+  const transportProps = constantOverrides[transportName] ?? generateTransportProperties(nu, flavour, transportName);
   const turbProps = constantOverrides[turbulenceName] ?? generateTurbulenceProperties(turbulence, flavour);
   const needsGravity = Boolean(solverInfo?.buoyant);
 
@@ -311,6 +333,12 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   const [nameProblems, setNameProblems] = useState<{ name: string; where: string; suggestions: string[] }[]>([]);
   /** Files the wizard is about to write that OpenFOAM's parser rejects. */
   const [syntaxProblems, setSyntaxProblems] = useState<{ path: string; message: string; line: number | null }[]>([]);
+  /**
+   * Where that installation check stands. The green "Everything checks out"
+   * used to show while it was still running and when it never ran at all
+   * (index not ready, WSL busy) — and neither of those is "checked".
+   */
+  const [installCheck, setInstallCheck] = useState<'checking' | 'done' | 'unavailable'>('checking');
 
   // ── Preflight checks, shown on the last step ────────────────────────────
   const problems = useMemo(() => {
@@ -376,6 +404,10 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     if (step !== 6) return;
     let cancelled = false;
+    setInstallCheck('checking');
+    // Findings from an earlier run describe files that are no longer the ones
+    // about to be written, so a check that cannot run clears them.
+    const unavailable = () => { setNameProblems([]); setSyntaxProblems([]); setInstallCheck('unavailable'); };
     (async () => {
       try {
         const res = await fetch('/api/foam-index', {
@@ -383,10 +415,14 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
           body: JSON.stringify({ action: 'validate', files: filesToWrite }),
         });
         const data = await res.json();
-        if (cancelled || !data?.ready) return;
+        if (cancelled) return;
+        if (!data?.ready) { unavailable(); return; }
         if (Array.isArray(data.problems)) setNameProblems(data.problems);
         if (Array.isArray(data.syntax)) setSyntaxProblems(data.syntax);
-      } catch { /* the preflight simply does not show this check */ }
+        setInstallCheck('done');
+      } catch {
+        if (!cancelled) unavailable();
+      }
     })();
     return () => { cancelled = true; };
   }, [step, filesToWrite]);
@@ -396,8 +432,11 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
     if (!c) { toast.error('Enter a case name'); setStep(0); return; }
 
     // The API creates directories with `mkdir -p`, so writing into a name that
-    // already exists silently replaces that case's files.
-    if (existingCases.includes(c)) {
+    // already exists silently replaces that case's files. Ask the server now:
+    // the list read when the wizard first opened misses every case made since,
+    // because the tab stays mounted once visited.
+    const known = (await refreshCases()) ?? existingCases;
+    if (known.includes(c)) {
       const ok = await confirmDialog(
         `A case called "${c}" already exists. Creating it again overwrites ${filesToWrite.length} of its files. Continue?`,
         { title: 'Case exists', confirmLabel: 'Overwrite', destructive: true }
@@ -410,7 +449,8 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
     try {
       const created = await fetch('/api/cases', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'create', caseName: c }),
+        // The server refuses an existing name unless told the user agreed.
+        body: JSON.stringify({ action: 'create', caseName: c, overwrite: known.includes(c) }),
       });
       if (!created.ok) {
         const msg = await created.json().catch(() => ({}));
@@ -490,6 +530,13 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
               <p className="text-xs text-muted-foreground mt-1">
                 Letters, numbers, <code>. - _</code>. This becomes the folder name in $FOAM_RUN.
               </p>
+              {/* The same rule the summary applies, shown where the name is typed:
+                  an invalid name used to surface only at the last step. */}
+              {caseName.trim() && caseNameProblem(caseName.trim()) && (
+                <p className="text-xs text-danger mt-1 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" /> {caseNameProblem(caseName.trim())}
+                </p>
+              )}
               {caseName.trim() && existingCases.includes(caseName.trim()) && (
                 <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
                   <AlertTriangle className="w-3 h-3" /> A case with this name already exists.
@@ -563,6 +610,10 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
                   </button>
                 ))}
               </div>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Only solvers whose files this wizard can write are listed. For compressible, multiphase,
+                reacting or solid cases, start from a tutorial: Dashboard → Tutorial.
+              </p>
             </div>
 
             <Separator />
@@ -855,7 +906,7 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
                               placeholder="value"
                               className="h-7 text-xs font-mono"
                             />
-                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 flex-shrink-0" onClick={() => removeBC(activeFieldIdx, bi)}>
+                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 flex-shrink-0" aria-label={`Remove the condition on ${bc.name || 'this patch'}`} title="Remove this condition" onClick={() => removeBC(activeFieldIdx, bi)}>
                               <Trash2 className="w-3 h-3" />
                             </Button>
                           </div>
@@ -998,6 +1049,14 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
                   {problems.map((p, i) => <li key={i}>{p}</li>)}
                 </ul>
               </div>
+            ) : installCheck === 'checking' ? (
+              <div className="rounded-md border px-3 py-2 text-xs flex items-center gap-1.5 text-muted-foreground">
+                <RefreshCw className="w-4 h-4 animate-spin" /> Checking the files with the installation…
+              </div>
+            ) : installCheck === 'unavailable' ? (
+              <div className="rounded-md border px-3 py-2 text-xs flex items-center gap-1.5 text-muted-foreground">
+                <Info className="w-4 h-4" /> The installation check could not run; only the wizard&apos;s own checks passed.
+              </div>
             ) : (
               <div className="rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 px-3 py-2 text-xs flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Everything checks out: patches, fields and solver agree.
@@ -1061,6 +1120,8 @@ export default function CaseWizard({ onCreated }: { onCreated: () => void }) {
         {step < STEPS.length - 1 && (
           <Button onClick={() => {
             if (step === 0 && !caseName.trim()) { toast.error('Enter a name'); return; }
+            const nameProblem = step === 0 ? caseNameProblem(caseName.trim()) : null;
+            if (nameProblem) { toast.error(nameProblem); return; }
             setStep(step + 1);
           }}>
             Next <ChevronRight className="w-4 h-4 ml-1" />

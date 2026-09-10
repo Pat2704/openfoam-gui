@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
-import { extractCaseSurface, cleanupCaseSurface } from '@/lib/wsl';
+import { extractCaseSurface, cleanupCaseSurface, estimateBoundaryTriangles } from '@/lib/wsl';
 import { parseAsciiStl, encodeMeshPayload } from '@/lib/stl';
 import { apiError } from '@/lib/api-response';
 import { validateCaseName } from '@/lib/wsl-input';
@@ -25,7 +25,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { windowsPath, patchNames } = extractCaseSurface(caseName);
+    // Ask before the expensive part when the mesh's own boundary file says the
+    // surface will be large (same threshold as the viewer's
+    // LARGE_MESH_TRIANGLES); `confirm=1` is the user's go-ahead.
+    if (url.searchParams.get('confirm') !== '1') {
+      const estimate = estimateBoundaryTriangles(caseName);
+      if (estimate !== null && estimate > 500_000) {
+        return NextResponse.json({ needsConfirm: true, estimatedTriangles: estimate }, { status: 409 });
+      }
+    }
+
+    const { windowsPath, patchNames } = await extractCaseSurface(caseName);
 
     let text: string;
     try {

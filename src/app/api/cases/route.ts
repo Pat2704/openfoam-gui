@@ -69,7 +69,8 @@ export async function POST(req: NextRequest) {
     const action = body?.action;
 
     if (action === 'create') {
-      const safeName = createCase(body.caseName);
+      // `overwrite` is only sent after the user confirmed it (the wizard).
+      const safeName = createCase(body.caseName, { allowExisting: body.overwrite === true });
       return NextResponse.json({ success: true, caseName: safeName });
     }
     if (action === 'delete') {

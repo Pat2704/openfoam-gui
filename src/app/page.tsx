@@ -21,6 +21,7 @@ import PostProcess from '@/components/openfoam/post-process';
 import ParaViewViewer from '@/components/openfoam/paraview-viewer';
 import OpenFoamBrowser from '@/components/openfoam/foam-browser';
 import { useCaseContext } from '@/lib/case-context';
+import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, patchFoamyConfig, type UiTheme } from '@/lib/foamy-store';
 
 const TABS = [
@@ -47,7 +48,7 @@ const SHORTCUTS = [
 ];
 
 export default function Home() {
-  const { setCaseName, setActiveFile } = useCaseContext();
+  const { setCaseName, setActiveFile, unsavedFile } = useCaseContext();
   // resolvedTheme, not theme: the provider runs with enableSystem, so `theme`
   // can be the literal 'system' — comparing it to 'dark' mislabels the button
   // and makes the toggle a no-op when the OS is already dark.
@@ -152,10 +153,22 @@ export default function Home() {
     setActiveFile(null); // reset active file when case changes
   }, [selectedCase, setCaseName, setActiveFile]);
 
-  const handleSelectCase = (name: string) => {
+  // The File Editor is keyed by case, so every route that changes the selected
+  // case remounts it and an unsaved buffer is gone without a word. Each of
+  // those routes asks here first.
+  const confirmLeaveCase = async (): Promise<boolean> => {
+    if (!unsavedFile) return true;
+    return confirmDialog(
+      `"${unsavedFile}" in "${selectedCase}" has unsaved changes. Switching case discards them.`,
+      { title: 'Unsaved changes', confirmLabel: 'Discard and switch', destructive: true },
+    );
+  };
+
+  const handleSelectCase = async (name: string) => {
     // Deleting the open case clears the selection by passing an empty name.
     // Opening a chip for it put a nameless case in the switcher.
     if (!name) return;
+    if (name !== selectedCase && !(await confirmLeaveCase())) return;
     // If already open, just bring to front (make active)
     if (openCases.includes(name)) {
       setOpenCases(prev => [name, ...prev.filter(c => c !== name)]);
@@ -198,8 +211,10 @@ export default function Home() {
     };
   }, [reconcileOpenCases]);
 
-  const handleCloseCase = (name: string, e: React.MouseEvent) => {
+  const handleCloseCase = async (name: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    // Closing the open case selects the next one, which remounts the editor.
+    if (name === selectedCase && !(await confirmLeaveCase())) return;
     setOpenCases(prev => prev.filter(c => c !== name));
   };
 
@@ -367,7 +382,10 @@ export default function Home() {
                 >
                   <button
                     type="button"
-                    onClick={() => setOpenCases(prev => [name, ...prev.filter(c => c !== name)])}
+                    onClick={async () => {
+                      if (name !== selectedCase && !(await confirmLeaveCase())) return;
+                      setOpenCases(prev => [name, ...prev.filter(c => c !== name)]);
+                    }}
                     className="flex items-center gap-1 sm:gap-1.5 min-w-0 outline-none"
                     aria-current={active ? 'true' : undefined}
                     title={`Switch to ${name}`}

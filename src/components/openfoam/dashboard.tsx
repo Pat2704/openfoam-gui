@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useCaseContext } from '@/lib/case-context';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import {
@@ -38,7 +39,8 @@ interface CaseSummary {
 }
 
 interface TutorialCategory { name: string; path: string; }
-interface TutorialCase { name: string; fullPath: string; }
+/** `name` is the path below the category; `wrapper` marks a folder whose own Allrun runs the tutorials under it. */
+interface TutorialCase { name: string; fullPath: string; wrapper?: boolean; }
 
 interface ParaViewStatus {
   found: boolean;
@@ -106,9 +108,41 @@ export default function Dashboard({
   const [selectedTutCat, setSelectedTutCat] = useState<string | null>(null);
   const [tutCases, setTutCases] = useState<TutorialCase[]>([]);
   const [tutLoading, setTutLoading] = useState(false);
+  const [tutError, setTutError] = useState<string | null>(null);
+  // Each category listing is a WSL call, so clicking through categories quickly
+  // can have the answers arrive out of order; only the latest request may land.
+  const tutRequestRef = useRef(0);
+  // The File Editor's unsaved file, if any: renaming the open case reopens it.
+  const { unsavedFile, setUnsavedFile } = useCaseContext();
+  // The tutorial directory the open category belongs to (see fetchTutorials).
+  const tutDirRef = useRef('');
   const [copyingTut, setCopyingTut] = useState<string | null>(null);
   const [copyDialogCase, setCopyDialogCase] = useState<TutorialCase | null>(null);
   const [copyNewName, setCopyNewName] = useState('');
+  /**
+   * Height that ends the tutorials grid at the bottom of `main`, so the two
+   * lists scroll on their own without the page scrolling as well. Measured, not
+   * guessed: what sits above the grid changes height (the status cards stack
+   * below `lg`, an alert can appear), and a `calc(100dvh - …)` constant was
+   * 92 px off at 1366×768. Watching the Dashboard's own root as well as `main`
+   * catches content above the grid changing without the window resizing.
+   */
+  const [tutGridHeight, setTutGridHeight] = useState<number | null>(null);
+  const tutGridRef = useCallback((grid: HTMLDivElement | null) => {
+    const main = grid?.closest('main');
+    if (!grid || !main) return;
+    const fit = () => {
+      const top = grid.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+      const padBottom = parseFloat(getComputedStyle(main).paddingBottom) || 0;
+      setTutGridHeight(Math.max(400, Math.floor(main.clientHeight - top - padBottom)));
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(main);
+    const root = grid.closest('[data-slot="tabs"]')?.parentElement;
+    if (root) observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
 
   // Clone case state
   const [cloneDialogCase, setCloneDialogCase] = useState<string | null>(null);
@@ -234,20 +268,42 @@ export default function Dashboard({
     try {
       const res = await fetch('/api/tutorials?action=categories');
       const data = await res.json();
+      const dir: string = data.tutorialDir || '';
+      // Another installation keeps its tutorials elsewhere: a category opened
+      // under the old one kept listing paths the new one refuses to copy from.
+      // Close it, and let any listing still on its way land nowhere.
+      if (dir !== tutDirRef.current) {
+        tutDirRef.current = dir;
+        tutRequestRef.current++;
+        setSelectedTutCat(null);
+        setTutCases([]);
+        setTutError(null);
+        setTutLoading(false);
+      }
       setTutCategories(data.categories || []);
-      setTutDir(data.tutorialDir || '');
+      setTutDir(dir);
     } catch {}
   }, []);
 
   const fetchTutorialCases = async (category: string) => {
-    setTutLoading(true);
+    const request = ++tutRequestRef.current;
     setSelectedTutCat(category);
+    // Cleared at once: the previous category's tutorials used to stay on screen
+    // under "Loading..." and could be copied from while the new list was coming.
+    setTutCases([]);
+    setTutError(null);
+    setTutLoading(true);
     try {
       const res = await fetch(`/api/tutorials?action=cases&category=${encodeURIComponent(category)}`);
-      const data = await res.json();
-      setTutCases(data.cases || []);
-    } catch { setTutCases([]); }
-    setTutLoading(false);
+      const data = await res.json().catch(() => ({}));
+      if (request !== tutRequestRef.current) return;
+      if (res.ok) setTutCases(data.cases || []);
+      else setTutError(data.error || `The tutorial list could not be read (HTTP ${res.status}).`);
+    } catch {
+      if (request === tutRequestRef.current) setTutError('The app could not reach its server.');
+    } finally {
+      if (request === tutRequestRef.current) setTutLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -327,6 +383,8 @@ export default function Dashboard({
       setLoading(true);
       lastFetchRef.current.status = 0;
       await fetchAll(true);
+      // The tutorial tree belongs to the installation too.
+      await fetchTutorials();
       setLoading(false);
       setRuntimeSettings(null);
       toast.success(`Distro: ${data.distro}`);
@@ -406,6 +464,9 @@ export default function Dashboard({
     if (!newCaseName.trim()) { toast.error('Enter a name'); return; }
     if (newCaseName.includes(' ')) { toast.error('No spaces in the name'); return; }
     const name = newCaseName.trim();
+    // The server refuses an existing name; say so before the optimistic row
+    // below would show the case twice.
+    if (cases.some(c => c.name === name)) { toast.error(`A case called "${name}" already exists`); return; }
     setCreating(true);
     // Optimistic UI: immediately add the case to the list (empty), then confirm with fetch
     const optimisticCase: CaseSummary = {
@@ -423,13 +484,14 @@ export default function Dashboard({
         toast.success(`"${name}" created`);
         await fetchAll(true); onRefresh();
       } else {
-        // Rollback: remove the optimistic case
-        setCases(prev => prev.filter(c => c.name !== name));
+        // Rollback: remove the optimistic row only — by identity, so a real
+        // case of the same name is not taken off the list with it.
+        setCases(prev => prev.filter(c => c !== optimisticCase));
         const data = await res.json();
         toast.error(data.error || 'Error');
       }
     } catch {
-      setCases(prev => prev.filter(c => c.name !== name));
+      setCases(prev => prev.filter(c => c !== optimisticCase));
       toast.error('WSL error');
     }
     setCreating(false);
@@ -524,6 +586,11 @@ export default function Dashboard({
     if (!newName.trim()) { toast.error('Enter a name'); return; }
     if (newName.includes(' ')) { toast.error('No spaces in the name'); return; }
     if (newName.trim() === oldName) { setRenameDialogCase(null); return; }
+    const discardsEdits = selectedCase === oldName && !!unsavedFile;
+    if (discardsEdits && !(await confirmDialog(
+      `"${unsavedFile}" has unsaved changes. Renaming the open case reopens it and discards them.`,
+      { title: 'Unsaved changes', confirmLabel: 'Discard and rename', destructive: true },
+    ))) return;
     setRenamingCase(oldName);
     try {
       const res = await fetch('/api/cases', {
@@ -533,7 +600,10 @@ export default function Dashboard({
       if (res.ok) {
         const data = await res.json();
         toast.success(`"${oldName}" renamed to "${data.caseName}"`);
-        // If the renamed case was open, switch the selection to the new name
+        // If the renamed case was open, switch the selection to the new name.
+        // The user already agreed to lose the buffer above; clearing the flag
+        // keeps the switch from asking a second time.
+        if (discardsEdits) setUnsavedFile(null);
         if (selectedCase === oldName) onSelectCase(data.caseName);
         announceCaseListChange();
         setRenameDialogCase(null);
@@ -910,15 +980,27 @@ export default function Dashboard({
 
           {/* ══ TUTORIALS TAB ══ */}
           <TabsContent value="tutorials">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3" style={{ minHeight: '400px' }}>
-              <Card className="flex flex-col">
+            {/* A bounded height is what lets the two lists scroll separately.
+                Unbounded, both cards grew to their full length and `main`
+                scrolled them together, so reaching the 20th tutorial of a
+                category scrolled the category list out of sight. The single
+                row is `minmax(0, 1fr)` and the cards `min-h-0` because grid and
+                flex items otherwise refuse to shrink below their content. The
+                height itself is measured by `tutGridRef`; the CSS formula is
+                only the first-paint fallback. */}
+            <div
+              ref={tutGridRef}
+              style={tutGridHeight ? ({ '--tut-grid-h': `${tutGridHeight}px` } as React.CSSProperties) : undefined}
+              className="grid grid-cols-1 gap-3 md:grid-cols-3 md:grid-rows-[minmax(0,1fr)] md:h-[var(--tut-grid-h,max(400px,calc(100dvh-17rem)))]"
+            >
+              <Card className="flex flex-col min-h-0 max-h-[50vh] md:max-h-none">
                 <CardHeader className="pb-2 pt-3 px-3">
                   <CardTitle className="text-sm flex items-center gap-1">
                     <BookOpen className="w-4 h-4" /> Categories
                     <Badge variant="secondary" className="ml-auto text-[10px]">{tutCategories.length}</Badge>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="p-0 flex-1 overflow-hidden">
+                <CardContent className="p-0 flex-1 min-h-0 overflow-hidden">
                   <ScrollArea className="h-full">
                     <div className="p-2 space-y-0.5">
                       {tutCategories.map((cat) => (
@@ -938,7 +1020,7 @@ export default function Dashboard({
                 </CardContent>
               </Card>
 
-              <Card className="md:col-span-2 flex flex-col">
+              <Card className="md:col-span-2 flex flex-col min-h-0 max-h-[70vh] md:max-h-none">
                 <CardHeader className="pb-2 pt-3 px-3">
                   <CardTitle className="text-sm flex items-center gap-1">
                     {selectedTutCat ? (
@@ -946,8 +1028,10 @@ export default function Dashboard({
                     ) : 'Select a category'}
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="p-0 flex-1 overflow-hidden">
-                  <ScrollArea className="h-full">
+                <CardContent className="p-0 flex-1 min-h-0 overflow-hidden">
+                  {/* Keyed by category: a new category starts at its first
+                      tutorial instead of inheriting the previous list's scroll. */}
+                  <ScrollArea key={selectedTutCat ?? ''} className="h-full">
                     <div className="p-2 space-y-1">
                       {tutLoading && <div className="text-xs text-muted-foreground p-2 animate-pulse">Loading...</div>}
                       {!selectedTutCat && !tutLoading && (
@@ -955,15 +1039,33 @@ export default function Dashboard({
                           Select a category to copy a tutorial.
                         </div>
                       )}
+                      {tutError && !tutLoading && (
+                        <div className="text-xs text-danger p-4 text-center">{tutError}</div>
+                      )}
+                      {selectedTutCat && !tutLoading && !tutError && tutCases.length === 0 && (
+                        <div className="text-xs text-muted-foreground p-4 text-center">
+                          No runnable tutorial in this folder.
+                        </div>
+                      )}
                       {tutCases.map((tc) => (
                         <div key={tc.fullPath} className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-accent group">
                           <div className="min-w-0 flex-1">
-                            <div className="text-sm font-medium truncate">{tc.name}</div>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-sm font-medium truncate">{tc.name}</span>
+                              {tc.wrapper && (
+                                <Badge variant="secondary" className="text-[10px] flex-shrink-0" title="Its own Allrun runs the tutorials listed under it; copying it copies them all.">
+                                  Allrun group
+                                </Badge>
+                              )}
+                            </div>
                             <div className="text-[10px] text-muted-foreground font-mono truncate">{tc.fullPath}</div>
                           </div>
+                          {/* Revealed on keyboard focus as well as on hover: tabbing
+                              used to land on a button nobody could see. */}
                           <Button
-                            size="sm" variant="outline" className="h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2"
-                            onClick={() => { setCopyDialogCase(tc); setCopyNewName(tc.name); }}
+                            size="sm" variant="outline" className="h-7 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity flex-shrink-0 ml-2"
+                            aria-label={`Copy tutorial ${tc.name}`}
+                            onClick={() => { setCopyDialogCase(tc); setCopyNewName(tc.name.split('/').pop() || tc.name); }}
                           >
                             <Copy className="w-3 h-3 mr-1" /> Copy
                           </Button>
@@ -993,7 +1095,7 @@ export default function Dashboard({
                 <Input
                   value={copyNewName} onChange={(e) => setCopyNewName(e.target.value)}
                   placeholder="e.g. myCavityTest" className="font-mono"
-                  onKeyDown={(e) => e.key === 'Enter' && handleCopyTutorial(copyDialogCase.fullPath, copyNewName)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && copyingTut !== copyDialogCase.fullPath) handleCopyTutorial(copyDialogCase.fullPath, copyNewName); }}
                 />
               </div>
               <div className="flex justify-end gap-2">
@@ -1028,7 +1130,7 @@ export default function Dashboard({
                 <Input
                   value={cloneNewName} onChange={(e) => setCloneNewName(e.target.value)}
                   placeholder="e.g. cavity_variant1" className="font-mono"
-                  onKeyDown={(e) => e.key === 'Enter' && handleCloneCase(cloneDialogCase, cloneNewName)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && cloningCase !== cloneDialogCase) handleCloneCase(cloneDialogCase, cloneNewName); }}
                 />
               </div>
               <div className="flex justify-end gap-2">
@@ -1055,7 +1157,7 @@ export default function Dashboard({
                 <div className="text-xs text-muted-foreground">Current name</div>
                 <div className="font-mono text-sm bg-muted/50 px-2 py-1 rounded">{renameDialogCase}</div>
                 <div className="text-[10px] text-muted-foreground mt-1">
-                  The case is renamed atomically (mv). Files open in the editor and active processes will follow the new path.
+                  The case is renamed atomically (mv), and running processes follow the new path. The editor reopens the case, asking first if a file has unsaved changes.
                 </div>
               </div>
               <div>
@@ -1063,7 +1165,7 @@ export default function Dashboard({
                 <Input
                   value={renameNewName} onChange={(e) => setRenameNewName(e.target.value)}
                   placeholder="e.g. cavity_v2" className="font-mono"
-                  onKeyDown={(e) => e.key === 'Enter' && handleRenameCase(renameDialogCase, renameNewName)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && renamingCase !== renameDialogCase) handleRenameCase(renameDialogCase, renameNewName); }}
                   autoFocus
                 />
               </div>

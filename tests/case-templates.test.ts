@@ -22,6 +22,8 @@ import {
   generateBlockMeshDict,
   generateControlDict,
   generateFieldFile,
+  generateFvSchemes,
+  generateFvSolution,
   generateTransportProperties,
   generateTurbulenceProperties,
   meshPatches,
@@ -391,6 +393,66 @@ describe('generateTransportProperties', () => {
   test('carries the viscosity through in both flavours', () => {
     for (const flavour of ['modular', 'legacy'] as const) {
       assert.match(generateTransportProperties('1e-05', flavour), /nu\b[^;]*1e-05/);
+    }
+  });
+
+  test('icoFoam on 10 gets physicalProperties; every other legacy case keeps transportProperties', () => {
+    // v10's icoFoam reads physicalProperties with no fallback to the old name.
+    assert.equal(transportFileName('legacy', 'icoFoam', 10), 'physicalProperties');
+    assert.equal(transportFileName('legacy', 'icoFoam', 9), 'transportProperties');
+    assert.equal(transportFileName('legacy', 'simpleFoam', 10), 'transportProperties');
+    assert.equal(transportFileName('legacy', 'icoFoam', null), 'transportProperties');
+    const text = generateTransportProperties('1e-05', 'legacy', transportFileName('legacy', 'icoFoam', 10));
+    assert.match(text, /object\s+physicalProperties;/);
+  });
+});
+
+describe('only solvers whose files the wizard can write are offered', () => {
+  test('no compressible, multiphase or buoyant solver is listed in either flavour', () => {
+    // The wizard writes U, a kinematic p and a viscosity-only properties file;
+    // those solvers need T, a thermoType, alpha fields or D and stop at startup.
+    for (const flavour of ['modular', 'legacy'] as const) {
+      for (const s of solverChoices(flavour)) {
+        assert.ok(!s.compressible && !s.multiphase && !s.buoyant, `${flavour}: ${s.value}`);
+      }
+    }
+  });
+
+  test('solvers that do not exist on 9-10 are gone', () => {
+    const legacy = solverChoices('legacy').map(s => s.value);
+    assert.ok(!legacy.includes('sonicFoam'));
+    assert.ok(!legacy.includes('buoyantSimpleFoam'));
+  });
+});
+
+describe('dictionaries the solvers read with no default', () => {
+  test('fvSchemes always carries wallDist, which kOmegaSST and Spalart-Allmaras need', () => {
+    for (const turbulence of ['laminar', 'kEpsilon', 'kOmegaSST', 'SpalartAllmaras'] as const) {
+      const text = generateFvSchemes(sysOpts({ turbulence }));
+      assert.match(text, /wallDist\s*\{\s*method\s+meshWave;\s*\}/, turbulence);
+      assert.equal((text.match(/\{/g) ?? []).length, (text.match(/\}/g) ?? []).length);
+    }
+  });
+
+  test('legacy icoFoam and pisoFoam get a PISO dictionary, not PIMPLE', () => {
+    for (const solver of ['icoFoam', 'pisoFoam']) {
+      const text = generateFvSolution(sysOpts({ flavour: 'legacy', solver, transient: true }));
+      assert.match(text, /^PISO\s*\{/m, solver);
+      assert.doesNotMatch(text, /^PIMPLE\b/m, solver);
+    }
+  });
+
+  test('pimpleFoam and the modular solver keep PIMPLE; steady runs keep SIMPLE', () => {
+    assert.match(generateFvSolution(sysOpts({ flavour: 'legacy', solver: 'pimpleFoam', transient: true })), /^PIMPLE\s*\{/m);
+    assert.match(generateFvSolution(sysOpts({ transient: true })), /^PIMPLE\s*\{/m);
+    assert.match(generateFvSolution(sysOpts({ flavour: 'legacy', solver: 'simpleFoam' })), /^SIMPLE\s*\{/m);
+  });
+
+  test('Spalart-Allmaras walls get a nut wall function that does not need k', () => {
+    const wall = meshPatches(DEFAULT_MESH).find(p => p.role === 'wall')!;
+    assert.equal(defaultBC('nut', wall, { ...CTX, turbulence: 'SpalartAllmaras' }).type, 'nutUSpaldingWallFunction');
+    for (const turbulence of ['kEpsilon', 'kOmegaSST'] as const) {
+      assert.equal(defaultBC('nut', wall, { ...CTX, turbulence }).type, 'nutkWallFunction', turbulence);
     }
   });
 });

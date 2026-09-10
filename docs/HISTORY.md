@@ -6,6 +6,193 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — Mesh tab: honest BC check, checkMesh report, viewer on large meshes
+
+From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
+
+- Boundary-condition validation with no `constant/polyMesh/boundary` (before
+  blockMesh, or processor-only) now says the patches were not checked
+  (`meshChecked: false`, a warning and a neutral toast) instead of "All BCs are
+  valid". `parsePolyMeshBoundary` accepts any OpenFOAM word as a patch name, so
+  snappyHexMesh names such as `motorBike_frt-fairing:001%1` and their groups
+  are no longer lost.
+- checkMesh is read by `parseCheckMeshOutput` (`src/lib/check-mesh.ts`) using
+  the markers the v13/v14 sources print (" ***" failures, "  *" warnings, the
+  "Mesh stats" block, the bounding box) and the LAST verdict; the old parser
+  matched none of them. It runs through the script runner with its exit status
+  captured, so a run that stopped before judging shows "checkMesh could not
+  run" with the reason instead of "Mesh issues detected".
+- The marker scripts behind the viewer and `paraFoam -touch` exit 0, so "no
+  mesh yet — run blockMesh first" reaches the user instead of the wsl command
+  line. Surface extraction is asynchronous (the synchronous call froze every
+  other request for up to 120 s), and `/api/mesh` answers 409 with an estimate
+  from the boundary file's `nFaces` when the surface would exceed 500,000
+  triangles, so the viewer asks before extracting rather than after.
+- The STL is still read as one string; streaming it is left for later.
+- Verified through the real API: on `test` checkMesh now returns its
+  statistics (5616 points, 3875 cells…) and "Mesh OK.", BC validation
+  `meshChecked: true`, and the viewer 6300 triangles in about 2 s. On a
+  disposable case without a mesh (since removed) the viewer says to run
+  blockMesh, checkMesh reports that it could not run with "cannot find file
+  …/system/controlDict" as the reason, and BC validation says the patches were
+  not checked. A fake boundary of 400,000 wall faces plus a processor patch
+  gave a 409 estimating 800,000 triangles. 219 tests, lint and typecheck pass.
+
+## 2026-09-10 — Case lifecycle: timesteps, clone, rename, create, unsaved edits
+
+From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
+
+- `deleteAllTimesteps` spares 0 and the earliest time (kivaTest starts at -180
+  and has no 0/; its initial conditions used to go), cleans `processor*/<time>`
+  by the same rule, and reports a failure instead of "Deleted 0 timesteps".
+  The File Editor and Monitor prompts say "all except the initial time".
+- `cloneCase` makes the folder with plain `mkdir` and checks every `cp`,
+  removing a half-made clone; `renameCase` and `cloneCase` write refusals to
+  stderr, so the user reads "a case with this name already exists" instead of
+  the raw `wsl … base64` command line.
+- `createCase` refuses an existing name unless the caller passes
+  `allowExisting` (the wizard, after its Overwrite confirmation, sends
+  `overwrite`); the Dashboard checks its list first and its rollback removes
+  only the optimistic row. Clone and Rename ignore Enter while in flight.
+- Unsaved edits: the File Editor publishes its unsaved file through
+  `case-context` (`unsavedFile`), and every route that remounts it — selecting
+  another case, a switcher chip, closing the active chip, renaming the open
+  case — asks first.
+- Verified through the real API on disposable cases (since removed): on a
+  case with -180/-170/-160 and processor0/-180/-170, exactly -160, -170 and
+  processor0/-170 went; create, clone and rename onto an existing name gave
+  readable refusals; a normal clone carried 0/, system/ and constant/. Lint,
+  typecheck and 214 tests pass. In the dev server, with an unsaved edit to
+  `test` 0/U, clicking the `cavity_test` chip asked "Unsaved changes"; Cancel
+  kept `test` open with the buffer intact, and 0/U on disk was untouched.
+
+## 2026-09-10 — Dead templates removed; clipboard feedback
+
+- `CASE_TEMPLATES`, `FILE_TEMPLATES` and `STANDALONE_FILE_TEMPLATES` (with
+  their two types) were deleted from `src/lib/openfoam-data.ts`: nothing
+  imported them, they predated `case-templates.ts` and carried none of its
+  fixes. The file is now only the built-in command table (1378 lines removed).
+- The File Editor's copy button and the OpenFOAM file browser report a
+  clipboard refusal instead of a success toast (or silence).
+- Lint, typecheck and the 214 tests pass.
+
+## 2026-09-10 — Failures no longer read as normal states
+
+- OpenFOAM file browser: a failed folder read shows the server's reason with
+  "Try again" instead of "Directory not found — the section may not be
+  available in this installation"; folder and file reads that arrive after a
+  newer click are discarded.
+- Commands: when the installation's command list never arrives, the subtitle
+  says so and offers "Try again" instead of "reading the installation…" for
+  ever. Monitor: a failed residual read says so instead of "No residuals found".
+- Wizard: an invalid case name is reported under the field and blocks Next on
+  the first step, with the rule the summary already applied (`caseNameProblem`).
+- File Editor "Clean TS" asks the server for running processes first and
+  refuses while one belongs to the case (and when the check fails), as the
+  Monitor's button already did. `isProcessForCase` moved from `monitor.tsx` to
+  `src/lib/case-processes.ts`, with its own tests.
+- Lint, typecheck and 214 tests pass. In the dev server "foo#1" showed the
+  name rule under the field and Next stayed on the first step; Applications
+  still lists normally. Not exercised at runtime: the failure paths (they need
+  WSL to fail) and Clean TS during a real run.
+
+## 2026-09-10 — Honest states: Undo, deletes, Monitor log, wizard check
+
+- File Editor: Undo is disabled on an unmodified file and asks before
+  discarding; a folder that cannot be created says why; a batch delete reports
+  "Deleted N of M" and names what was left (the `deleteBatch` route now returns
+  `failed`), instead of an empty success toast.
+- Monitor: the log pane tells loading, an empty log and a failed read apart;
+  it used to read "Loading..." for ever in the last two cases. A refresh that
+  fails after the log was shown keeps the text on screen.
+- Wizard summary: "Everything checks out" appears only after the installation
+  check has answered; while it runs the box says so, and if it cannot run
+  (index not ready, WSL busy) a neutral note says only the built-in checks
+  passed and stale findings from an earlier run are cleared.
+- Tutorials follow an installation change: when the tutorial directory changes
+  the open category and its list are closed, and a distro switch now reloads
+  the tutorial categories as a version switch already did.
+- Lint, typecheck and the 211 tests pass. In the dev server the wizard
+  summary showed "Checking the files with the installation…" on arrival and
+  the green box about 6 s later, once the check answered; an empty log made
+  in the `test` case (then removed) read "The log is empty so far.".
+
+## 2026-09-10 — Wizard writes only runnable cases; accessibility pass
+
+- From the OpenFOAM audit (Foundation sources and the v13/v14 tutorials,
+  read-only): the wizard lists only incompressibleFluid (11+) and simpleFoam,
+  pimpleFoam, pisoFoam and icoFoam (<=10), with a pointer to the tutorials. It
+  wrote U, a kinematic p and a nu-only properties file for 13 other solvers
+  that need T and a thermoType, alpha fields and phaseProperties, or D; it also
+  listed sonicFoam (absent on 9-10) and buoyantSimpleFoam (gone on 10).
+- fvSchemes always carries `wallDist { method meshWave; }`: kOmegaSST and
+  Spalart-Allmaras stop without it on 13/14 (v9-v12 not checked). Legacy
+  icoFoam and pisoFoam get a PISO dictionary; icoFoam on v10 gets
+  physicalProperties (from its source; no v10 install here). Spalart-Allmaras
+  walls get nutUSpaldingWallFunction, because nutkWallFunction leaves nut at 0
+  when k is zero; changing the model swaps only the wizard's own default.
+- Commands: on <=10 the two run quick commands use `application` from the
+  case's controlDict and are hidden if it cannot be read; an unknown version
+  keeps foamRun. The legacy path cannot be exercised here.
+- Accessibility: file-tree hover-only actions appear on keyboard focus; the
+  File Editor's icon-only buttons and selection boxes, the Commands Send
+  button and the wizard's remove-condition button have accessible names.
+- Verified with 7 new unit tests in `tests/case-templates.test.ts` (211 in
+  all, none failing) and in the dev server on v14: the wizard's solver step
+  lists incompressibleFluid with the tutorial pointer; switching k-epsilon to
+  Spalart-Allmaras turned nut's wall condition into nutUSpaldingWallFunction
+  and left inlet/outlet/empty alone; the quick commands still read foamRun.
+- Still open from the audits: per-process Kill has no confirmation (declined
+  by the user); Undo reverts all edits without asking; folder creation and
+  batch delete fail silently; the Monitor log reads "Loading..." forever when
+  empty; wizard name errors surface only at the last step and the summary says
+  "Everything checks out" while validation is pending; the v11 reading of
+  `nu 1e-05 [m^2/s]` is unverified. (The rest of this list was addressed in
+  the entries above.)
+
+## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards
+
+- Tutorials are listed at any depth (`listTutorialCases` in `wsl.ts`): a
+  folder with `system/` is a tutorial; one with its own `Allrun` and a case
+  below it is listed too, flagged "Allrun group", because its cases depend on
+  each other; anything else is walked through. On v14 this made the tutorials
+  under `mesh/`, `multiRegion/` and `legacy/` reachable (11 group folders → 59
+  tutorials) and `resources/` shows as empty. v9-v10 group every category by
+  solver, which this also covers; not checked locally (only 13 and 14 exist).
+- The Tutorial panel ignores out-of-order answers, clears the old list at
+  once, shows an error or an empty-folder message, reveals Copy on keyboard
+  focus and proposes the tutorial's own name for the copy. `copyTutorial`
+  creates the destination with `mkdir` (atomic) and removes a half-made copy.
+  WSL calls run synchronously in the server, so a real concurrent race was not
+  reproducible; two simultaneous copies gave one success and one "Case already
+  exists".
+- File Editor: "New file" on an existing name asks before replacing it with an
+  empty file (checked on the `test` case: confirmation shown, 0/U untouched);
+  a failed read no longer opens the file empty and marked "Saved" (nor caches
+  it); the 0/, system/ and constant/ checkboxes show their state in
+  multi-select. The wizard re-reads the case list when Create is pressed.
+  Per-process Kill confirmation was proposed and declined by the user.
+
+## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
+
+- Dashboard → Tutorial: the category list and a category's tutorials now
+  scroll independently. Before, both cards grew to full length and `main`
+  scrolled them together. The grid's height is measured by `tutGridRef` so it
+  ends at `main`'s bottom (a `calc(100dvh - 17rem)` guess was 92 px off at
+  1366×768 and stays only as first-paint fallback); below `md` the cards stack
+  with a height cap. Opening another category starts its list at the top.
+  Checked in the dev server at 1366×768 (no page overflow, each list scrolls
+  alone), at 900×600 (400 px floor, the page scrolls the short remainder) and
+  at 700 px wide.
+- `electron/build/icon.ico` has no vector source; the 256 px frame was repaired
+  as a raster: the dark dash inside the airfoil near the trailing edge and the
+  small barb above that edge were removed, and the lower streamline right of
+  the airfoil, which faded out between x≈210 and x≈232, was redrawn as a
+  continuous 1.65 px line matching its intact segments. Every smaller frame was
+  a LANCZOS downsample of that frame and is regenerated the same way; 20, 40
+  and 96 px were added for 125/150/250 % display scaling. Windows may show
+  the old icon from its icon cache until that cache refreshes.
+
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
 
 - Released `v5.3.0` at the user's request; notes in `docs/releases/v5.3.0.md`.
@@ -99,254 +286,44 @@ that failed for a reason the app owned now do not.
   placeholders no case can supply (`<triSurfaceFileName>`, `<phaseName>`,
   `<rhoInf>`, …), which stay visible as holes with the panel saying so.
 
-## 2026-09-09 — v5.2.2: switcher, agent case changes, honest charts
+## 2026-09-08 – 09-09 in brief
 
-- Released `v5.2.2`; notes in `docs/releases/v5.2.2.md`.
-- RULES 2 of *Validation, builds and publication* gained a clause at the user's
-  request: only the current version's pair may remain in `dist-electron/` and
-  `Working/`, older artifacts are deleted in the same change. The stale `v5.1.0`
-  pair was removed under it.
-- **Switcher chips.** `page.tsx` reconciles the open-case chips against
-  `/api/cases?action=list` on a new `case-list-changed` event (dispatched by the
-  Dashboard after a delete or rename) and on `foam-version-changed`. It covers
-  every route to a vanished case rather than one patch per route.
-  `handleSelectCase('')` — how the Dashboard clears the selection after deleting
-  the open case — used to add a nameless chip; it now returns early. Verified in
-  the app: a deleted case's chip goes, and switching OF 13 -> 14 dropped
-  `nozzle_test`, which exists only under 13.
-- **Agents and the open case.** The rebuilt system prompt named the new case,
-  but the conversation is full of the old one and history wins, so both agents
-  kept working on it. `buildCaseNotice` in `agent-prompt.ts` announces the
-  switch in the app's own `<openfoam-studio>` channel, exactly as the mode
-  change is announced; `claude-cli.ts` and `codex-cli.ts` track the last
-  announced case per session, and both routes pass it. FOAMy's `/api/chat` adds
-  the same statement when the session's previous case differs. Unit-tested; not
-  exercised against a live subscription agent.
-- **Monitor residuals.** The axis was pinned to `[1e-8, 1]` with
-  `allowDataOverflow`, so anything outside was clipped, and zero residuals — what
-  OpenFOAM writes for a field it did not solve — went to minus infinity. New
-  pure `residualLogDomain()` in `residuals.ts` reads whole decades from the data;
-  non-positive samples become gaps; the X axis spans `dataMin..dataMax` instead
-  of forcing 0. Measured on the local `cavity` log: the axis went from a fixed
-  1e-8..1 to 1e-7..1e-3, and X now starts at 10.56 rather than 0. The local
-  `combustor` log carries 339 zero residuals.
-- **Post-Process.** `logUsable` required EVERY sample to be positive, so one
-  zero disabled the button for a whole dataset — measured: `combustor` disabled
-  before, enabled after, with its 339 points drawn as gaps. The chart gained
-  pan, wheel zoom (Shift/Alt for one axis), double-click fit, a corner resize
-  handle and Reset view; the ResponsiveContainer is keyed on the frame because
-  recharts otherwise keeps the dragged size until some other resize event.
-- **Export dialog.** The window and shape travel into it and can be dragged on
-  the preview, which is the file. Found and fixed while verifying: its rebuild
-  observer watched childList/attributes only, and recharts rewrites tick text
-  in place, so a changed axis window left the preview — and the saved file —
-  showing the previous framing.
-- **ParaView filter picker.** `setFilterChoice(undefined)` turned the Radix
-  Select uncontrolled, so it kept displaying the deleted filter and re-picking
-  it fired no change. It resets to `''` now. Verified end to end against
-  ParaView 6.2.0: Clip added, deleted, added again.
+Details are in `docs/releases/v5.0.0.md` through `v5.2.2.md` and in Git.
 
-## 2026-09-09 — v5.2.1 and a two-release download window
-
-- Released `v5.2.1` with the ParaView detection and startup work below; notes in
-  `docs/releases/v5.2.1.md`. Direct publication flow: the existing pair was
-  renamed to the new version's names rather than rebuilt.
-- At the user's request, `RULES.md` gained *Validation, builds and publication*
-  7: GitHub offers only the two most recent releases as downloads, and every
-  publication deletes the older entries and their assets by itself. `v5.1.0` and
-  `v5.0.0` were removed under it; their tags, commits, source archives and
-  release notes remain. `v5.2.1` is the current download and `v5.2.0` the
-  rollback one.
-
-## 2026-09-09 — ParaView: detection without a cold start, startup that reports itself
-
-- Measured on the reference machine, and the cause of both reported problems:
-  `pvpython.exe --version` takes **107 s on a first run** and 3.5 s once Windows
-  has the files cached; a pvpython *script* takes ~100 s cold and 0.7 s warm.
-  Detection probed every candidate by executing it with a 15 s timeout, so
-  before ParaView had been launched once nothing was ever found — including a
-  path the user had pasted correctly. The user's guess that "it needs a first
-  launch of ParaView" was right.
-- Detection no longer executes anything in the normal case. It reads the
-  installation LAYOUT instead: pvpython.exe beside paraview.exe/pvbatch.exe, or
-  a `share/paraview-X.Y` / `lib/paraview-X.Y` folder, with the version taken
-  from those folder names (`ParaView-6.2.0` beats `paraview-6.2`, which carries
-  no patch level). Executing `--version` is now the fallback for a lone
-  pvpython outside a ParaView tree, sequential and with a 150 s timeout.
-  Measured after the change: auto-detect 6 ms, every form of pasted path 1-19 ms.
-- Sources are searched in cost order and any of them can end the search: custom
-  path, `OFSTUDIO_PARAVIEW_PATH`, standard install folders, PATH, then the
-  registry. The custom path is therefore what answers whenever it holds a
-  ParaView, which is what the Dashboard needs to save it — it refuses to save a
-  path whose source is not `Custom path`, and the fallback scan used to win that
-  race. Pasted paths now also accept quotes, `%VARIABLES%`, forward slashes,
-  trailing separators, a `bin` folder, an install root, `paraview.exe`, and a
-  path one level too deep such as `share`.
-- Standard folders now include `ProgramData`, the drive roots, the profile,
-  Desktop and Downloads, for portable unzipped installs. Registry hives are
-  queried in parallel, the tree walk checks `bin/pvpython.exe` first and prunes
-  folders that cannot hold it, and concurrent callers share one scan. A failed
-  scan is cached for 30 s only, so installing ParaView no longer requires an
-  app restart.
-- The workbench start reports real phases — `locating`, `launching`,
-  `interpreter`, `engine`, `reading`, `rendering` — the last four emitted by the
-  worker itself around `from paraview.simple import *`, which is the minutes-long
-  part of a cold start. The tab shows the phase, the elapsed seconds, a note
-  after 20 s and a Cancel button, replacing four labels animated on a 1150 ms
-  timer that finished long before the engine did.
-- Cancelling used to queue behind the start it was cancelling; it now aborts the
-  starting worker directly (3 ms, measured) and the pending start rejects. Two
-  starts for the same case join one engine instead of queueing and restarting.
-  The engine reports its own exact version, which replaces the folder-derived
-  one in the session and the Dashboard.
-- Every workbench request is bounded by an AbortController, and the tab heals
-  itself: becoming visible again restarts a session that failed while hidden,
-  and re-requests a render when the state arrived without a picture — which is
-  what the user was doing by hand when they switched tab and came back. A render
-  while the pane is hidden reuses the last measured size instead of a 1000x700
-  guess. Neither panel can spin forever on a config bridge that never answers.
-- Verified end to end against ParaView 6.2.0 and the WSL `test` case: ready in
-  21 s with live phases, exact version, JPEG render, follow-up command, clean
-  stop. `npm run check` passes (175 tests); the built artifacts contain the new
-  code and no longer contain the old.
-
-## 2026-09-08 — v5.2.0
-
-- Released `v5.2.0`: the theme that survives a restart, the agent mode-change
-  channel below, and the Dashboard settings spacing. Notes in
-  `docs/releases/v5.2.0.md`; the paired artifacts carry the new names.
-
-## 2026-09-08 — theme persistence, settings spacing, detached runs
-
-- The light/dark choice is stored as `ui-theme` in the userData config file and
-  seeded into next-themes' localStorage key by `electron/preload.js`, over a new
-  synchronous `foamy-config:get-sync` channel, before the page's own scripts
-  run. localStorage alone could never hold it: the port, and therefore the
-  origin, changes at every launch.
-- Measured, because the user reported background runs dying with the app: a
-  command started with a trailing `&` is `nohup setsid`-detached inside WSL and
-  SURVIVES the `taskkill /F /T` that quitting runs on the server tree; a
-  foreground one dies with the `wsl.exe` relay that streams its output. Proved
-  end to end through the UI, with a `sleep` started each way. The run in
-  question had simply been a foreground one. The engine therefore already did
-  what was asked, and the detach button, its shortcut, the tooltips and the
-  close warning added around it were reverted at the user's request: the
-  terminal is back to its single Enter button with no hover text. Do not add
-  them back — the user types the `&` deliberately.
-- Dashboard settings: version buttons and ParaView's Auto-detect/Save path pair
-  moved from `gap-2` to `gap-3`.
-- README gained the user's Post-Process and ParaView captures.
-
-## 2026-09-08 — the publication flow names the artifacts it renames
-
-- Validation rule 4 always said the direct flow reuses and renames the existing
-  pair rather than rebuilding. It now says which pair: the one in `Working/`
-  and its copy in `dist-electron/`, both carrying the new version's names once
-  the release is out.
-
-## 2026-09-08 — disposable cases are a naming convention
-
-- User decision 5 no longer names two fixed cases. The default working case is
-  `test`, and any case whose name ends in `_test` is disposable, created or
-  copied from the tutorials at the agent's discretion. `claude_test` and
-  `cavity_test` still qualify; they are simply no longer the whole list.
-
-## 2026-09-08 — builds are no longer asked for
-
-- At the user's request, RULES 2 of "Validation, builds and publication" was
-  reversed: it used to say "build Electron only when the user asks", and now
-  every change to the source ends with a build whose artifacts replace the pair
-  in `Working/`. RULES 4 gained a clause naming rule 2 as what keeps the
-  publication artifacts current.
-- First build under the new rule reproduced `v5.1.0` from the agent-channel fix
-  below, 87.0 MB portable and 133.0 MB folder zip, and both copies in `Working/`
-  now match `dist-electron/` by SHA-256.
-- Noticed in passing, not changed: the packaged standalone carries the whole
-  `tests/` directory, which nothing in the app reads.
-- Follow-up the same day: user decision 2 now orders the pair — the local commit
-  follows the successful build — and decision 3 spells out that neither of those
-  automatic steps is a licence to push, tag or release. Decision 3 already
-  forbade all of that; only the wording grew.
-
-## 2026-09-08 — the app now has its own voice in the agent conversation
-
-- Reported by the user: after switching a conversation to No limits, the agent
-  told them the bracketed mode announcement in their message was "a classic
-  prompt injection pattern", then decided unrestricted mode had been on since
-  the first turn and apologised for its earlier, correct, guarded answers.
-- Two causes. The announcement was prepended to the user's own turn as
-  `[The user has just switched …]`, which is precisely the shape of an injected
-  fake system message, so a careful agent distrusts it and blames the user. And
-  the system prompt is rebuilt and re-applied on every message — on `--resume`
-  for Claude Code, on `thread/resume` for Codex — so after a switch the whole
-  conversation looks as if it had always run under the new mode.
-- Fix in `src/lib/agent-prompt.ts`: the app speaks inside `<openfoam-studio>`
-  tags, `sanitizeUserMessage()` rewrites those tags (and `<system-reminder>`)
-  out of user text so the channel cannot be forged, and both system prompts now
-  say that the instructions describe only the CURRENT setting, that earlier
-  answers under the other mode were right at the time, and that the mode is a
-  shield button the user can press rather than a fact about the world. Guarded
-  mode also learns to name No limits instead of calling things impossible, and
-  that the Commands-tab Terminal is the user's own shell.
-- `claude-cli.ts` and `codex-cli.ts` both send the notice and sanitise the
-  message; Codex previously announced nothing at all. Covered by
-  `tests/agent-prompt.test.ts`.
-- Left alone: `buildSystemPrompt` ends with `.filter(Boolean)`, which also drops
-  the `''` paragraph breaks, so the prompt reaches the agent as one dense block.
-  Pre-existing, cosmetic, not touched here.
-
-## 2026-09-08 — GitHub release retention
-
-- Removed the obsolete GitHub releases and binary assets from `v1` through
-  `v4.0.0`. Their Git tags, commits, source archives and repository release
-  notes remain available.
-- Retained `v5.1.0` as the current download and `v5.0.0` as the near-term
-  rollback download.
-
-## 2026-09-08 — v5.1.0: installation-grounded AI
-
-- Released `v5.1.0` from commit `10cf290`; release notes are in
-  `docs/releases/v5.1.0.md`.
-- FOAMy, Claude and Codex share one installation-aware vocabulary, command,
-  help and tutorial corpus. The identity includes WSL distro, OpenFOAM version,
-  resolved paths and installed-binary metadata, so a switch or in-place update
-  invalidates every related cache together.
-- The local reference installation reported OpenFOAM 14, 1,513 runtime names,
-  1,333 keyed types, 151 applications, 233 commands and 20,030 tutorial chunks
-  from 5,056 files. These are observations, not a hard-coded contract.
-- Guarded agent writes validate known names and dictionary syntax before writing;
-  guarded command options and required values come from the installed binary's
-  `-help`. v9-v10 lookup reports uncertainty instead of false absence when
-  `foamToC` is unavailable.
-- FOAMy fingerprints `0/`, `system/` and `constant/` and reloads bounded disk
-  context after agent, script or terminal edits. The three AI panels display
-  knowledge version, freshness and coverage.
-- Tutorial ranking remains local BM25 plus the Italian CFD glossary; paths and
-  exact identifiers now receive strong evidence boosts. At most two excerpts and
-  1,500 characters enter a FOAMy prompt. There is no bundled vector database or
-  embedding model.
-
-## 2026-09-08 — policy/documentation split
-
-- `RULES.md` was intentionally reduced to fixed user-controlled directives,
-  safety boundaries and major traps. It no longer carries version status,
-  release workflow history, module inventories or detailed feature behavior.
-- This rolling `HISTORY.md` now carries project context. Recent release notes,
-  Git history and the audit remain the detailed historical record.
-- An explicit push/version/release request now uses the direct-publication
-  policy: version and names are updated, existing assets are used or renamed,
-  then commit/tag/push/release proceeds without an automatic rebuild or broad
-  verification. A missing requested asset requires user direction to build.
-- Post-build follow-up verification is discretionary: the agent selects the
-  smallest check justified by the changed surface and build output, or reports
-  success without extra checks when none is warranted.
-
-## 2026-09-08 — v5.0.0: quantitative post-processing
-
-- Released `v5.0.0`; see `docs/releases/v5.0.0.md`.
-- Added the Post-Process tab for function-object datasets, residuals, charting,
-  exports and installation-derived function templates. Fixed case/file refresh,
-  installation-change propagation and modern OpenFOAM solver detection.
+- Releases: `v5.0.0` (Post-Process tab), `v5.1.0` (one installation-aware
+  vocabulary, command, help and tutorial corpus for FOAMy, Claude and Codex,
+  invalidated together on any distro, version or path change), `v5.2.0` (theme
+  kept as `ui-theme` through the preload's synchronous config channel, because
+  the changing port empties localStorage), `v5.2.1` (ParaView detection and
+  startup) and `v5.2.2` (switcher, agent case changes, honest charts). GitHub
+  keeps only the two most recent releases as downloads; tags, commits and
+  notes stay.
+- RULES changes made at the user's request in this period: every source change
+  ends with an Electron build replacing the pair in `Working/`, then the local
+  commit; only the current version's pair may remain; an explicit release
+  request uses the direct-publication flow on the existing pair; `test` and any
+  `*_test` case are disposable; post-build verification is discretionary.
+- Agent conversation: the app speaks inside `<openfoam-studio>` tags, which
+  `sanitizeUserMessage()` strips from user text; mode and open-case changes are
+  announced there (`buildCaseNotice`), and the prompts say the instructions
+  describe only the current setting. Left alone: `buildSystemPrompt`'s
+  `.filter(Boolean)` also drops the paragraph breaks.
+- Detached runs: a command with a trailing `&` is `nohup setsid`-detached and
+  survives quitting the app; a foreground one dies with its `wsl.exe` relay.
+  The detach button added around this was reverted at the user's request — do
+  not add it back.
+- ParaView: detection reads the installation layout instead of executing
+  `pvpython --version` (107 s on a cold first run), searching sources in cost
+  order with the custom path first; the workbench reports real start phases,
+  can be cancelled and heals when its tab becomes visible again. Verified
+  against ParaView 6.2.0.
+- Charts: residual and Post-Process axes are read from the data
+  (`residualLogDomain()`), zero residuals become gaps, and the Post-Process
+  chart gained pan, zoom, resize and a preview-accurate export. The case
+  switcher reconciles its chips on `case-list-changed` and
+  `foam-version-changed`.
+- Noticed, not changed: the packaged standalone carries the whole `tests/`
+  directory, which nothing in the app reads.
 
 ## Earlier history
 

@@ -53,29 +53,30 @@ export interface SolverChoice {
   multiphase?: boolean;
 }
 
-/** OpenFOAM 11+ — `foamRun -solver <name>`, names as in `lib*Solver.so`. */
+/**
+ * OpenFOAM 11+ — `foamRun -solver <name>`, names as in `lib*Solver.so`.
+ *
+ * Only the solvers whose files this wizard can actually write. It generates U,
+ * a kinematic p and a viscosity-only properties file; isothermalFluid, fluid,
+ * the VoF and multicomponent solvers, shockFluid and solidDisplacement each
+ * need more (T and a thermoType, alpha fields and phaseProperties, D) and used
+ * to be offered anyway — the case stopped at startup while the summary said
+ * everything checked out. The wizard sends those users to the tutorials.
+ */
 export const SOLVER_MODULES: SolverChoice[] = [
   { value: 'incompressibleFluid', label: 'incompressibleFluid', desc: 'Incompressible, steady or transient (was simpleFoam / pimpleFoam)', transient: false },
-  { value: 'isothermalFluid', label: 'isothermalFluid', desc: 'Compressible at fixed temperature (was rhoSimpleFoam)', transient: false, compressible: true },
-  { value: 'fluid', label: 'fluid', desc: 'Compressible with energy and buoyancy (was buoyantFoam)', transient: true, compressible: true, buoyant: true },
-  { value: 'incompressibleVoF', label: 'incompressibleVoF', desc: 'Two incompressible phases, VoF free surface (was interFoam)', transient: true, multiphase: true, buoyant: true },
-  { value: 'compressibleVoF', label: 'compressibleVoF', desc: 'Two compressible phases, VoF (was compressibleInterFoam)', transient: true, multiphase: true, compressible: true, buoyant: true },
-  { value: 'multicomponentFluid', label: 'multicomponentFluid', desc: 'Reacting / multi-species flow (was reactingFoam)', transient: true, compressible: true },
-  { value: 'shockFluid', label: 'shockFluid', desc: 'High-Mach density-based (was sonicFoam / rhoCentralFoam)', transient: true, compressible: true },
-  { value: 'solidDisplacement', label: 'solidDisplacement', desc: 'Linear-elastic stress analysis in a solid', transient: false },
 ];
 
-/** OpenFOAM ≤ 10 — the solver is an executable named in controlDict. */
+/**
+ * OpenFOAM ≤ 10 — the solver is an executable named in controlDict. Same rule
+ * as above; of the solvers dropped, sonicFoam did not exist on 9 or 10 at all
+ * and buoyantSimpleFoam is gone from 10 (merged into buoyantFoam).
+ */
 export const SOLVER_APPLICATIONS: SolverChoice[] = [
   { value: 'simpleFoam', label: 'simpleFoam', desc: 'Incompressible steady-state (RANS)', transient: false },
   { value: 'pimpleFoam', label: 'pimpleFoam', desc: 'Incompressible transient (PIMPLE)', transient: true },
   { value: 'pisoFoam', label: 'pisoFoam', desc: 'Incompressible transient (PISO)', transient: true },
   { value: 'icoFoam', label: 'icoFoam', desc: 'Incompressible laminar transient', transient: true },
-  { value: 'rhoSimpleFoam', label: 'rhoSimpleFoam', desc: 'Compressible steady-state', transient: false, compressible: true },
-  { value: 'rhoPimpleFoam', label: 'rhoPimpleFoam', desc: 'Compressible transient', transient: true, compressible: true },
-  { value: 'interFoam', label: 'interFoam', desc: 'Incompressible two-phase (VOF)', transient: true, multiphase: true, buoyant: true },
-  { value: 'buoyantSimpleFoam', label: 'buoyantSimpleFoam', desc: 'Compressible natural convection', transient: false, compressible: true, buoyant: true },
-  { value: 'sonicFoam', label: 'sonicFoam', desc: 'High Mach compressible', transient: true, compressible: true },
 ];
 
 export function solverChoices(flavour: Flavour): SolverChoice[] {
@@ -400,6 +401,8 @@ export interface FieldContext {
   epsilon: number;
   omega: number;
   nu: number;
+  /** The case's model; nut's wall function depends on it. */
+  turbulence?: TurbulenceModel;
 }
 
 /**
@@ -434,7 +437,13 @@ export function defaultBC(fieldName: string, patch: MeshPatch, ctx: FieldContext
       if (patch.role === 'outlet') return at('zeroGradient');
       return at('omegaWallFunction', `uniform ${ctx.omega}`);
     case 'nut':
-      if (patch.role === 'wall') return at('nutkWallFunction', 'uniform 0');
+      // Spalart-Allmaras has no k (its k() is a zero field), so
+      // nutkWallFunction computes y+ = 0 and leaves nut at 0 on every wall:
+      // the run goes through with the wrong wall shear and no error. The v13
+      // airFoil2D tutorial uses the Spalding law, which works from U alone.
+      if (patch.role === 'wall') {
+        return at(ctx.turbulence === 'SpalartAllmaras' ? 'nutUSpaldingWallFunction' : 'nutkWallFunction', 'uniform 0');
+      }
       return at('calculated', 'uniform 0');
     case 'nuTilda': {
       // Spalart-Allmaras: the usual freestream estimate is 3-5 ν.
@@ -551,6 +560,10 @@ export function generateFvSchemes(o: SystemOptions): string {
     div(phi,omega)  ${bounded}Gauss limitedLinear 1;
     div(phi,nuTilda) ${bounded}Gauss limitedLinear 1;`;
 
+  // wallDist: kOmegaSST and Spalart-Allmaras compute a wall distance and read
+  // this sub-dictionary with no default, so without it they stop at startup
+  // (the v13 and v14 pitzDailySteady tutorials both carry it). The other
+  // models never read it, so it is always written.
   return `${header('dictionary', 'fvSchemes', 'system', o.flavour)}
 ddtSchemes
 {
@@ -584,6 +597,11 @@ interpolationSchemes
 snGradSchemes
 {
     default         corrected;
+}
+
+wallDist
+{
+    method          meshWave;
 }
 `;
 }
@@ -620,7 +638,16 @@ export function generateFvSolution(o: SystemOptions): string {
     }
 }`;
 
-  const algorithm = o.transient
+  // icoFoam and pisoFoam (≤10) drive their loop with pisoControl, which reads a
+  // PISO dictionary and stops without one; a PIMPLE block is not read at all.
+  const piso = o.flavour === 'legacy' && (o.solver === 'icoFoam' || o.solver === 'pisoFoam');
+  const algorithm = piso
+    ? `PISO
+{
+    nCorrectors     2;
+    nNonOrthogonalCorrectors 0;
+}`
+    : o.transient
     ? `PIMPLE
 {
     nOuterCorrectors 1;
@@ -657,17 +684,23 @@ ${algorithm}
 
 // ── constant/ ───────────────────────────────────────────────────────────────
 
-/** 11+ renamed both of the constant/ dictionaries the wizard writes. */
-export function transportFileName(flavour: Flavour): string {
-  return flavour === 'modular' ? 'physicalProperties' : 'transportProperties';
+/**
+ * 11+ renamed both of the constant/ dictionaries the wizard writes.
+ *
+ * One solver moved earlier: icoFoam on 10 reads physicalProperties directly,
+ * with no fallback to the old name, while the other v10 solvers still find
+ * transportProperties. `major` is the installation's major version, if known.
+ */
+export function transportFileName(flavour: Flavour, solver = '', major: number | null = null): string {
+  if (flavour === 'modular') return 'physicalProperties';
+  return solver === 'icoFoam' && major === 10 ? 'physicalProperties' : 'transportProperties';
 }
 
 export function turbulenceFileName(flavour: Flavour): string {
   return flavour === 'modular' ? 'momentumTransport' : 'turbulenceProperties';
 }
 
-export function generateTransportProperties(nu: string, flavour: Flavour): string {
-  const object = transportFileName(flavour);
+export function generateTransportProperties(nu: string, flavour: Flavour, object = transportFileName(flavour)): string {
   if (flavour === 'modular') {
     return `${header('dictionary', object, 'constant', flavour)}
 viscosityModel  constant;
