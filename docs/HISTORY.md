@@ -6,6 +6,16 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — v5.3.1: safer case workflows, Post-Process and ParaView
+
+- Released `v5.3.1` at the user's request; notes in
+  `docs/releases/v5.3.1.md`. It collects the case, tutorial, editor and mesh
+  reliability work plus the Post-Process and ParaView improvements below.
+- Direct publication reused the already built and hash-verified v5.3.0 pair
+  from commit `89211cb`, renaming it to the v5.3.1 artifact names without a new
+  build or source-to-artifact verification. Its embedded Windows version
+  resource therefore still reads 5.3.0.
+
 ## 2026-09-10 — Post-Process data integrity; ParaView cancellation and access
 
 - Post-Process CSV now fetches the complete parsed table (up to the existing
