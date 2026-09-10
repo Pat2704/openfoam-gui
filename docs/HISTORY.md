@@ -6,6 +6,30 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — ParaView loads in the background before its tab is opened
+
+- Reported by the user: the first ParaView start takes a very long time.
+  Measured again: the tree is 11,070 files and 4 GB, 2,215 of them DLLs and
+  Python modules, with Defender real-time scanning on. `from paraview.simple
+  import *` took 36.6 s with the cache half evicted and 1.4-1.9 s straight
+  after; the 107 s cold figure from 2026-09-09 is the post-reboot case. The cost
+  is Windows meeting the files for the first time, not the app or ParaView.
+- `warmParaView()` in `src/lib/paraview.ts` runs `pvpython` with the engine's
+  own render flags (`PARAVIEW_RENDER_ARGS`, now shared with the worker spawn),
+  the same import and one offscreen render, below normal priority, with no
+  output and a ten-minute ceiling. The render matters: it is 5 s warm against
+  1.4 s for the bare import, and that difference is the rendering stack a bare
+  import would have left cold. Once per installation per app process; skipped
+  when a session is running or starting.
+- The Dashboard starts it 5 s after detection finds ParaView, shows "warming up"
+  on the ParaView card while it runs, and the ParaView settings carry the
+  switch (`paraview-warmup` in the persisted config; on unless set to `off`)
+  with the outcome. A workbench start that overlaps the warm-up says so instead
+  of the generic cold-start note.
+- It hides the cold load rather than shortening it. The other lever is a
+  Defender exclusion for the ParaView folder, which is the user's security
+  decision and was only described to them, not made.
+
 ## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
 
 Audit of the Compute panel, checked against the installed v14 and v13 rather

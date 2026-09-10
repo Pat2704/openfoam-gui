@@ -1786,8 +1786,10 @@ async function beginSession(
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
     const scriptPath = path.join(tempDir, 'worker.py');
     await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
+    // The same render flags the background warm-up uses, so the libraries it
+    // left in the cache are the ones this engine loads.
     const child = spawn(installation.pvpythonPath, [
-      '--force-offscreen-rendering', '--opengl-window-backend', 'Win32',
+      ...PARAVIEW_RENDER_ARGS,
       scriptPath, markerPath, tempDir, caseName, installation.version || 'unknown',
     ], {
       windowsHide: true,
@@ -1900,4 +1902,126 @@ export async function stopParaViewSession(): Promise<void> {
   const worker = activeWorker;
   activeWorker = null;
   if (worker) await worker.stop();
+}
+
+// ── Warming the installation before anyone asks for it ──
+//
+// A cold start is not ParaView being slow, it is Windows meeting ParaView for
+// the first time since the machine booted: `from paraview.simple import *`
+// loads hundreds of the ~2,200 DLLs and Python modules in a 4 GB tree, reading
+// each from disk while the real-time antivirus scans it. Measured on the
+// reference machine at ~107 s after a reboot, 36 s with the cache half gone,
+// and 1.4-1.9 s once Windows has the files. Nothing in the app makes the first
+// load faster; what it can do is pay for it while the user is on the
+// Dashboard, meshing or running, instead of while they stare at the ParaView
+// tab. After that the workbench starts on a warm cache.
+
+/**
+ * What the warm-up executes: the same flags the workbench engine is launched
+ * with, the same import, and one offscreen render — so the libraries it pulls
+ * into the cache are the ones the engine will ask for, rendering stack
+ * included. Measured warm at 5 s against 1.4 s for the import alone; the
+ * difference is exactly the part a bare import would have left cold.
+ */
+export const PARAVIEW_RENDER_ARGS = ['--force-offscreen-rendering', '--opengl-window-backend', 'Win32'] as const;
+const WARMUP_SCRIPT = "from paraview.simple import *; view = CreateView('RenderView'); Render(view)";
+/** Longer than any cold start measured; only a real hang reaches it. */
+const WARMUP_TIMEOUT_MS = 10 * 60_000;
+
+export function paraViewWarmupArgs(): string[] {
+  return [...PARAVIEW_RENDER_ARGS, '-c', WARMUP_SCRIPT];
+}
+
+export type ParaViewWarmupState = 'warming' | 'warm' | 'failed';
+
+export interface ParaViewWarmupStatus {
+  state: ParaViewWarmupState;
+  pvpythonPath: string;
+  elapsedMs: number;
+  error?: string;
+}
+
+let warmup: {
+  pvpythonPath: string;
+  state: ParaViewWarmupState;
+  startedAt: number;
+  finishedAt: number | null;
+  error?: string;
+  child: ReturnType<typeof spawn> | null;
+} | null = null;
+
+export function getParaViewWarmup(): ParaViewWarmupStatus | null {
+  if (!warmup) return null;
+  return {
+    state: warmup.state,
+    pvpythonPath: warmup.pvpythonPath,
+    elapsedMs: (warmup.finishedAt ?? Date.now()) - warmup.startedAt,
+    ...(warmup.error ? { error: warmup.error } : {}),
+  };
+}
+
+/**
+ * Load ParaView once in the background so the workbench later starts warm.
+ *
+ * Once per installation per app process: a Dashboard that mounts again, or
+ * asks twice, joins the warm-up already done or running rather than paying
+ * for another. A session already running or starting has warmed the cache
+ * itself, so there is nothing to do. The process runs below normal priority,
+ * writes nothing, and exits by itself; a failure only means the workbench
+ * will start cold, as it did before, so it is reported and never retried in a
+ * loop.
+ */
+export async function warmParaView(customPath = ''): Promise<ParaViewWarmupStatus | null> {
+  if (activeWorker?.isRunning || startup) return getParaViewWarmup();
+  const installation = await findParaView(customPath);
+  if (!installation.found || !installation.pvpythonPath) return null;
+  const pvpythonPath = installation.pvpythonPath;
+
+  if (warmup && warmup.pvpythonPath === pvpythonPath && warmup.state !== 'failed') {
+    return getParaViewWarmup();
+  }
+  // A different installation was chosen while the previous one was warming:
+  // that cache is the wrong one to fill.
+  if (warmup?.child && warmup.state === 'warming') warmup.child.kill();
+
+  const entry: NonNullable<typeof warmup> = {
+    pvpythonPath, state: 'warming', startedAt: Date.now(), finishedAt: null, child: null,
+  };
+  warmup = entry;
+
+  const finish = (state: ParaViewWarmupState, error?: string) => {
+    if (entry.state !== 'warming') return;
+    entry.state = state;
+    entry.finishedAt = Date.now();
+    entry.child = null;
+    if (error) entry.error = error;
+  };
+
+  try {
+    const child = spawn(pvpythonPath, paraViewWarmupArgs(), {
+      windowsHide: true,
+      stdio: 'ignore',
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
+    entry.child = child;
+    // Below normal, so the warm-up yields to whatever the user is actually
+    // doing — a solve in WSL, the mesh view, another application.
+    if (child.pid) {
+      try { os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* best effort */ }
+    }
+    const timer = setTimeout(() => {
+      if (entry.state === 'warming') {
+        child.kill();
+        finish('failed', 'ParaView did not finish loading within ten minutes.');
+      }
+    }, WARMUP_TIMEOUT_MS);
+    child.once('error', error => { clearTimeout(timer); finish('failed', error.message); });
+    child.once('exit', code => {
+      clearTimeout(timer);
+      finish(code === 0 ? 'warm' : 'failed', code === 0 ? undefined : `pvpython exited with code ${code}.`);
+    });
+  } catch (error) {
+    finish('failed', error instanceof Error ? error.message : 'ParaView could not be launched.');
+  }
+  return getParaViewWarmup();
 }

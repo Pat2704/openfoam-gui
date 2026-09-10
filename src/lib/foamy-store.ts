@@ -41,6 +41,9 @@ export const FOAMY_KEYS = [
   'codex-agent-unrestricted',
   // Optional override for portable/non-standard ParaView installations.
   'paraview-path',
+  // 'off' turns off loading ParaView in the background at startup; anything
+  // else, including never having been set, leaves it on.
+  'paraview-warmup',
   // Light or dark, as the user last chose it. next-themes keeps its own copy in
   // localStorage, which in the packaged app is a different origin on every
   // launch — so the app opened light however many times the user had switched

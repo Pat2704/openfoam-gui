@@ -5,11 +5,13 @@ import {
   findParaView,
   getParaViewSession,
   getParaViewStartup,
+  getParaViewWarmup,
   readParaViewRender,
   sendParaViewCameraCommand,
   sendParaViewCommand,
   startParaViewSession,
   stopParaViewSession,
+  warmParaView,
 } from '@/lib/paraview';
 import { createParaFoamMarker } from '@/lib/wsl';
 import { boundedInteger, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
@@ -59,7 +61,7 @@ export async function GET(req: NextRequest) {
       // The workbench polls this while it waits, so the answer carries the
       // startup phase as well as the finished session.
       return NextResponse.json(
-        { session: getParaViewSession(), startup: getParaViewStartup() },
+        { session: getParaViewSession(), startup: getParaViewStartup(), warmup: getParaViewWarmup() },
         { headers: { 'Cache-Control': 'no-store' } },
       );
     }
@@ -89,6 +91,13 @@ export async function POST(req: NextRequest) {
       const marker = createParaFoamMarker(caseName);
       const state = await startParaViewSession(caseName, marker.windowsPath, path);
       return NextResponse.json({ state });
+    }
+
+    if (action === 'warmup') {
+      // Loads ParaView once in the background so the workbench later starts on
+      // a warm cache. Returns at once: the answer is the warm-up's state, which
+      // the Dashboard then follows through `action=session`.
+      return NextResponse.json({ warmup: await warmParaView(requestedPath(body.path)) });
     }
 
     if (action === 'stop') {

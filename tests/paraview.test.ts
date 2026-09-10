@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import {
   compareParaViewVersions,
   normalizeParaViewPath,
+  PARAVIEW_RENDER_ARGS,
+  paraViewWarmupArgs,
   paraViewExecutableCandidates,
   paraViewVersionFromNames,
 } from '../src/lib/paraview.ts';
@@ -50,4 +52,18 @@ test('The installation version is read from the folders ParaView creates', () =>
   assert.equal(paraViewVersionFromNames('ParaView', ['paraview-5.13']), '5.13');
   assert.equal(paraViewVersionFromNames('viewer-2024', ['paraview-6.0']), '6.0');
   assert.equal(paraViewVersionFromNames('Tools', ['bin', 'doc']), '');
+});
+
+test('The background warm-up loads what the workbench engine will load', () => {
+  // Its whole point is to leave the right libraries in the Windows cache: the
+  // same render flags the engine is spawned with, the same paraview.simple
+  // import, and an offscreen render so the rendering stack is loaded too.
+  const args = paraViewWarmupArgs();
+  assert.deepEqual(args.slice(0, PARAVIEW_RENDER_ARGS.length), [...PARAVIEW_RENDER_ARGS]);
+  assert.equal(args[PARAVIEW_RENDER_ARGS.length], '-c');
+  const script = args[PARAVIEW_RENDER_ARGS.length + 1];
+  assert.ok(script.includes('from paraview.simple import *'));
+  assert.ok(script.includes('Render('));
+  // A one-liner: nothing is written to disk and nothing is left running.
+  assert.equal(args.length, PARAVIEW_RENDER_ARGS.length + 2);
 });

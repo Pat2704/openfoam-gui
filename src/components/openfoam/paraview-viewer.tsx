@@ -222,6 +222,8 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [starting, setStarting] = useState(false);
   const [startupStage, setStartupStage] = useState<ParaViewStartupStage>('locating');
   const [startupSeconds, setStartupSeconds] = useState(0);
+  /** The Dashboard's background load was still running when this start began. */
+  const [warmupRunning, setWarmupRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cameraBusy, setCameraBusy] = useState(false);
   const [error, setError] = useState('');
@@ -479,8 +481,12 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       try {
         const response = await timedFetch('/api/paraview?action=session', { cache: 'no-store' }, 20_000);
         if (!response.ok || cancelled) return;
-        const data = await response.json() as { startup?: { stage?: ParaViewStartupStage } | null };
+        const data = await response.json() as {
+          startup?: { stage?: ParaViewStartupStage } | null;
+          warmup?: { state?: string } | null;
+        };
         if (data.startup?.stage && !cancelled) setStartupStage(data.startup.stage);
+        if (!cancelled) setWarmupRunning(data.warmup?.state === 'warming');
       } catch { /* the start request itself reports real failures */ }
     };
     const timer = window.setInterval(() => {
@@ -822,7 +828,9 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             <p className="font-medium">Opening {caseName}<span className="ml-2 font-mono text-xs text-white/50">{startupSeconds}s</span></p>
             <p className="mt-2 min-h-5 text-xs text-white/65">{STARTUP_STEPS[startupIndex].label}</p>
             <div className="mx-auto mt-4 flex w-56 gap-1">{STARTUP_STEPS.map((step, index) => <span key={step.stage} className={`h-1 flex-1 rounded ${index <= startupIndex ? 'bg-cyan-400' : 'bg-white/15'}`} />)}</div>
-            {startupSeconds >= 20 && <p className="mx-auto mt-3 max-w-sm text-[11px] text-white/45">The first ParaView launch after a reboot loads its libraries from disk and can take a few minutes. Later ones start in seconds.</p>}
+            {warmupRunning
+              ? <p className="mx-auto mt-3 max-w-sm text-[11px] text-white/45">ParaView was already loading in the background; this start carries on from where that got to rather than beginning again.</p>
+              : startupSeconds >= 20 && <p className="mx-auto mt-3 max-w-sm text-[11px] text-white/45">The first ParaView launch after a reboot loads its libraries from disk and can take a few minutes. Later ones start in seconds, and the background loading in the Dashboard&apos;s ParaView settings pays for it before you get here.</p>}
             <Button size="sm" variant="outline" className="mt-4 border-white/25 bg-white/5 text-white hover:bg-white/10 hover:text-white" onClick={() => void cancelStart()}>Cancel</Button>
           </> : <>
             <AlertTriangle className="mx-auto mb-3 h-10 w-10 text-amber-400" />

@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import {
   Box, Trash2, FolderOpen, RefreshCw, Settings, Play, Terminal as TerminalIcon,
@@ -48,6 +49,20 @@ interface ParaViewStatus {
   error?: string;
 }
 
+/** The background load that leaves ParaView in the Windows cache. */
+interface ParaViewWarmup {
+  state: 'warming' | 'warm' | 'failed';
+  pvpythonPath: string;
+  elapsedMs: number;
+  error?: string;
+}
+
+/**
+ * How long after detection the warm-up begins. Long enough for the app's own
+ * start — the WSL probe, the case list — to have had the disk first.
+ */
+const WARMUP_DELAY_MS = 5_000;
+
 type RuntimeSettings = 'openfoam' | 'paraview' | null;
 
 export default function Dashboard({
@@ -81,6 +96,9 @@ export default function Dashboard({
   const [paraViewStatus, setParaViewStatus] = useState<ParaViewStatus | null>(null);
   const [paraViewPath, setParaViewPath] = useState('');
   const [checkingParaView, setCheckingParaView] = useState(true);
+  const [paraViewWarmup, setParaViewWarmup] = useState<ParaViewWarmup | null>(null);
+  /** On unless the user turned it off; the saved value is 'off' or absent. */
+  const [warmupEnabled, setWarmupEnabled] = useState(true);
 
   // Tutorials state
   const [tutCategories, setTutCategories] = useState<TutorialCategory[]>([]);
@@ -127,7 +145,9 @@ export default function Dashboard({
     }
   }, []);
 
-  const detectParaView = useCallback(async (pathOverride: string, refresh = false, save = false) => {
+  const detectParaView = useCallback(async (
+    pathOverride: string, refresh = false, save = false,
+  ): Promise<ParaViewStatus | null> => {
     setCheckingParaView(true);
     try {
       const query = new URLSearchParams({ action: 'status' });
@@ -149,22 +169,66 @@ export default function Dashboard({
           toast.error(data.found
             ? `That path holds no ParaView. The one in use is ${data.pvpythonPath}, so nothing was saved.`
             : 'That path holds no ParaView, and none was found elsewhere. Nothing was saved.');
-          return;
+          return data;
         }
         const saved = await patchFoamyConfig({ 'paraview-path': pathOverride.trim() });
         if (!saved) throw new Error('The ParaView path could not be saved.');
         window.dispatchEvent(new CustomEvent('paraview-config-changed'));
         if (data.found) toast.success(`ParaView ${data.version || ''} is ready.`.trim());
       }
+      return data;
     } catch (error) {
       setParaViewStatus({
         found: false,
         error: error instanceof Error ? error.message : 'ParaView detection failed.',
       });
+      return null;
     } finally {
       setCheckingParaView(false);
     }
   }, []);
+
+  /**
+   * Load ParaView once in the background so the ParaView tab starts warm.
+   *
+   * The server does the work and keeps it to once per installation per app
+   * run, so asking again — a remount, a toggle switched back on — joins what
+   * is already done rather than repeating it.
+   */
+  const startParaViewWarmup = useCallback(async (pathOverride: string) => {
+    try {
+      const response = await fetch('/api/paraview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'warmup', path: pathOverride.trim() }),
+      });
+      if (!response.ok) return;
+      const data = await response.json() as { warmup?: ParaViewWarmup | null };
+      setParaViewWarmup(data.warmup ?? null);
+    } catch { /* the workbench simply starts cold, as it always did */ }
+  }, []);
+
+  const toggleWarmup = async (enabled: boolean) => {
+    setWarmupEnabled(enabled);
+    const saved = await patchFoamyConfig({ 'paraview-warmup': enabled ? 'on' : 'off' });
+    if (!saved) toast.error('The setting could not be saved.');
+    if (enabled && paraViewStatus?.found) void startParaViewWarmup(paraViewPath);
+  };
+
+  // Follow a warm-up while it runs, so the card and the settings can say when
+  // the ParaView tab has become fast. Nothing is polled once it has finished.
+  useEffect(() => {
+    if (paraViewWarmup?.state !== 'warming') return;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch('/api/paraview?action=session', { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json() as { warmup?: ParaViewWarmup | null };
+        if (data.warmup) setParaViewWarmup(data.warmup);
+      } catch { /* the next tick asks again */ }
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [paraViewWarmup?.state]);
 
   const fetchTutorials = useCallback(async () => {
     try {
@@ -198,22 +262,38 @@ export default function Dashboard({
   useEffect(() => {
     let cancelled = false;
     let started = false;
+    let warmupTimer: number | undefined;
+    // Detection first, then — if ParaView is there and the user has not turned
+    // it off — the background load, a few seconds later.
+    const detectThenWarm = async (savedPath: string, warm: boolean) => {
+      const found = await detectParaView(savedPath);
+      if (cancelled || !warm || !found?.found) return;
+      warmupTimer = window.setTimeout(() => {
+        if (!cancelled) void startParaViewWarmup(savedPath);
+      }, WARMUP_DELAY_MS);
+    };
     void loadFoamyConfig().then(config => {
       if (cancelled || started) return;
       started = true;
       const savedPath = config['paraview-path'] || '';
+      const warm = config['paraview-warmup'] !== 'off';
       setParaViewPath(savedPath);
-      return detectParaView(savedPath);
+      setWarmupEnabled(warm);
+      return detectThenWarm(savedPath, warm);
     });
     // Detection must run even if the config bridge never answers, or the card
     // would spin on "Detecting…" with nothing behind it.
     const fallback = window.setTimeout(() => {
       if (cancelled || started) return;
       started = true;
-      void detectParaView('');
+      void detectThenWarm('', true);
     }, 8_000);
-    return () => { cancelled = true; window.clearTimeout(fallback); };
-  }, [detectParaView]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(fallback);
+      if (warmupTimer !== undefined) window.clearTimeout(warmupTimer);
+    };
+  }, [detectParaView, startParaViewWarmup]);
 
   useEffect(() => {
     if (status?.running) fetchTutorials();
@@ -559,7 +639,7 @@ export default function Dashboard({
             <div className="flex min-w-0 items-center gap-2">
               {checkingParaView ? <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin text-info" /> : paraViewStatus?.found ? <Cuboid className="h-5 w-5 flex-shrink-0 text-info" /> : <XCircle className="h-5 w-5 flex-shrink-0 text-warning" />}
               <div className="min-w-0">
-                <div className="flex items-center gap-2"><span className="text-sm font-semibold">ParaView</span>{paraViewStatus?.found && <span className="text-xs text-muted-foreground">v{paraViewStatus.version || 'unknown'}</span>}</div>
+                <div className="flex items-center gap-2"><span className="text-sm font-semibold">ParaView</span>{paraViewStatus?.found && <span className="text-xs text-muted-foreground">v{paraViewStatus.version || 'unknown'}</span>}{paraViewWarmup?.state === 'warming' && <span className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Loading ParaView in the background so its tab opens in seconds"><Loader2 className="h-3 w-3 animate-spin" />warming up</span>}</div>
                 <p className="truncate text-[10px] text-muted-foreground" title={paraViewStatus?.pvpythonPath || paraViewStatus?.error}>{checkingParaView ? 'Detecting the local installation…' : paraViewStatus?.found ? paraViewStatus.pvpythonPath : paraViewStatus?.error || 'Not detected'}</p>
               </div>
             </div>
@@ -646,6 +726,29 @@ export default function Dashboard({
                 <Button variant="outline" size="sm" disabled={checkingParaView} onClick={() => { setParaViewPath(''); void detectParaView('', true, true); }}><RefreshCw className="h-3.5 w-3.5" /> Auto-detect</Button>
                 <Button size="sm" disabled={checkingParaView} onClick={() => void detectParaView(paraViewPath, true, true)}>Save path</Button>
               </div>
+              {/* The first launch after a reboot is Windows reading ParaView's
+                  libraries off the disk, not ParaView being slow; this pays for
+                  it while the user is elsewhere. */}
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 text-xs">
+                <Checkbox checked={warmupEnabled} onCheckedChange={value => void toggleWarmup(value === true)} className="mt-0.5" />
+                <span className="min-w-0">
+                  <span className="font-medium">Load ParaView in the background at startup</span>
+                  <span className="mt-0.5 block leading-snug text-muted-foreground">
+                    The first launch after a reboot reads ParaView&apos;s libraries from disk and can take a
+                    minute or two. Doing it a few seconds after the app opens, while you work on something
+                    else, lets the ParaView tab start in seconds. Once per session, at low priority.
+                  </span>
+                  {paraViewWarmup && (
+                    <span className={`mt-1 block ${paraViewWarmup.state === 'failed' ? 'text-warning' : 'text-muted-foreground'}`}>
+                      {paraViewWarmup.state === 'warming'
+                        ? `Loading now — ${Math.round(paraViewWarmup.elapsedMs / 1000)} s so far.`
+                        : paraViewWarmup.state === 'warm'
+                          ? `Loaded in ${Math.round(paraViewWarmup.elapsedMs / 1000)} s — the ParaView tab will start warm.`
+                          : `The background load did not finish: ${paraViewWarmup.error || 'unknown error'}. ParaView will start the usual way.`}
+                    </span>
+                  )}
+                </span>
+              </label>
             </div>}
           </div>
         </DialogContent>

@@ -298,8 +298,14 @@ the newest usable version. No fixed version or installation directory is assumed
 For a portable copy or custom directory, use the gear on the **ParaView card in
 the Dashboard**, enter the ParaView folder, `paraview.exe`, or `pvpython.exe`,
 and click **Save path**. The choice is stored locally. ParaView is not bundled;
-it runs as a separate background process only when a case is opened in its
+it runs as a separate background process when a case is opened in its
 workbench.
+
+The first ParaView start after a reboot is slow because Windows reads several
+hundred of ParaView's libraries off the disk, scanning each one, before anything
+else can happen. So a few seconds after the app opens, it loads ParaView once in
+the background at low priority — the card shows **warming up** meanwhile — and
+the ParaView tab then starts in seconds. The switch is in the same settings.
 
 ---
 
@@ -345,7 +351,8 @@ to `codex.exe`; the panel shows each attempted path and why it was rejected.
 Dashboard and click **Look again**. For a portable or non-standard copy, open
 Dashboard settings and enter its directory or the full path to `pvpython.exe`.
 A first case load can take noticeably longer because ParaView initializes its
-OpenFOAM reader and renderer in a separate process. A case containing only the
+OpenFOAM reader and renderer in a separate process, and the first start after a
+reboot longer still if the background loading is off or has not finished yet. A case containing only the
 initial `0` directory is intentionally labelled **mesh only**; Surface With
 Edges, Wireframe, Points and Outline are still available, while animation is
 disabled until solver result times exist.
