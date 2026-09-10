@@ -6,6 +6,17 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
+
+- Released `v5.3.0` at the user's request; notes in `docs/releases/v5.3.0.md`.
+  It carries the two entries below: the Post-Process catalogue grounded in the
+  installed OpenFOAM, and ParaView loaded in the background at startup.
+- Direct publication flow: the `v5.2.2` pair built from commit `9d7719f` and
+  verified in the packaged server was renamed to the `v5.3.0` names, not
+  rebuilt, so the files' embedded version resource still reads 5.2.2; the app
+  shows no version of its own. Retention kept `v5.3.0` and `v5.2.2` as GitHub
+  downloads and removed the `v5.2.1` release entry; its tag stays.
+
 ## 2026-09-10 — ParaView loads in the background before its tab is opened
 
 - Reported by the user: the first ParaView start takes a very long time.
