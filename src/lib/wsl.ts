@@ -29,6 +29,8 @@ import {
   type CaseContext,
 } from './postprocess';
 import { parseCheckMeshOutput } from './check-mesh';
+import { SNAPPY_ETC_FILES, SNAPPY_VERSIONS, snappyAvailability } from './snappy-templates';
+import { WIZARD_MARKER_PATH } from './wizard-state';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EVERY child_process call in this file MUST pass `windowsHide: true`.
@@ -1409,6 +1411,7 @@ export function listCasesBatch(): {
   lastTimeStep: string;
   hasLog: boolean;
   logFiles: string[];
+  wizard: boolean;
 }[] {
   const runDir = getRunDirectory();
   if (!runDir) return [];
@@ -1437,11 +1440,16 @@ for casedir in "$RD"/*/; do
   done
   logs=$(find "$casedir" -maxdepth 1 -name 'log.*' -type f -exec basename {} \\; 2>/dev/null | tr '\\n' ' ')
   hlog="no"; [ -n "$logs" ] && hlog="yes"
-  echo "CASE|$name|0:$fc0 system:$fcsys constant:$fccon|$tsc|\${lastts:- }|$hlog|$logs"
+  wz="no"; [ -f "$casedir/${WIZARD_MARKER_PATH}" ] && wz="yes"
+  echo "CASE|$name|0:$fc0 system:$fcsys constant:$fccon|$tsc|\${lastts:- }|$hlog|$logs|$wz"
 done
 echo "DBG:done"
 `;
-    const output = runInWsl(script, 60000).trim();
+    // Through the base64 runner (RULES, product invariant 3): passed to
+    // `wsl.exe bash -c` inline, this variable-bearing script printed no CASE
+    // line at all, so every case came from the bare fallback below — no file
+    // counts, time steps, logs or wizard record on the Dashboard.
+    const output = runInWslScript(Buffer.from(script).toString('base64'), 60000).trim();
     debug.push(`output_len=${output.length}`);
     if (!output) return [];
 
@@ -1465,6 +1473,7 @@ echo "DBG:done"
             lastTimeStep: '',
             hasLog: false,
             logFiles: [],
+            wizard: false,
           })).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
         }
       } catch (e: any) {
@@ -1491,6 +1500,8 @@ echo "DBG:done"
         lastTimeStep: parts[3] || '',
         hasLog: parts[4] === 'yes',
         logFiles: (parts[5] || '').trim().split(' ').filter(Boolean),
+        // Made by the New Case wizard, so it can be reopened there to update.
+        wizard: parts[6] === 'yes',
       };
     }).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
   } catch (e: any) {
@@ -1897,6 +1908,191 @@ export function writeFile(caseName: string, filePath: string, content: string): 
   } catch (e: any) {
     throw new Error(`Unable to write ${filePath}: ${e.message}`);
   }
+}
+
+// ── Case files for the New Case wizard ("Update case", geometry import) ──
+
+/**
+ * SHA-256 of case files, keyed by path; null for a path with no file.
+ *
+ * The wizard compares these with the hashes it recorded when it wrote the
+ * files, to tell a file it may rewrite from one somebody edited. A path the
+ * script did not answer for must never read as "missing" — the update would
+ * then recreate a file over the user's — so an incomplete answer throws.
+ */
+export function hashCaseFiles(caseName: string, paths: string[]): Record<string, string | null> {
+  const casePath = getCasePath(caseName);
+  const safe = [...new Set(paths.map(p => validateRelativePath(p, 'File path')))];
+  if (safe.length > 500) throw new WslInputError('Too many files to hash at once');
+  if (!safe.length) return {};
+  const lines = safe.map((p, i) =>
+    `f=${shellQuote(`${casePath}/${p}`)}; if [ -f "$f" ]; then echo "H|${i}|$(sha256sum < "$f" | cut -c1-64)"; else echo "H|${i}|-"; fi`);
+  const out = runInWslScript(Buffer.from(`${lines.join('\n')}\n`).toString('base64'), 60000);
+  const result: Record<string, string | null> = {};
+  for (const line of out.split('\n')) {
+    const m = line.trim().match(/^H\|(\d+)\|([0-9a-f]{64}|-)$/);
+    if (m && safe[Number(m[1])]) result[safe[Number(m[1])]] = m[2] === '-' ? null : m[2];
+  }
+  if (Object.keys(result).length !== safe.length) throw new Error('Could not check every file of the case');
+  return result;
+}
+
+/**
+ * A case file's text, or null when there is no such file. `readFile` throws
+ * for a missing file, which would make "not a wizard case" look like a failure.
+ */
+export function readCaseFileIfExists(caseName: string, filePath: string, maxBytes = 1024 * 1024): string | null {
+  const safePath = validateRelativePath(filePath, 'File path');
+  const full = `${getCasePath(caseName)}/${safePath}`;
+  const script = `f=${shellQuote(full)}\nif [ -f "$f" ]; then echo "PRESENT"; head -c ${Math.max(1, Math.floor(maxBytes))} -- "$f"; else echo "ABSENT"; fi\n`;
+  const out = runInWslScript(Buffer.from(script).toString('base64'), 15000);
+  if (out.startsWith('ABSENT')) return null;
+  if (!out.startsWith('PRESENT\n')) throw new Error(`Unable to read ${filePath}`);
+  return out.slice('PRESENT\n'.length);
+}
+
+/** runInWslWithInput without blocking the server: the input can be a 100 MB upload. */
+function runInWslWithInputAsync(cmd: string, input: string, timeout = 300000): Promise<string> {
+  const distro = getDistro();
+  const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; ${cmd}`;
+  return new Promise((resolve, reject) => {
+    const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+      windowsHide: true,
+      env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
+    });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const finish = (err: Error | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (err) reject(err); else resolve(stdout);
+    };
+    const timer = setTimeout(() => { child.kill(); finish(new Error(`WSL command timed out after ${timeout} ms`)); }, timeout);
+    child.stdout.setEncoding('utf-8');
+    child.stdout.on('data', (c: string) => { stdout += c; });
+    child.stderr.setEncoding('utf-8');
+    child.stderr.on('data', (c: string) => { stderr += c; });
+    child.on('error', err => finish(err));
+    child.on('close', code => finish(code === 0 ? null : new Error((stderr || `WSL exited with ${code}`).trim())));
+    child.stdin.on('error', () => { /* reported through close */ });
+    child.stdin.end(input);
+  });
+}
+
+/**
+ * Shell lines that stop unless `target` resolves inside the case folder. Used
+ * by the binary channel below: a `constant` or `constant/geometry` that is a
+ * symbolic link would otherwise carry an upload, or a read, out of the case.
+ */
+function insideCaseCheck(casePath: string, target: string): string {
+  return `C=${shellQuote(casePath)}
+T=${shellQuote(target)}
+RC=$(realpath -e -- "$C") || { echo "the case was not found" >&2; exit 1; }
+RT=$(realpath -e -- "$T") || { echo "the path could not be resolved" >&2; exit 1; }
+case "$RT/" in "$RC"/*) ;; *) echo "the path resolves outside the case" >&2; exit 1 ;; esac
+`;
+}
+
+/**
+ * Write bytes into a case: the binary channel `writeFile` does not have (it
+ * takes text), used for STL/OBJ geometry and its .gz. The shared validators
+ * apply, the folder must resolve inside the case, and the file is replaced
+ * atomically exactly as `writeFile` does it. Returns the SHA-256 of the file
+ * as it now is on disk, so the caller can prove the upload arrived whole.
+ */
+export async function writeCaseBinaryFile(caseName: string, filePath: string, data: Buffer): Promise<string> {
+  const safePath = validateRelativePath(filePath, 'File path');
+  const casePath = getCasePath(caseName);
+  const fullPath = `${casePath}/${safePath}`;
+  const dirPath = path.posix.dirname(fullPath);
+
+  const prep = `[ -d ${shellQuote(casePath)} ] || { echo "the case was not found" >&2; exit 1; }
+mkdir -p -- ${shellQuote(dirPath)} || { echo "the folder could not be created" >&2; exit 1; }
+${insideCaseCheck(casePath, dirPath)}echo OK
+`;
+  try {
+    await runInWslScriptAsync(Buffer.from(prep).toString('base64'), 30000);
+  } catch (e: any) {
+    throw new Error(`Unable to write ${filePath}: ${e.message}`);
+  }
+
+  // Variable-free, like writeFile: this command line goes through wsl.exe.
+  const quotedDst = shellQuote(fullPath);
+  const quotedTmp = shellQuote(`${fullPath}.tmp.${randomBytes(6).toString('hex')}`);
+  let out: string;
+  try {
+    out = await runInWslWithInputAsync(
+      `base64 -d > ${quotedTmp} && mv -fT -- ${quotedTmp} ${quotedDst} && sha256sum -- ${quotedDst} || { rm -f -- ${quotedTmp}; exit 1; }`,
+      data.toString('base64'),
+    );
+  } catch (e: any) {
+    throw new Error(`Unable to write ${filePath}: ${e.message}`);
+  }
+  const sum = out.trim().match(/^[0-9a-f]{64}/)?.[0];
+  if (!sum) throw new Error(`Unable to write ${filePath}: the written file could not be checked`);
+  return sum;
+}
+
+/** Read a case file's bytes (geometry), refusing anything larger than `maxBytes`. */
+export async function readCaseBinaryFile(caseName: string, filePath: string, maxBytes: number): Promise<Buffer> {
+  const safePath = validateRelativePath(filePath, 'File path');
+  const casePath = getCasePath(caseName);
+  const fullPath = `${casePath}/${safePath}`;
+  const script = `[ -f ${shellQuote(fullPath)} ] || { echo "the file was not found" >&2; exit 1; }
+${insideCaseCheck(casePath, fullPath)}s=$(stat -c %s -- "$RT")
+[ "$s" -le ${Math.floor(maxBytes)} ] || { echo "the file is larger than ${Math.floor(maxBytes / 1048576)} MB" >&2; exit 1; }
+base64 -w0 -- "$RT"
+`;
+  try {
+    const out = await runInWslScriptAsync(Buffer.from(script).toString('base64'), 180000);
+    return Buffer.from(out.trim(), 'base64');
+  } catch (e: any) {
+    throw new Error(`Unable to read ${filePath}: ${e.message}`);
+  }
+}
+
+export interface SnappySupportInfo { version: string; major: number | null; available: boolean; reason: string | null }
+
+let snappySupportCache: { key: string; value: SnappySupportInfo } | null = null;
+
+/**
+ * Whether the wizard may offer the guided snappyHexMesh option: OpenFOAM 13 or
+ * 14, and the installation provides the .cfg files the generated dictionaries
+ * include — found with `foamEtcFile`, the lookup `#includeEtc` itself uses.
+ * Cached per distro, bashrc and version, so it follows an installation change.
+ */
+export function getSnappySupport(): SnappySupportInfo {
+  const version = getOpenFOAMVersion().trim();
+  const parsed = parseInt(version.match(/\d+/)?.[0] ?? '', 10);
+  const major = Number.isFinite(parsed) ? parsed : null;
+  if (major === null || !SNAPPY_VERSIONS.includes(major)) {
+    return { version, major, ...snappyAvailability(major, []) };
+  }
+
+  let key = '';
+  try { key = `${getDistro()}|${getSelectedBashrc() ?? findBashrc()}|${version}`; } catch { /* uncached */ }
+  if (key && snappySupportCache?.key === key) return snappySupportCache.value;
+
+  let missing: string[] | null = null;
+  try {
+    const script = `${foamSource()}
+cd /tmp || cd /
+for f in ${SNAPPY_ETC_FILES.map(shellQuote).join(' ')}; do
+  if foamEtcFile "$f" >/dev/null 2>&1; then echo "Y|$f"; else echo "N|$f"; fi
+done
+`;
+    const out = runInWslScript(Buffer.from(script).toString('base64'), 30000);
+    const answered = out.split('\n').filter(l => /^[YN]\|/.test(l.trim()));
+    if (answered.length === SNAPPY_ETC_FILES.length) {
+      missing = answered.filter(l => l.trim().startsWith('N|')).map(l => l.trim().slice(2));
+    }
+  } catch { /* missing stays null: "could not be checked" */ }
+
+  const value = { version, major, ...snappyAvailability(major, missing) };
+  if (key && missing !== null) snappySupportCache = { key, value };
+  return value;
 }
 
 export function createDirectory(caseName: string, dirPath: string): string {

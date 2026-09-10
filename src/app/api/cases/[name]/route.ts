@@ -16,9 +16,12 @@ import {
   runCheckMesh,
   validateBoundaryConditions,
   getCaseSummary,
+  hashCaseFiles,
+  readCaseFileIfExists,
 } from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
 import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
+import { WIZARD_MARKER_PATH } from '@/lib/wizard-state';
 
 // GET /api/cases/[name]
 //   ?action=read&path=…          → { content }
@@ -31,6 +34,7 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 //   ?action=checkMesh            → CheckMeshResult
 //   ?action=validateBC           → BCValidationResult
 //   ?action=caseSummary          → CaseSummaryInfo
+//   ?action=wizardState          → { text: string | null } (the wizard's record)
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ name: string }> }
@@ -91,9 +95,13 @@ export async function GET(
         const result = getCaseSummary(caseName);
         return NextResponse.json(result);
       }
+      case 'wizardState': {
+        // null is the ordinary answer for a case the wizard did not make.
+        return NextResponse.json({ text: readCaseFileIfExists(caseName, WIZARD_MARKER_PATH) });
+      }
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: read, info, ls, logs, listLogs, residuals, checkMesh, validateBC, caseSummary' },
+          { error: 'Invalid action. Use: read, info, ls, logs, listLogs, residuals, checkMesh, validateBC, caseSummary, wizardState' },
           { status: 400 }
         );
     }
@@ -111,6 +119,7 @@ export async function GET(
 //   { action: 'deleteBatch', paths }          → { success, deleted }
 //   { action: 'deleteTimesteps' }             → { success, message, deleted, count }
 //   { action: 'clone', newName }              → { success, caseName }
+//   { action: 'hashFiles', paths }            → { hashes: { [path]: sha256 | null } }
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ name: string }> }
@@ -171,9 +180,14 @@ export async function POST(
         const newName = cloneCase(caseName, body.newName);
         return NextResponse.json({ success: true, caseName: newName });
       }
+      case 'hashFiles': {
+        // The wizard's "Update case" compares these with the hashes it recorded.
+        const paths: string[] = Array.isArray(body.paths) ? body.paths.map(String) : [];
+        return NextResponse.json({ hashes: hashCaseFiles(caseName, paths) });
+      }
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: write, mkdir, rename, deleteFile, deletePath, deleteBatch, deleteTimesteps, clone' },
+          { error: 'Invalid action. Use: write, mkdir, rename, deleteFile, deletePath, deleteBatch, deleteTimesteps, clone, hashFiles' },
           { status: 400 }
         );
     }

@@ -108,6 +108,10 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState('dashboard');
   /** Bumped whenever the case list changes from outside the Dashboard. */
   const [caseListVersion, setCaseListVersion] = useState(0);
+  /** "Update case" from the Dashboard: the wizard reopens this case. */
+  const [wizardRequest, setWizardRequest] = useState<{ caseName: string; n: number } | null>(null);
+  /** The case whose mesh the Mesh tab should load without a click (after the wizard built it). */
+  const [meshAutoLoad, setMeshAutoLoad] = useState<string | null>(null);
   // Tabs are mounted lazily on first visit and then kept mounted, hidden
   // with CSS. Previously each tab was conditionally rendered, so every
   // switch unmounted the component and re-ran all of its WSL fetches —
@@ -164,18 +168,24 @@ export default function Home() {
     );
   };
 
-  const handleSelectCase = async (name: string) => {
+  const handleSelectCase = async (name: string, tab = 'editor'): Promise<boolean> => {
     // Deleting the open case clears the selection by passing an empty name.
     // Opening a chip for it put a nameless case in the switcher.
-    if (!name) return;
-    if (name !== selectedCase && !(await confirmLeaveCase())) return;
+    if (!name) return false;
+    if (name !== selectedCase && !(await confirmLeaveCase())) return false;
     // If already open, just bring to front (make active)
     if (openCases.includes(name)) {
       setOpenCases(prev => [name, ...prev.filter(c => c !== name)]);
     } else {
       setOpenCases(prev => [name, ...prev]);
     }
-    setActiveTab('editor');
+    setActiveTab(tab);
+    return true;
+  };
+
+  /** The wizard's "Show in the Mesh tab": open the case there and load its mesh. */
+  const showCaseMesh = async (name: string) => {
+    if (await handleSelectCase(name, 'mesh')) setMeshAutoLoad(name);
   };
 
   /**
@@ -220,9 +230,10 @@ export default function Home() {
 
   const handleCaseCreated = () => {
     // The Dashboard caches its case list, so tell it to refetch: otherwise the
-    // freshly created case is missing from the list it lands on.
+    // freshly created case is missing from the list it lands on. The wizard
+    // stays on screen: after Create it offers to build the mesh and keeps the
+    // case open for "Update case".
     setCaseListVersion(v => v + 1);
-    setActiveTab('dashboard');
   };
 
   // A case script (Allrun) was launched in the background: move to the
@@ -455,12 +466,21 @@ export default function Home() {
               onSelectCase={handleSelectCase}
               onRefresh={() => {}}
               refreshSignal={caseListVersion}
+              onUpdateCase={(name) => {
+                setWizardRequest({ caseName: name, n: Date.now() });
+                setActiveTab('wizard');
+              }}
             />
           </div>
         )}
         {visitedTabs.includes('wizard') && (
           <div className={paneClass('wizard')}>
-            <CaseWizard onCreated={handleCaseCreated} />
+            <CaseWizard
+              onCreated={handleCaseCreated}
+              openRequest={wizardRequest}
+              onOpenCase={(name) => void handleSelectCase(name)}
+              onShowMesh={(name) => void showCaseMesh(name)}
+            />
           </div>
         )}
         {visitedTabs.includes('editor') && (
@@ -490,7 +510,13 @@ export default function Home() {
         )}
         {visitedTabs.includes('mesh') && (
           <div className={paneClass('mesh')}>
-            <MeshViewer key={selectedCase || 'none'} caseName={selectedCase || ''} active={activeTab === 'mesh'} />
+            <MeshViewer
+              key={selectedCase || 'none'}
+              caseName={selectedCase || ''}
+              active={activeTab === 'mesh'}
+              autoLoad={!!selectedCase && meshAutoLoad === selectedCase}
+              onAutoLoaded={() => setMeshAutoLoad(null)}
+            />
           </div>
         )}
         {visitedTabs.includes('postprocess') && (

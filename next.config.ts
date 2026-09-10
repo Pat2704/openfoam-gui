@@ -8,6 +8,16 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
+  experimental: {
+    // The wizard's geometry upload (src/app/api/cases/[name]/geometry) sends
+    // files of up to GEOMETRY_MAX_BYTES (100 MB). proxy.ts runs on every /api
+    // route, and Next buffers a proxied request body only up to this limit
+    // (10 MB by default); past it the route gets a TRUNCATED body and no error
+    // (node_modules/next/dist/docs/01-app/03-api-reference/05-config/
+    // 01-next-config-js/proxyClientMaxBodySize.md). The route also compares the
+    // bytes it received with Content-Length.
+    proxyClientMaxBodySize: '101mb',
+  },
   // Keep the standalone tracing root pinned to this project dir so the
   // emitted `.next/standalone/server.js` stays flat. Without this, Next.js
   // can infer a workspace root from a lockfile in a parent directory and

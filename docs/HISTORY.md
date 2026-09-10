@@ -6,6 +6,63 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — New Case wizard: "Update case" and guided snappyHexMesh
+
+- **Update case.** A case the wizard creates carries `system/studioWizard.json`
+  with the settings and the SHA-256 of every file written. The user decided:
+  a file in the case (it follows rename and clone, and a clone stays
+  updatable), and an update only *proposes* re-meshing. The case reopens from
+  the Dashboard's wand button (shown only on cases with the record), from the
+  wizard's first step, or straight after Create, where the wizard now stays.
+  "Review the update" compares recorded, on-disk and new hashes
+  (`planUpdate`/`resolvePlan`, `src/lib/wizard-state.ts`). Untouched files are
+  rewritten and obsolete ones removed. A file edited, deleted or already
+  present outside the wizard is listed with Compare and "keep" preselected. A
+  kept file keeps its old recorded hash, so the next update asks again. A
+  changed mesh input marks the mesh stale and offers the mesh steps.
+- **Guided snappyHexMesh, 13 and 14 only.** An explicit Mesh-step option (the
+  default stays blockMesh only), offered when `foamEtcFile` finds the
+  snappyHexMeshDict, surfaceFeaturesDict and meshQualityDict .cfg files
+  (`/api/wsl?action=snappySupport`); otherwise it is disabled with "Available
+  on OpenFOAM 13 and 14 only; …". STL (ASCII or binary) or OBJ, optionally .gz,
+  is read in the browser (`src/lib/geometry.ts`: bounding box, regions, a
+  three-ray parity test for insidePoint) and uploaded unchanged to
+  `constant/geometry` by a new binary route (`/api/cases/[name]/geometry`:
+  100 MB, shared validators, realpath check against symlink escape, SHA-256
+  compared). The dictionaries (`src/lib/snappy-templates.ts`) `#includeEtc`
+  the .cfg and write only the user's choices: levels, feature level,
+  refinement box, `insidePoint`, layers on/off. `system/meshQualityDict` is
+  written because the snappy .cfg includes it from the case. Each surface's
+  patches get `inGroups (<name>Group)`, and 0/ carries one wall entry for the
+  group. Box, insidePoint and refinement box are proposed from the bounding
+  box. On request the wizard runs blockMesh → surfaceFeatures → snappyHexMesh →
+  checkMesh (streamed, `log.<app>` kept) and opens the Mesh tab, which then
+  loads without a click.
+- `proxyClientMaxBodySize` is 101 MB: proxy.ts buffers every /api body and
+  silently truncates it past 10 MB. The upload route also checks
+  Content-Length.
+- Fixed in passing: `listCasesBatch` ran its variable-bearing script inline
+  through `wsl.exe` and printed no case line, so the Dashboard always showed the
+  bare fallback (no file counts, time steps or logs). It now uses the base64
+  runner. The wizard also re-reads version, BC list and snappy support on
+  `foam-version-changed`.
+- Verified: 266 tests (45 new; one pre-existing skip), typecheck, lint. On v14,
+  `snappy_test` was created in the dev server with motorBike.obj.gz (331,653
+  triangles, 67 regions). Its mesh run gave 64,792 cells; checkMesh reported
+  "Failed 1 mesh checks" (3 faces, skewness 10.3), shown as a warning. BC
+  validation resolved the 66 body patches through motorBikeGroup, the Mesh tab
+  loaded 33,590 triangles and 69 patches, and foamRun ran 3 iterations.
+  Updates were checked in the same case. endTime rewrote only controlDict. A
+  hand edit to controlDict was a conflict: "keep" left it alone and the next
+  review asked again, and "use the wizard's" replaced it. kEpsilon plus level 4
+  created epsilon, removed omega, rewrote momentumTransport and
+  snappyHexMeshDict, and marked the mesh stale. A clone carried the record. The
+  same dictionaries meshed on v13 (64,792 cells; 6 faces with skewness 4.6).
+  The "not available" message was checked by answering snappySupport as v12
+  in the page. All disposable cases were removed.
+- Pre-existing, left alone: switching kOmegaSST to kEpsilon keeps 0/omega in
+  the wizard's field list; the clone route answers `caseName: "OK: cloned"`.
+
 ## 2026-09-10 — v5.3.1: safer case workflows, Post-Process and ParaView
 
 - Released `v5.3.1` at the user's request; notes in

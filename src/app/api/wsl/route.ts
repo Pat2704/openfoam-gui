@@ -16,6 +16,7 @@ import {
   findOpenFOAMVersions,
   setOpenFOAMVersion,
   getSelectedBashrc,
+  getSnappySupport,
 } from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
 
@@ -68,6 +69,11 @@ export async function GET(req: NextRequest) {
       case 'version': {
         const version = getOpenFOAMVersion();
         return NextResponse.json({ version: version.trim() });
+      }
+      case 'snappySupport': {
+        // Whether the wizard may offer snappyHexMesh: OpenFOAM 13 or 14 with
+        // the .cfg files its dictionaries include. Answers with the reason if not.
+        return NextResponse.json(getSnappySupport());
       }
       case 'env': {
         const env = getOpenFOAMEnv();

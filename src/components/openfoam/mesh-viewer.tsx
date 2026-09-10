@@ -418,10 +418,13 @@ function readThemeColors(): { background: [number, number, number]; foregroundCs
   return { background: cssColorToRgb(bgCss, fallback), foregroundCss: fgCss, backgroundCss: bgCss };
 }
 
-export default function MeshViewer({ caseName, active = true }: {
+export default function MeshViewer({ caseName, active = true, autoLoad = false, onAutoLoaded }: {
   caseName: string;
   /** False while another tab is on screen — we skip resize work and redraws. */
   active?: boolean;
+  /** Load the mesh without a click: set when the wizard has just built it. */
+  autoLoad?: boolean;
+  onAutoLoaded?: () => void;
 }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -936,6 +939,14 @@ export default function MeshViewer({ caseName, active = true }: {
       setLoading(false);
     }
   }, [caseName, clearVertexLabels]);
+
+  // The wizard's "Show in the Mesh tab" after building the mesh. Consumed at
+  // once, so returning to the tab later does not extract the surface again.
+  useEffect(() => {
+    if (!autoLoad || !active) return;
+    onAutoLoaded?.();
+    void loadMesh();
+  }, [autoLoad, active, loadMesh]);
 
   // ── blockMeshDict vertex numbering ────────────────────────────────────────
   const loadVertexLabels = useCallback(async () => {

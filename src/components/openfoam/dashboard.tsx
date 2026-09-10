@@ -17,7 +17,7 @@ import {
   Box, Trash2, FolderOpen, RefreshCw, Settings, Play, Terminal as TerminalIcon,
   CheckCircle2, XCircle, Activity, Terminal, ChevronRight,
   AlertTriangle, Copy, BookOpen, FolderTree, HardDrive, Clock,
-  FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch
+  FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch, Wand2
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
@@ -36,6 +36,8 @@ interface CaseSummary {
   lastTimeStep: string;
   hasLog: boolean;
   logFiles: string[];
+  /** Carries the New Case wizard's record, so it can be updated from there. */
+  wizard?: boolean;
 }
 
 interface TutorialCategory { name: string; path: string; }
@@ -68,11 +70,13 @@ const WARMUP_DELAY_MS = 5_000;
 type RuntimeSettings = 'openfoam' | 'paraview' | null;
 
 export default function Dashboard({
-  selectedCase, onSelectCase, onRefresh, refreshSignal = 0
+  selectedCase, onSelectCase, onRefresh, refreshSignal = 0, onUpdateCase
 }: {
   selectedCase: string | null;
   onSelectCase: (name: string) => void;
   onRefresh: () => void;
+  /** Reopen a wizard-made case in the New Case wizard ("Update case"). */
+  onUpdateCase?: (name: string) => void;
   /**
    * Bumped by the page when something outside this component changed the case
    * list — creating a case in the wizard, for one. Without it the user lands
@@ -943,6 +947,18 @@ export default function Dashboard({
                       >
                         <Terminal className="w-3 h-3" />
                       </Button>
+                      {/* Only cases the wizard made carry its record; the rest
+                          have nothing to reopen and show no button. */}
+                      {c.wizard && onUpdateCase && (
+                        <Button
+                          size="sm" variant="ghost" className="h-7 w-7 p-0 text-violet-500 hover:text-violet-600 hover:bg-violet-500/10"
+                          onClick={(e) => { e.stopPropagation(); onUpdateCase(c.name); }}
+                          title="Update case: reopen its settings in the New Case wizard"
+                          aria-label={`Update case ${c.name} in the wizard`}
+                        >
+                          <Wand2 className="w-3 h-3" />
+                        </Button>
+                      )}
                       <Button
                         // `hover:bg-blue-50` is a near-white chip, which is what
                         // this button flashed in dark mode. A translucent tint of
