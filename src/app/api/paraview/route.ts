@@ -103,7 +103,9 @@ export async function POST(req: NextRequest) {
     if (action === 'stop') {
       // Cancelling must not wait for the start it cancels.
       await abortParaViewStartup();
-      await enqueueLifecycle(stopParaViewSession);
+      // The abort above also invalidates queued starts. Do not invalidate a
+      // fresh start a second time when this queued cleanup gets its turn.
+      await enqueueLifecycle(() => stopParaViewSession(false));
       return NextResponse.json({ ok: true });
     }
 

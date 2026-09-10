@@ -3327,12 +3327,14 @@ exit 0
 // `./postprocess`, which is pure and unit-tested; this half is the WSL access
 // it needs.
 //
-// One trap decided the shape of both scripts below. On this installation
+// One trap decided the shape of the INSTALLATION catalogue below. On this installation
 // `etc/caseDicts/postProcessing` is a SYMLINK to `etc/caseDicts/functions`, and
 // `find` does not follow symlinks unless told to: `find <link> -type f` reports
 // the link itself and nothing else. Without `-L` the catalogue came back with
 // zero entries — a feature that silently finds nothing, on the machine it was
-// written for. Every find in this section is `find -L`.
+// written for. Case output may also use valid in-case links, but every resolved
+// target is checked before it is reported or read: a link inside a case must
+// never make a case operation leave the case.
 
 /** One place OpenFOAM looks for configured function objects. */
 interface FunctionEtcDir {
@@ -3418,15 +3420,16 @@ export function listPostProcessing(caseName: string): PostProcessDataset[] {
   // tens of thousands of files and none of them would fit on screen anyway.
   const MAX_ENTRIES = 20000;
   const script = `
-if [ ! -d ${shellQuote(root)} ]; then exit 0; fi
-find -L ${shellQuote(root)} -mindepth 3 -type f -printf '%P\\t%s\\n' 2>/dev/null | head -n ${MAX_ENTRIES}
+case_root=$(realpath -e -- ${shellQuote(casePath)}) || exit 1
+root=$(realpath -e -- ${shellQuote(root)} 2>/dev/null) || exit 0
+case "$root" in "$case_root"/*) ;; *) echo "postProcessing leaves the case" >&2; exit 2 ;; esac
+find -L "$root" -mindepth 3 -type f -printf '%P\\t%s\\n' 2>/dev/null |
+while IFS=$'\\t' read -r relative size; do
+  resolved=$(realpath -e -- "$root/$relative" 2>/dev/null) || continue
+  case "$resolved" in "$root"/*) printf '%s\\t%s\\n' "$relative" "$size" ;; esac
+done | head -n ${MAX_ENTRIES}
 `;
-  let output: string;
-  try {
-    output = runInWslScript(Buffer.from(script).toString('base64'), 30000);
-  } catch {
-    return [];
-  }
+  const output = runInWslScript(Buffer.from(script).toString('base64'), 30000);
 
   const datasets = new Map<string, Map<string, { times: Set<string>; bytes: number }>>();
   for (const line of output.split('\n')) {
@@ -3474,8 +3477,20 @@ export interface PostProcessSlice {
   truncated: boolean;
 }
 
+export interface PostProcessDatasetRead {
+  slices: PostProcessSlice[];
+  /** Every readable time name retained for the profile selector. */
+  times: string[];
+  /** The time-name safety ceiling was reached. */
+  timesTruncated: boolean;
+  /** More restart slices exist than can safely be parsed in one request. */
+  slicesTruncated: boolean;
+}
+
 /**
- * Read every time directory's copy of one dataset file.
+ * List every retained time directory and read the latest bounded set of copies.
+ * A requested profile time is always added to that set, so the selector can
+ * reach old snapshots without moving tens of thousands of files over WSL.
  *
  * The slices come back base64-encoded, one per line, rather than concatenated
  * behind a delimiter. A delimiter would have to be a string that can never
@@ -3487,7 +3502,8 @@ export function readPostProcessDataset(
   caseName: string,
   datasetName: string,
   fileName: string,
-): PostProcessSlice[] {
+  requestedTime?: string,
+): PostProcessDatasetRead {
   const casePath = getCasePath(caseName);
   // `validateRelativePath` accepts the parentheses, commas and equals signs
   // OpenFOAM puts in these directory names, and refuses traversal, absolute
@@ -3495,6 +3511,10 @@ export function readPostProcessDataset(
   const safeDataset = validateRelativePath(datasetName, 'Dataset');
   const safeFile = validateRelativePath(fileName, 'File');
   if (safeDataset.includes('/')) throw new WslInputError('Dataset invalid');
+  const safeRequestedTime = requestedTime?.trim() || '';
+  if (safeRequestedTime && !/^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/.test(safeRequestedTime)) {
+    throw new WslInputError('Post-processing time is not valid');
+  }
 
   const base = `${casePath}/${POST_PROCESSING_DIR}/${safeDataset}`;
   // 8 MB is about 200 000 rows of a scalar series, which is already past what
@@ -3502,28 +3522,66 @@ export function readPostProcessDataset(
   // rather than hidden.
   const MAX_SLICE_BYTES = 8 * 1024 * 1024;
   const MAX_SLICES = 200;
+  const MAX_TIME_NAMES = 20000;
   const script = `
-base=${shellQuote(base)}
+case_root=$(realpath -e -- ${shellQuote(casePath)}) || exit 1
+base=$(realpath -e -- ${shellQuote(base)} 2>/dev/null) || exit 0
+case "$base" in "$case_root"/*) ;; *) echo "Dataset leaves the case" >&2; exit 2 ;; esac
 name=${shellQuote(safeFile)}
-find -L "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null | sort -g | head -n ${MAX_SLICES} |
-while IFS= read -r t; do
+requested=${shellQuote(safeRequestedTime)}
+all=$(
+  find -L "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null |
+  grep -E '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$' |
+  sort -gu |
+  while IFS= read -r t; do
+    f="$base/$t/$name"
+    resolved=$(realpath -e -- "$f" 2>/dev/null) || continue
+    case "$resolved" in "$base"/*) [ -f "$resolved" ] && printf '%s\\n' "$t" ;; esac
+  done |
+  tail -n ${MAX_TIME_NAMES + 1}
+)
+count=$(printf '%s\\n' "$all" | grep -c . || true)
+if [ "$count" -gt ${MAX_TIME_NAMES} ]; then
+  printf 'M\\t1\\n'
+  all=$(printf '%s\\n' "$all" | tail -n ${MAX_TIME_NAMES})
+else
+  printf 'M\\t0\\n'
+fi
+printf '%s\\n' "$all" | while IFS= read -r t; do [ -n "$t" ] && printf 'T\\t%s\\n' "$t"; done
+
+selected=$(printf '%s\\n' "$all" | tail -n ${MAX_SLICES})
+if [ -n "$requested" ] && printf '%s\\n' "$all" | grep -Fqx -- "$requested"; then
+  selected=$(printf '%s\\n%s\\n' "$selected" "$requested" | sort -gu)
+fi
+printf 'R\\t%s\\n' "$([ "$count" -gt ${MAX_SLICES} ] && echo 1 || echo 0)"
+printf '%s\\n' "$selected" | while IFS= read -r t; do
+  [ -n "$t" ] || continue
   f="$base/$t/$name"
-  [ -f "$f" ] || continue
-  size=$(stat -c '%s' "$f" 2>/dev/null || echo 0)
-  printf '%s\\t%s\\t' "$t" "$size"
-  head -c ${MAX_SLICE_BYTES} -- "$f" | base64 -w0
+  resolved=$(realpath -e -- "$f" 2>/dev/null) || continue
+  case "$resolved" in "$base"/*) ;; *) continue ;; esac
+  [ -f "$resolved" ] || continue
+  size=$(stat -c '%s' "$resolved" 2>/dev/null || echo 0)
+  printf 'S\\t%s\\t%s\\t' "$t" "$size"
+  head -c ${MAX_SLICE_BYTES} -- "$resolved" | base64 -w0
   printf '\\n'
 done
 `;
   const output = runInWslScript(Buffer.from(script).toString('base64'), 120000);
 
   const slices: PostProcessSlice[] = [];
+  const times: string[] = [];
+  let timesTruncated = false;
+  let slicesTruncated = false;
   for (const line of output.split('\n')) {
     if (!line.trim()) continue;
-    const separator = line.indexOf('\t');
+    if (line.startsWith('M\t')) { timesTruncated = line.slice(2) === '1'; continue; }
+    if (line.startsWith('R\t')) { slicesTruncated = line.slice(2) === '1'; continue; }
+    if (line.startsWith('T\t')) { times.push(line.slice(2)); continue; }
+    if (!line.startsWith('S\t')) continue;
+    const separator = line.indexOf('\t', 2);
     const second = line.indexOf('\t', separator + 1);
     if (separator === -1 || second === -1) continue;
-    const startTime = line.slice(0, separator);
+    const startTime = line.slice(2, separator);
     const size = Number(line.slice(separator + 1, second)) || 0;
     const encoded = line.slice(second + 1);
     slices.push({
@@ -3532,7 +3590,7 @@ done
       truncated: size > MAX_SLICE_BYTES,
     });
   }
-  return slices;
+  return { slices, times, timesTruncated, slicesTruncated };
 }
 
 export interface CatalogEntry {

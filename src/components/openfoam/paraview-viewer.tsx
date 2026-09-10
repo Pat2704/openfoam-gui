@@ -267,6 +267,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const wasActiveRef = useRef(active);
   const recoveriesRef = useRef(0);
   const imageRecoveryRef = useRef(0);
+  const startRequestRef = useRef(0);
 
   const selected = useMemo(
     () => workbench?.pipeline.find(node => node.id === workbench.selectedId) || null,
@@ -319,7 +320,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const command = useCallback(async (
     name: string,
     data: Record<string, unknown> = {},
-    options: { render?: boolean; interactive?: boolean; quiet?: boolean } = {},
+    options: { render?: boolean; interactive?: boolean; quiet?: boolean; applyState?: boolean } = {},
   ): Promise<ParaViewWorkbenchState | null> => {
     if (!options.quiet) setBusy(true);
     setError('');
@@ -331,7 +332,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       }, REQUEST_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       const result = await response.json() as { state?: ParaViewWorkbenchState };
-      if (result.state) setWorkbench(result.state);
+      if (result.state && options.applyState !== false) setWorkbench(result.state);
       if (options.render !== false) await fetchRender(options.interactive);
       return result.state || null;
     } catch (cause) {
@@ -382,6 +383,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
 
   const start = useCallback(async (force = false) => {
     if (!caseName || starting || !configLoaded) return;
+    const requestId = ++startRequestRef.current;
     startedCaseRef.current = caseName;
     stoppedRef.current = false;
     imageRecoveryRef.current = 0;
@@ -398,11 +400,14 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         if (sessionResponse.ok) {
           const current = await sessionResponse.json() as { session?: { caseName?: string } | null };
           if (current.session?.caseName === caseName) {
-            const existing = await command('state', {}, { render: false, quiet: true });
-            if (existing) {
+            const existing = await command('state', {}, { render: false, quiet: true, applyState: false });
+            if (existing && requestId === startRequestRef.current && !stoppedRef.current) {
               recoveriesRef.current = 0;
+              setWorkbench(existing);
               await fetchRender(true);
-              window.setTimeout(() => void fetchRender(false), 80);
+              window.setTimeout(() => {
+                if (requestId === startRequestRef.current && !stoppedRef.current) void fetchRender(false);
+              }, 80);
               return;
             }
           }
@@ -415,20 +420,26 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       }, START_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       const result = await response.json() as { state: ParaViewWorkbenchState };
+      if (requestId !== startRequestRef.current || stoppedRef.current) return;
       recoveriesRef.current = 0;
       setWorkbench(result.state);
       await fetchRender(true);
-      window.setTimeout(() => void fetchRender(false), 80);
+      window.setTimeout(() => {
+        if (requestId === startRequestRef.current && !stoppedRef.current) void fetchRender(false);
+      }, 80);
     } catch (cause) {
+      if (requestId !== startRequestRef.current) return;
       const message = cause instanceof Error ? cause.message : 'ParaView could not start.';
       setError(message);
       setWorkbench(null);
     } finally {
-      setStarting(false);
+      if (requestId === startRequestRef.current) setStarting(false);
     }
   }, [caseName, command, configLoaded, fetchRender, path, starting]);
 
   const stop = useCallback(async () => {
+    startRequestRef.current += 1;
+    shownImageSequenceRef.current = ++nextImageSequenceRef.current;
     setPlaying(false);
     setBusy(true);
     stoppedRef.current = true;
@@ -464,6 +475,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     return () => {
       cancelled = true;
       disposedRef.current = true;
+      startRequestRef.current += 1;
       window.clearTimeout(configFallback);
       window.removeEventListener('paraview-config-changed', reloadConfig);
       if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
@@ -498,7 +510,12 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   }, [starting]);
 
   const cancelStart = useCallback(async () => {
+    startRequestRef.current += 1;
+    shownImageSequenceRef.current = ++nextImageSequenceRef.current;
     stoppedRef.current = true;
+    setStarting(false);
+    setWorkbench(null);
+    setError('ParaView startup was cancelled.');
     try {
       await timedFetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -613,13 +630,13 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     const sequence = ++nextImageSequenceRef.current;
     try {
       const size = imageSize();
-      const response = await fetch('/api/paraview', {
+      const response = await timedFetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'camera', cameraAction: action, mode, dx, dy,
           quality: 92, ...size,
         }),
-      });
+      }, REQUEST_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       showImage(await response.blob(), sequence);
     } catch (cause) {
@@ -673,10 +690,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     const sequence = ++nextImageSequenceRef.current;
     try {
       const size = imageSize();
-      const response = await fetch('/api/paraview', {
+      const response = await timedFetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'camera', cameraAction: cameraActionName, view, quality: 94, ...size }),
-      });
+      }, REQUEST_TIMEOUT_MS);
       if (!response.ok) throw new Error(await errorFrom(response));
       showImage(await response.blob(), sequence);
     } catch (cause) {
@@ -873,7 +890,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     <div className="flex h-full min-h-[680px] flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
       <div className="flex min-h-11 flex-wrap items-center gap-1 border-b bg-muted/35 px-2 py-1.5">
         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={starting || busy} onClick={() => void start(true)} title="Reload the OpenFOAM case"><RefreshCw className={`h-3.5 w-3.5 ${starting ? 'animate-spin' : ''}`} /> Reload</Button>
-        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => void command('refresh')} title="Refresh fields and timesteps"><RefreshCw className="h-3.5 w-3.5" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => void command('refresh')} title="Refresh fields and timesteps" aria-label="Refresh fields and timesteps"><RefreshCw className="h-3.5 w-3.5" /></Button>
         <span className="mx-1 h-6 w-px bg-border" />
         <Select value={filterChoice} onValueChange={value => addFilter(value as FilterType)} disabled={busy}>
           <SelectTrigger size="sm" className="h-7 w-[178px] text-xs"><Search className="h-3.5 w-3.5" /><SelectValue placeholder="Add filter…" /></SelectTrigger>
@@ -884,16 +901,16 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             </React.Fragment>)}
           </SelectContent>
         </Select>
-        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy || selected?.id === 'reader'} onClick={() => void command('delete')} title="Delete selected filter"><Trash2 className="h-3.5 w-3.5" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy || selected?.id === 'reader'} onClick={() => void command('delete')} title="Delete selected filter" aria-label="Delete selected filter"><Trash2 className="h-3.5 w-3.5" /></Button>
         <span className="mx-1 h-6 w-px bg-border" />
         {['+X', '-X', '+Y', '-Y', '+Z', '-Z', 'Iso'].map(view => <Button key={view} size="sm" variant="ghost" className="h-7 min-w-7 px-1.5 font-mono text-[10px]" onClick={() => void cameraAction('standard_view', view)}>{view}</Button>)}
-        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void cameraAction('reset_camera')} title="Reset camera"><Maximize2 className="h-3.5 w-3.5" /></Button>
-        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={downloadScreenshot} title="Save screenshot"><Download className="h-3.5 w-3.5" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void cameraAction('reset_camera')} title="Reset camera" aria-label="Reset camera"><Maximize2 className="h-3.5 w-3.5" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={downloadScreenshot} title="Save screenshot" aria-label="Save screenshot"><Download className="h-3.5 w-3.5" /></Button>
         <div className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
           {(busy || cameraBusy) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {workbench.reader.decomposedAvailable && <Badge variant="outline" className="font-mono text-[10px]">MPI ×{workbench.reader.processorCount}</Badge>}
           <Badge variant="secondary" className="font-mono text-[10px]">ParaView {workbench.version}</Badge>
-          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void stop()} title="Stop ParaView"><Power className="h-3.5 w-3.5" /></Button>
+          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void stop()} title="Stop ParaView" aria-label="Stop ParaView"><Power className="h-3.5 w-3.5" /></Button>
         </div>
       </div>
 
@@ -903,10 +920,23 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         <aside className="flex min-h-0 flex-col border-r bg-muted/15">
           <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-2 text-xs font-semibold"><Layers3 className="h-3.5 w-3.5" /> Pipeline Browser<Button size="sm" variant="ghost" className="ml-auto h-7 px-1.5 text-[9px]" disabled={busy} onClick={showFileBrowser} title="Open a data file from this case"><FolderOpen className="h-3.5 w-3.5" /> Open file</Button></div>
           <ScrollArea className="min-h-28 flex-1 border-b">
-            <div className="p-1.5">{workbench.pipeline.map(node => (
-              <div key={node.id} className={`group flex h-8 cursor-default items-center gap-1 rounded px-1 text-xs ${node.id === workbench.selectedId ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`} style={{ paddingLeft: `${4 + depthOf(node) * 15}px` }} onClick={() => void command('select', { id: node.id }, { render: false })}>
+            <div className="p-1.5" role="tree" aria-label="ParaView pipeline">{workbench.pipeline.map(node => (
+              <div
+                key={node.id}
+                role="treeitem"
+                aria-selected={node.id === workbench.selectedId}
+                tabIndex={0}
+                className={`group flex h-8 cursor-default items-center gap-1 rounded px-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${node.id === workbench.selectedId ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+                style={{ paddingLeft: `${4 + depthOf(node) * 15}px` }}
+                onClick={() => void command('select', { id: node.id }, { render: false })}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  void command('select', { id: node.id }, { render: false });
+                }}
+              >
                 {depthOf(node) > 0 && <span className="text-muted-foreground">└</span>}
-                <button className="rounded p-0.5 opacity-80 hover:bg-background/20" title={node.visible ? 'Hide' : 'Show'} onClick={event => { event.stopPropagation(); void command('set_visibility', { id: node.id, visible: !node.visible }); }}>{node.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
+                <button className="rounded p-0.5 opacity-80 hover:bg-background/20" title={node.visible ? 'Hide' : 'Show'} aria-label={`${node.visible ? 'Hide' : 'Show'} ${node.label}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void command('set_visibility', { id: node.id, visible: !node.visible }); }}>{node.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
                 {filterIcon(node.type)}<span className="truncate" title={node.label}>{node.label}</span>
               </div>
             ))}</div>
@@ -1001,9 +1031,9 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 <Label className="text-[10px]">Representation</Label>
                 <Select value={selected.representation} onValueChange={representation => void command('update', { representation })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{REPRESENTATIONS.map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
                 <div className="flex items-center justify-between"><Label className="text-[10px]">Opacity</Label><span className="font-mono text-[10px]">{displayDraft.opacity.toFixed(2)}</span></div>
-                <input className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={displayDraft.opacity} onChange={event => setDisplayDraft(current => ({ ...current, opacity: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} />
-                {(selected.representation === 'Surface With Edges' || selected.representation === 'Wireframe') && <><div className="flex items-center justify-between"><Label className="text-[10px]">Line width</Label><span className="font-mono text-[10px]">{displayDraft.lineWidth.toFixed(1)}</span></div><input className="w-full accent-primary" type="range" min="1" max="10" step="0.5" value={displayDraft.lineWidth} onChange={event => setDisplayDraft(current => ({ ...current, lineWidth: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
-                {selected.representation === 'Points' && <><div className="flex items-center justify-between"><Label className="text-[10px]">Point size</Label><span className="font-mono text-[10px]">{displayDraft.pointSize.toFixed(1)}</span></div><input className="w-full accent-primary" type="range" min="1" max="20" step="1" value={displayDraft.pointSize} onChange={event => setDisplayDraft(current => ({ ...current, pointSize: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
+                <input aria-label="Opacity" className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={displayDraft.opacity} onChange={event => setDisplayDraft(current => ({ ...current, opacity: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} />
+                {(selected.representation === 'Surface With Edges' || selected.representation === 'Wireframe') && <><div className="flex items-center justify-between"><Label className="text-[10px]">Line width</Label><span className="font-mono text-[10px]">{displayDraft.lineWidth.toFixed(1)}</span></div><input aria-label="Line width" className="w-full accent-primary" type="range" min="1" max="10" step="0.5" value={displayDraft.lineWidth} onChange={event => setDisplayDraft(current => ({ ...current, lineWidth: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
+                {selected.representation === 'Points' && <><div className="flex items-center justify-between"><Label className="text-[10px]">Point size</Label><span className="font-mono text-[10px]">{displayDraft.pointSize.toFixed(1)}</span></div><input aria-label="Point size" className="w-full accent-primary" type="range" min="1" max="20" step="1" value={displayDraft.pointSize} onChange={event => setDisplayDraft(current => ({ ...current, pointSize: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
               </section>
 
               <section className="space-y-2 border-t pt-3">
@@ -1068,7 +1098,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
               </section>}
 
-              {selected.type === 'Shrink' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Shrink cells</p><div className="flex items-center justify-between"><Label className="text-[10px]">Factor</Label><span className="font-mono text-[10px]">{draft.shrinkFactor.toFixed(2)}</span></div><input className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={draft.shrinkFactor} onChange={event => setDraft(current => ({ ...current, shrinkFactor: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
+              {selected.type === 'Shrink' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Shrink cells</p><div className="flex items-center justify-between"><Label className="text-[10px]">Factor</Label><span className="font-mono text-[10px]">{draft.shrinkFactor.toFixed(2)}</span></div><input aria-label="Shrink factor" className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={draft.shrinkFactor} onChange={event => setDraft(current => ({ ...current, shrinkFactor: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
 
               {selected.type === 'PlotOverLine' && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Sampling line</p>
@@ -1103,11 +1133,11 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       </div>
 
       <div className="flex min-h-11 items-center gap-2 border-t bg-muted/25 px-3 py-1.5">
-        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={timeIndex <= 0 || busy || !workbench.reader.hasTimeSteps} onClick={() => void requestTime(workbench.times[timeIndex - 1])}><ChevronLeft className="h-4 w-4" /></Button>
-        <Button size="icon" variant="outline" className="h-7 w-7" disabled={workbench.times.length < 2 || !workbench.reader.hasTimeSteps} onClick={() => setPlaying(value => !value)}>{playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}</Button>
-        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={timeIndex >= workbench.times.length - 1 || busy || !workbench.reader.hasTimeSteps} onClick={() => void requestTime(workbench.times[timeIndex + 1])}><ChevronRight className="h-4 w-4" /></Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Previous timestep" title="Previous timestep" disabled={timeIndex <= 0 || busy || !workbench.reader.hasTimeSteps} onClick={() => void requestTime(workbench.times[timeIndex - 1])}><ChevronLeft className="h-4 w-4" /></Button>
+        <Button size="icon" variant="outline" className="h-7 w-7" aria-label={playing ? 'Pause timestep playback' : 'Play timesteps'} title={playing ? 'Pause timestep playback' : 'Play timesteps'} disabled={workbench.times.length < 2 || !workbench.reader.hasTimeSteps} onClick={() => setPlaying(value => !value)}>{playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}</Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Next timestep" title="Next timestep" disabled={timeIndex >= workbench.times.length - 1 || busy || !workbench.reader.hasTimeSteps} onClick={() => void requestTime(workbench.times[timeIndex + 1])}><ChevronRight className="h-4 w-4" /></Button>
         <span className="text-[10px] text-muted-foreground">Time</span>
-        <input className="min-w-24 flex-1 accent-primary" type="range" min="0" max={Math.max(0, workbench.times.length - 1)} step="1" value={timeIndex} disabled={workbench.times.length < 2 || busy || !workbench.reader.hasTimeSteps} onChange={event => void requestTime(workbench.times[Number(event.target.value)])} />
+        <input aria-label="ParaView timestep" aria-valuetext={String(workbench.time)} className="min-w-24 flex-1 accent-primary" type="range" min="0" max={Math.max(0, workbench.times.length - 1)} step="1" value={timeIndex} disabled={workbench.times.length < 2 || busy || !workbench.reader.hasTimeSteps} onChange={event => void requestTime(workbench.times[Number(event.target.value)])} />
         <Badge variant="outline" className="min-w-20 justify-center font-mono text-[10px]">{workbench.time}</Badge>
         <span className="hidden max-w-44 truncate text-[10px] text-muted-foreground sm:inline" title={caseName}>{caseName}</span>
       </div>

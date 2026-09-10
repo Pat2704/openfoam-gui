@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import {
   compareParaViewVersions,
   normalizeParaViewPath,
+  ParaViewLifecycleGuard,
   PARAVIEW_RENDER_ARGS,
   paraViewWarmupArgs,
   paraViewExecutableCandidates,
@@ -66,4 +67,15 @@ test('The background warm-up loads what the workbench engine will load', () => {
   assert.ok(script.includes('Render('));
   // A one-liner: nothing is written to disk and nothing is left running.
   assert.equal(args.length, PARAVIEW_RENDER_ARGS.length + 2);
+});
+
+test('cancelling ParaView invalidates running and queued startup tickets', () => {
+  const guard = new ParaViewLifecycleGuard();
+  const running = guard.issue();
+  const queued = guard.issue();
+  guard.assertCurrent(running);
+  guard.cancel();
+  assert.throws(() => guard.assertCurrent(running), /cancelled/i);
+  assert.throws(() => guard.assertCurrent(queued), /cancelled/i);
+  guard.assertCurrent(guard.issue());
 });

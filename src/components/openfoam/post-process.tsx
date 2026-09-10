@@ -42,6 +42,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   describeDatasetName, summarizeColumn, downsampleRows, buildCallTemplate, buildFunctionsEntry,
   buildCommandTemplate, parsePostProcessCommand, POST_PROCESS_NAMES,
+  serializeCsv,
 } from '@/lib/postprocess';
 import { residualsToTable } from '@/lib/residuals';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
@@ -89,6 +90,8 @@ interface TableData {
   overwritten: number;
   synthesizedColumns: boolean;
   truncated: boolean;
+  timesTruncated: boolean;
+  runsTruncated: boolean;
 }
 
 interface CatalogArg {
@@ -275,7 +278,7 @@ function DocBlockView({ block }: { block: DocBlock }) {
  * uses them to watch a run — so this only reshapes, and the chart, the table,
  * the CSV and the image export then treat a log like any other dataset.
  */
-async function readResiduals(caseName: string, log: string): Promise<TableData> {
+async function readResiduals(caseName: string, log: string, maxPoints = 4000): Promise<TableData> {
   const response = await fetch(
     `/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(log)}&maxLines=50000`,
   );
@@ -304,7 +307,7 @@ async function readResiduals(caseName: string, log: string): Promise<TableData> 
   return {
     mode: 'series',
     columns,
-    rows: downsampleRows(rows, 4000),
+    rows: downsampleRows(rows, maxPoints),
     totalRows: rows.length,
     stats,
     notes: columns.length
@@ -317,7 +320,27 @@ async function readResiduals(caseName: string, log: string): Promise<TableData> 
     overwritten: 0,
     synthesizedColumns: false,
     truncated: false,
+    timesTruncated: false,
+    runsTruncated: false,
   };
+}
+
+async function readSelectionData(
+  caseName: string,
+  target: Selection,
+  time?: string,
+  maxPoints = 4000,
+): Promise<TableData> {
+  if (target.kind === 'log') return readResiduals(caseName, target.log, maxPoints);
+  const query = new URLSearchParams({
+    action: 'data', case: caseName, dataset: target.dataset, file: target.file,
+    maxPoints: String(maxPoints),
+  });
+  if (time) query.set('time', time);
+  const response = await fetch(`/api/postprocess?${query}`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Could not read the dataset');
+  return payload as TableData;
 }
 
 export default function PostProcess({ caseName, active = true }: { caseName: string; active?: boolean }) {
@@ -328,6 +351,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [exportOpen, setExportOpen] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
+  const [copyingCsv, setCopyingCsv] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -380,12 +404,19 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   // requests on a slow WSL call and the last answer to arrive wins, which is
   // not necessarily the newest one.
   const listInFlight = useRef<Promise<void> | null>(null);
-  const dataInFlight = useRef<Promise<void> | null>(null);
+  const listRequestRef = useRef(0);
+  const dataRequestRef = useRef(0);
+  const dataQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const contextRequestRef = useRef(0);
+  const catalogRequestRef = useRef(0);
+  const docRequestRef = useRef(0);
 
   const loadDatasets = useCallback(async (): Promise<void> => {
     if (!caseName) return;
     if (listInFlight.current) return listInFlight.current;
-    const request = (async () => {
+    const requestId = ++listRequestRef.current;
+    let request!: Promise<void>;
+    request = (async () => {
       setLoadingList(true);
       try {
         // Both lists in one pass: the function-object output and the solver
@@ -396,51 +427,47 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         ]);
         const payload = await datasetsResponse.json();
         if (!datasetsResponse.ok) throw new Error(payload.error || 'Could not list postProcessing');
+        const logPayload = await logsResponse.json();
+        if (!logsResponse.ok) throw new Error(logPayload.error || 'Could not list solver logs');
+        if (requestId !== listRequestRef.current) return;
         setDatasets(payload.datasets ?? []);
-        if (logsResponse.ok) {
-          const logPayload = await logsResponse.json();
-          setLogs(Array.isArray(logPayload.availableLogs) ? logPayload.availableLogs : []);
-        }
+        setLogs(Array.isArray(logPayload.availableLogs) ? logPayload.availableLogs : []);
         setError(null);
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : 'Could not list postProcessing');
+        if (requestId === listRequestRef.current) {
+          setError(e instanceof Error ? e.message : 'Could not list postProcessing');
+        }
       } finally {
-        setLoadingList(false);
-        listInFlight.current = null;
+        if (requestId === listRequestRef.current) setLoadingList(false);
+        if (listInFlight.current === request) listInFlight.current = null;
       }
     })();
     listInFlight.current = request;
     return request;
   }, [caseName]);
 
-  const loadData = useCallback(async (target: Selection, time?: string): Promise<void> => {
-    if (!caseName) return;
-    if (dataInFlight.current) await dataInFlight.current;
-    const request = (async () => {
-      setLoadingData(true);
+  const loadData = useCallback((target: Selection, time?: string): Promise<void> => {
+    if (!caseName) return Promise.resolve();
+    const requestId = ++dataRequestRef.current;
+    setLoadingData(true);
+    // Keep one WSL read active at a time. Superseded queued reads return before
+    // crossing the API boundary, while the newest selection waits its turn.
+    const request = dataQueueRef.current.catch(() => undefined).then(async () => {
+      if (requestId !== dataRequestRef.current) return;
       try {
-        if (target.kind === 'log') {
-          setData(await readResiduals(caseName, target.log));
-        } else {
-          const query = new URLSearchParams({
-            action: 'data', case: caseName, dataset: target.dataset, file: target.file,
-          });
-          if (time) query.set('time', time);
-          const response = await fetch(`/api/postprocess?${query}`);
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error || 'Could not read the dataset');
-          setData(payload);
-        }
+        const result = await readSelectionData(caseName, target, time);
+        if (requestId !== dataRequestRef.current) return;
+        setData(result);
         setError(null);
       } catch (e: unknown) {
+        if (requestId !== dataRequestRef.current) return;
         setData(null);
         setError(e instanceof Error ? e.message : 'Could not read the data');
       } finally {
-        setLoadingData(false);
-        dataInFlight.current = null;
+        if (requestId === dataRequestRef.current) setLoadingData(false);
       }
-    })();
-    dataInFlight.current = request;
+    });
+    dataQueueRef.current = request;
     return request;
   }, [caseName]);
 
@@ -488,16 +515,21 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     // mesh's bounding box and the solver it declares. Every example the panel
     // builds is made of these, so a call it offers names things that exist.
     if ((force || !context) && caseName) {
+      const contextRequest = ++contextRequestRef.current;
       void fetch(`/api/postprocess?action=context&case=${encodeURIComponent(caseName)}`)
         .then(response => (response.ok ? response.json() : null))
-        .then(payload => { if (payload) setContext(payload as CaseContext); })
+        .then(payload => {
+          if (payload && contextRequest === contextRequestRef.current) setContext(payload as CaseContext);
+        })
         .catch(() => { /* an example falls back to a placeholder */ });
     }
     if (!force && catalog.length) return;
+    const catalogRequest = ++catalogRequestRef.current;
     try {
       const response = await fetch(`/api/postprocess?action=catalog${force ? '&refresh=true' : ''}`);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not read the function catalogue');
+      if (catalogRequest !== catalogRequestRef.current) return;
       setCatalog(payload.entries ?? []);
       // Which spelling this OpenFOAM has, so the command shown is the one that
       // would actually run: v12 renamed postProcess to foamPostProcess. The
@@ -506,7 +538,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       if (typeof payload.utility === 'string') setUtility(payload.utility);
       if (Array.isArray(payload.options)) setUtilityOptions(payload.options);
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
+      if (catalogRequest === catalogRequestRef.current) {
+        toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
+      }
     }
   }, [catalog.length, caseName, context]);
 
@@ -547,6 +581,17 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
    */
   useEffect(() => {
     const onInstallationChanged = () => {
+      listRequestRef.current += 1;
+      dataRequestRef.current += 1;
+      contextRequestRef.current += 1;
+      catalogRequestRef.current += 1;
+      docRequestRef.current += 1;
+      listInFlight.current = null;
+      setDatasets([]);
+      setLogs([]);
+      setSelected(null);
+      setData(null);
+      setLoadingData(false);
       setChosen(null);
       setCommandText('');
       setEntryText('');
@@ -555,6 +600,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       setCatalog([]);
       setUtilityOptions([]);
       setClassDoc(null);
+      setDocLoading(false);
       // The run directory moves with the version, so what the case holds has to
       // be listed again too.
       void loadDatasets();
@@ -583,6 +629,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   }, [catalogOpen, chosen, context, utility, replaySolver]);
 
   const chooseFunction = (entry: CatalogEntry) => {
+    const docRequest = ++docRequestRef.current;
     setChosen(entry);
     setRunOutput(null);
     // Both texts start from what the installation declares: the real argument
@@ -598,13 +645,17 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     // ever read. A function whose class cannot be identified with certainty
     // simply has none, which is the honest outcome — see readFunctionClassDoc.
     setClassDoc(null);
+    setDocLoading(Boolean(entry.type));
     if (!entry.type) return;
-    setDocLoading(true);
     void fetch(`/api/postprocess?action=doc&type=${encodeURIComponent(entry.type)}`)
       .then(response => (response.ok ? response.json() : null))
-      .then(payload => { setClassDoc(payload?.doc ?? null); })
+      .then(payload => {
+        if (docRequest === docRequestRef.current) setClassDoc(payload?.doc ?? null);
+      })
       .catch(() => { /* the template's own reference stands on its own */ })
-      .finally(() => setDocLoading(false));
+      .finally(() => {
+        if (docRequest === docRequestRef.current) setDocLoading(false);
+      });
   };
 
   const runFunction = async () => {
@@ -849,14 +900,25 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   };
 
   const copyCsv = async () => {
-    if (!data) return;
-    const header = data.columns.join(',');
-    const body = data.rows.map(row => row.map(value => (value === null ? '' : value)).join(',')).join('\n');
+    if (!data || !selected || copyingCsv) return;
+    setCopyingCsv(true);
     try {
-      await navigator.clipboard.writeText(`${header}\n${body}\n`);
-      toast.success(`${data.rows.length} rows copied as CSV`);
-    } catch {
-      toast.error('The clipboard is not available');
+      // The chart is intentionally thinned to 4,000 points. CSV is data, not a
+      // picture, so fetch the full parsed table instead of copying that visual
+      // sample and calling it complete.
+      const complete = data.totalRows > data.rows.length
+        ? await readSelectionData(caseName, selected, data.shownTime ?? undefined, 200000)
+        : data;
+      await navigator.clipboard.writeText(serializeCsv(complete.columns, complete.rows));
+      if (complete.truncated || complete.runsTruncated || complete.totalRows > complete.rows.length) {
+        toast.warning(`${complete.rows.length} rows copied; the source exceeded the safe read limit`);
+      } else {
+        toast.success(`${complete.rows.length} rows copied as CSV`);
+      }
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'The clipboard is not available');
+    } finally {
+      setCopyingCsv(false);
     }
   };
 
@@ -1122,8 +1184,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               <Button size="sm" variant={view === 'table' ? 'default' : 'ghost'} className="h-7 px-2 text-[10px]" onClick={() => setView('table')}>
                 <Table2 className="mr-1 h-3 w-3" /> Table
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data} onClick={() => void copyCsv()}>
-                <Copy className="mr-1 h-3 w-3" /> CSV
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data || copyingCsv} onClick={() => void copyCsv()}>
+                {copyingCsv ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Copy className="mr-1 h-3 w-3" />} CSV
               </Button>
               <Button
                 size="sm"
@@ -1138,7 +1200,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
             </div>
           </div>
 
-          {data && (data.incompatible.length > 0 || data.synthesizedColumns || data.truncated || data.startTimes.length > 1) && (
+          {data && (data.incompatible.length > 0 || data.synthesizedColumns || data.truncated || data.timesTruncated || data.runsTruncated || data.startTimes.length > 1) && (
             <div className="flex flex-wrap gap-x-4 gap-y-1 border-b bg-info-soft/40 px-3 py-1.5 text-[10px] text-muted-foreground">
               {data.startTimes.length > 1 && (
                 <span className="inline-flex items-center gap-1">
@@ -1152,6 +1214,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               )}
               {data.synthesizedColumns && <span className="text-warning">Column names were not in the file and have been numbered</span>}
               {data.truncated && <span className="text-warning">The file was too large to read in full</span>}
+              {data.timesTruncated && <span className="text-warning">Only the latest 20,000 written times are listed</span>}
+              {data.runsTruncated && <span className="text-warning">Only the latest 200 restart files are included in this series</span>}
             </div>
           )}
 

@@ -368,6 +368,23 @@ export function downsampleRows(rows: number[][], limit: number): number[][] {
   return thinned;
 }
 
+/**
+ * Serialize a parsed table without losing column names that contain commas,
+ * quotes or line breaks. Function-object names are user-extensible, so they
+ * cannot safely be joined with a bare comma and still be called CSV.
+ */
+export function serializeCsv(columns: readonly string[], rows: readonly (readonly (number | null)[])[]): string {
+  const cell = (value: string | number | null): string => {
+    if (value === null) return '';
+    const text = String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return [
+    columns.map(cell).join(','),
+    ...rows.map(row => row.map(cell).join(',')),
+  ].join('\n') + '\n';
+}
+
 export interface ColumnStats {
   last: number;
   min: number;

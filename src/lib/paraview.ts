@@ -1634,6 +1634,33 @@ const STARTUP_STAGES: ParaViewStartupStage[] = [
 const READY_TIMEOUT_MS = 600_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 
+/**
+ * A stop invalidates starts that are still discovering ParaView as well as
+ * starts queued behind another case. Killing a child process alone cannot do
+ * either, because during discovery there is no child yet.
+ */
+export class ParaViewLifecycleGuard {
+  private generation = 0;
+
+  issue(): number {
+    return this.generation;
+  }
+
+  cancel(): void {
+    this.generation += 1;
+  }
+
+  isCurrent(ticket: number): boolean {
+    return ticket === this.generation;
+  }
+
+  assertCurrent(ticket: number): void {
+    if (!this.isCurrent(ticket)) throw new Error('ParaView startup was cancelled.');
+  }
+}
+
+const lifecycleGuard = new ParaViewLifecycleGuard();
+
 class ParaViewWorker {
   readonly child: ChildProcessWithoutNullStreams;
   readonly tempDir: string;
@@ -1759,20 +1786,26 @@ class ParaViewWorker {
 }
 
 let activeWorker: ParaViewWorker | null = null;
-let startup: { caseName: string; stage: ParaViewStartupStage; startedAt: number; worker: ParaViewWorker | null } | null = null;
-let startInFlight: { caseName: string; promise: Promise<ParaViewWorkbenchState> } | null = null;
+let startup: { caseName: string; stage: ParaViewStartupStage; startedAt: number; worker: ParaViewWorker | null; ticket: number } | null = null;
+let startInFlight: { caseName: string; ticket: number; promise: Promise<ParaViewWorkbenchState> } | null = null;
 
 async function beginSession(
   caseName: string,
   markerPath: string,
   customPath: string,
+  ticket: number,
 ): Promise<ParaViewWorkbenchState> {
-  startup = { caseName, stage: 'locating', startedAt: Date.now(), worker: null };
+  lifecycleGuard.assertCurrent(ticket);
+  const pending = { caseName, stage: 'locating' as ParaViewStartupStage, startedAt: Date.now(), worker: null as ParaViewWorker | null, ticket };
+  startup = pending;
   const setStage = (stage: ParaViewStartupStage) => {
-    if (startup?.caseName === caseName) startup.stage = stage;
+    if (startup === pending) startup.stage = stage;
   };
+  let tempDir = '';
+  let worker: ParaViewWorker | null = null;
   try {
     const installation = await findParaView(customPath);
+    lifecycleGuard.assertCurrent(ticket);
     if (!installation.found || !installation.pvpythonPath) {
       throw new Error(installation.error || 'ParaView was not found. Configure it from the Dashboard.');
     }
@@ -1780,12 +1813,15 @@ async function beginSession(
       const previous = activeWorker;
       activeWorker = null;
       await previous.stop();
+      lifecycleGuard.assertCurrent(ticket);
     }
 
     setStage('launching');
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
+    lifecycleGuard.assertCurrent(ticket);
     const scriptPath = path.join(tempDir, 'worker.py');
     await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
+    lifecycleGuard.assertCurrent(ticket);
     // The same render flags the background warm-up uses, so the libraries it
     // left in the cache are the ones this engine loads.
     const child = spawn(installation.pvpythonPath, [
@@ -1796,25 +1832,25 @@ async function beginSession(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
     });
-    const worker = new ParaViewWorker(
+    worker = new ParaViewWorker(
       child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown'
     );
-    if (startup?.caseName === caseName) startup.worker = worker;
-    try {
-      const ready = await worker.waitUntilReady(setStage);
-      if (!ready.state) throw new Error('ParaView started without returning its pipeline state.');
-      // The engine knows its own version exactly; the installation scan only
-      // reads it from folder names.
-      worker.version = ready.state.version || worker.version;
-      recordParaViewVersion(worker.pvpythonPath, worker.version);
-      activeWorker = worker;
-      return ready.state;
-    } catch (error) {
-      await worker.stop(false);
-      throw error;
-    }
+    pending.worker = worker;
+    const ready = await worker.waitUntilReady(setStage);
+    lifecycleGuard.assertCurrent(ticket);
+    if (!ready.state) throw new Error('ParaView started without returning its pipeline state.');
+    // The engine knows its own version exactly; the installation scan only
+    // reads it from folder names.
+    worker.version = ready.state.version || worker.version;
+    recordParaViewVersion(worker.pvpythonPath, worker.version);
+    activeWorker = worker;
+    return ready.state;
+  } catch (error) {
+    if (worker) await worker.stop(false);
+    else if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
   } finally {
-    if (startup?.caseName === caseName) startup = null;
+    if (startup === pending) startup = null;
   }
 }
 
@@ -1828,10 +1864,16 @@ export function startParaViewSession(
   markerPath: string,
   customPath = '',
 ): Promise<ParaViewWorkbenchState> {
-  if (startInFlight?.caseName === caseName) return startInFlight.promise;
+  if (startInFlight?.caseName === caseName && lifecycleGuard.isCurrent(startInFlight.ticket)) {
+    return startInFlight.promise;
+  }
+  const ticket = lifecycleGuard.issue();
   const previous = startInFlight ? startInFlight.promise.then(() => undefined, () => undefined) : Promise.resolve();
-  const promise = previous.then(() => beginSession(caseName, markerPath, customPath));
-  const entry = { caseName, promise };
+  const promise = previous.then(() => {
+    lifecycleGuard.assertCurrent(ticket);
+    return beginSession(caseName, markerPath, customPath, ticket);
+  });
+  const entry = { caseName, ticket, promise };
   startInFlight = entry;
   void promise.catch(() => undefined).then(() => {
     if (startInFlight === entry) startInFlight = null;
@@ -1861,6 +1903,7 @@ export function getParaViewStartup(): ParaViewStartupProgress | null {
  * queue: a cancel that waits for the start it cancels is not a cancel.
  */
 export async function abortParaViewStartup(): Promise<boolean> {
+  lifecycleGuard.cancel();
   const pending = startup;
   if (!pending) return false;
   startup = null;
@@ -1897,8 +1940,8 @@ export async function sendParaViewCameraCommand(data: Record<string, unknown>): 
   }
 }
 
-export async function stopParaViewSession(): Promise<void> {
-  await abortParaViewStartup();
+export async function stopParaViewSession(cancelStarts = true): Promise<void> {
+  if (cancelStarts) await abortParaViewStartup();
   const worker = activeWorker;
   activeWorker = null;
   if (worker) await worker.stop();

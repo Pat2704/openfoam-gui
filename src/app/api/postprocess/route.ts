@@ -47,13 +47,16 @@ export async function GET(req: NextRequest) {
         const file = searchParams.get('file') || '';
         // The chart cannot resolve more points than the viewport has pixels,
         // and the browser pays for every one of them. Thinning happens here so
-        // a long probe series never crosses the wire in full.
-        const maxPoints = boundedInteger(searchParams.get('maxPoints'), 4000, 100, 50000);
+        // a long probe series never crosses the wire in full. CSV explicitly
+        // asks for the parser's larger ceiling because it is data, not a plot.
+        const maxPoints = boundedInteger(searchParams.get('maxPoints'), 4000, 100, 200000);
 
-        const slices = readPostProcessDataset(caseName, dataset, file)
+        const requestedTime = searchParams.get('time') || undefined;
+        const datasetRead = readPostProcessDataset(caseName, dataset, file, requestedTime);
+        const slices = datasetRead.slices
           .map(slice => ({ startTime: slice.startTime, truncated: slice.truncated, table: parseFoamTable(slice.content) }));
         const readable = slices.filter(slice => slice.table.columns.length > 0);
-        const times = readable.map(slice => slice.startTime);
+        const times = datasetRead.times;
 
         // A time series continues across its time directories; a spatial profile
         // has one complete curve in each of them. `isTimeSeries` explains why
@@ -73,7 +76,7 @@ export async function GET(req: NextRequest) {
           incompatible = merged.incompatible;
           overwritten = merged.overwritten;
         } else {
-          const requested = searchParams.get('time');
+          const requested = requestedTime;
           const chosen = readable.find(slice => slice.startTime === requested) ?? readable[readable.length - 1];
           table = chosen?.table ?? { columns: [], rows: [], notes: [], synthesizedColumns: false, truncated: false };
           shownTime = chosen?.startTime ?? null;
@@ -100,6 +103,8 @@ export async function GET(req: NextRequest) {
           overwritten,
           synthesizedColumns: table.synthesizedColumns,
           truncated: table.truncated || slices.some(slice => slice.truncated),
+          timesTruncated: datasetRead.timesTruncated,
+          runsTruncated: seriesLike && datasetRead.slicesTruncated,
         });
       }
 

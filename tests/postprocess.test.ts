@@ -24,6 +24,7 @@ import {
   FunctionSpecError,
   describeDatasetName,
   isTabularOutput,
+  serializeCsv,
 } from '../src/lib/postprocess.ts';
 
 // The three samples below are verbatim output from OpenFOAM 14, not invented
@@ -181,6 +182,17 @@ test('downsampling always keeps the final sample', () => {
   assert.deepEqual(thinned[0], [0, 0]);
   // Below the limit nothing is touched at all.
   assert.equal(downsampleRows(rows, 5000), rows);
+});
+
+test('CSV export keeps every supplied row and quotes real CSV cells', () => {
+  const csv = serializeCsv(
+    ['Time', 'force, total', 'probe "A"'],
+    [[0, 1.25, null], [1, -2, 3]],
+  );
+  assert.equal(
+    csv,
+    'Time,"force, total","probe ""A"""\n0,1.25,\n1,-2,3\n',
+  );
 });
 
 test('tail statistics describe a settled series and a drifting one differently', () => {

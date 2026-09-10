@@ -6,6 +6,33 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-10 — Post-Process data integrity; ParaView cancellation and access
+
+- Post-Process CSV now fetches the complete parsed table (up to the existing
+  200,000-row/8 MB safety ceilings) instead of copying the 4,000-point chart
+  sample, and quotes commas, quotes and line breaks as real CSV. Any remaining
+  limit is stated in the toast rather than presented as a complete export.
+- Sampled profiles retain up to 20,000 time names and directly load the chosen
+  snapshot; the initial view reads the latest 200 files instead of the first
+  200. A time-series with more than 200 restart files and a longer time list
+  are explicitly marked as limited. Dataset and file symlinks are resolved and
+  accepted only when their targets remain under the case's postProcessing tree.
+- Post-Process now reports a failed dataset/log listing, serializes WSL reads,
+  ignores superseded dataset, catalogue, context and class-reference answers,
+  and clears installation-owned state when the OpenFOAM selection changes.
+- ParaView startup has cancellable generation tickets. Cancel invalidates an
+  in-progress discovery and queued starts, cleans temporary state, immediately
+  leaves the loading screen and ignores late state/images. Camera and
+  manipulator requests use the same timeout as other workbench operations.
+- ParaView's pipeline can be selected by keyboard; icon-only workbench and
+  timestep controls and all range inputs now expose accessible names.
+- Typecheck, full lint and 220 tests pass (one pre-existing external Codex test
+  skipped). A read-only call on the WSL `test` case confirmed the empty
+  Post-Process state; the disposable 205-time/symlink WSL integration also
+  passed and removed its temporary data. The Electron build passed and the
+  v5.3.0 portable executable and folder ZIP were replaced with hash-verified
+  artifacts.
+
 ## 2026-09-10 — Mesh tab: honest BC check, checkMesh report, viewer on large meshes
 
 From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
