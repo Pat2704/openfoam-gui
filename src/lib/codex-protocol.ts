@@ -53,16 +53,17 @@ export type PanelEvent = Record<string, unknown> & { t: string };
 
 /** Only completed text is authoritative; summaries are the public reasoning. */
 export function panelEvents(method: string, p: any): PanelEvent[] {
-  if (method === 'item/agentMessage/delta') return [{ t: 'delta', channel: 'text', text: p.delta }];
-  if (method === 'item/reasoning/summaryTextDelta') return [{ t: 'delta', channel: 'thinking', text: p.delta }];
+  const itemId = p.itemId || p.item?.id;
+  if (method === 'item/agentMessage/delta') return [{ t: 'delta', channel: 'text', text: p.delta, id: itemId }];
+  if (method === 'item/reasoning/summaryTextDelta') return [{ t: 'delta', channel: 'thinking', text: p.delta, id: itemId }];
   const item = p.item;
   if (method === 'item/started') {
-    if (item?.type === 'agentMessage') return [{ t: 'block_start', channel: 'text' }];
-    if (item?.type === 'reasoning') return [{ t: 'block_start', channel: 'thinking' }];
+    if (item?.type === 'agentMessage') return [{ t: 'block_start', channel: 'text', id: itemId }];
+    if (item?.type === 'reasoning') return [{ t: 'block_start', channel: 'thinking', id: itemId }];
   }
   if (method === 'item/completed') {
-    if (item?.type === 'agentMessage') return [{ t: 'block_end', channel: 'text', text: item.text || '' }];
-    if (item?.type === 'reasoning') return [{ t: 'block_end', channel: 'thinking', text: (item.summary || []).join('\n') }];
+    if (item?.type === 'agentMessage') return [{ t: 'block_end', channel: 'text', text: item.text || '', id: itemId }];
+    if (item?.type === 'reasoning') return [{ t: 'block_end', channel: 'thinking', text: (item.summary || []).join('\n'), id: itemId }];
   }
   if (method === 'error' && !p.willRetry) return [{ t: 'error', message: p.error?.message || 'Codex failed.' }];
   return [];

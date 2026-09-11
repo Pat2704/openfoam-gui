@@ -496,9 +496,9 @@ export async function logout(): Promise<boolean> {
 /** What the UI is told. Deliberately small — the panel renders these directly. */
 export type AgentEventOut =
   | { t: 'ready'; model: string; tools: string[]; claudeSessionId: string }
-  | { t: 'block_start'; channel: 'text' | 'thinking' }
-  | { t: 'delta'; channel: 'text' | 'thinking'; text: string }
-  | { t: 'block_end'; channel: 'text' | 'thinking'; text: string }
+  | { t: 'block_start'; channel: 'text' | 'thinking'; id?: string }
+  | { t: 'delta'; channel: 'text' | 'thinking'; text: string; id?: string }
+  | { t: 'block_end'; channel: 'text' | 'thinking'; text: string; id?: string }
   | { t: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { t: 'tool_result'; id: string; ok: boolean; text: string }
   | { t: 'done'; ok: boolean; text: string; turns: number; durationMs: number; costUsd: number }
@@ -540,6 +540,8 @@ interface Session {
   lastUsed: number;
   /** Set while a block is open, so a missing delta stream is still rendered. */
   openChannel: 'text' | 'thinking' | null;
+  /** Claude message that owns the partial content-block events in flight. */
+  streamMessageId: string;
   /** A turn has already completed, so --resume has something to resume. */
   hasRun: boolean;
 }
@@ -596,6 +598,12 @@ function emit(session: Session, event: AgentEventOut): void {
   }
 }
 
+function textBlockId(messageId: unknown, index: unknown): string | undefined {
+  return typeof messageId === 'string' && messageId && typeof index === 'number' && Number.isInteger(index)
+    ? `${messageId}:${index}`
+    : undefined;
+}
+
 /** Translate one line of Claude Code's stream-json into what the panel needs. */
 function handleLine(session: Session, line: string): void {
   let ev: Record<string, unknown>;
@@ -619,20 +627,26 @@ function handleLine(session: Session, line: string): void {
   if (type === 'stream_event') {
     const inner = ev.event as Record<string, unknown> | undefined;
     if (!inner) return;
+    if (inner.type === 'message_start') {
+      const message = inner.message as { id?: unknown } | undefined;
+      session.streamMessageId = typeof message?.id === 'string' ? message.id : '';
+      return;
+    }
     if (inner.type === 'content_block_start') {
       const block = inner.content_block as { type?: string } | undefined;
       if (block?.type === 'text' || block?.type === 'thinking') {
         session.openChannel = block.type;
-        emit(session, { t: 'block_start', channel: block.type });
+        emit(session, { t: 'block_start', channel: block.type, id: textBlockId(session.streamMessageId, inner.index) });
       }
       return;
     }
     if (inner.type === 'content_block_delta') {
       const delta = inner.delta as { type?: string; text?: string; thinking?: string } | undefined;
+      const id = textBlockId(session.streamMessageId, inner.index);
       if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        emit(session, { t: 'delta', channel: 'text', text: delta.text });
+        emit(session, { t: 'delta', channel: 'text', text: delta.text, id });
       } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-        emit(session, { t: 'delta', channel: 'thinking', text: delta.thinking });
+        emit(session, { t: 'delta', channel: 'thinking', text: delta.thinking, id });
       }
       return;
     }
@@ -640,13 +654,14 @@ function handleLine(session: Session, line: string): void {
   }
 
   if (type === 'assistant') {
-    const message = ev.message as { content?: unknown[] } | undefined;
-    for (const raw of message?.content || []) {
+    const message = ev.message as { id?: string; content?: unknown[] } | undefined;
+    for (const [index, raw] of (message?.content || []).entries()) {
       const block = raw as { type?: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown };
+      const id = textBlockId(message?.id || session.streamMessageId, index);
       if (block.type === 'text' && typeof block.text === 'string') {
-        emit(session, { t: 'block_end', channel: 'text', text: block.text });
+        emit(session, { t: 'block_end', channel: 'text', text: block.text, id });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
-        emit(session, { t: 'block_end', channel: 'thinking', text: block.thinking });
+        emit(session, { t: 'block_end', channel: 'thinking', text: block.thinking, id });
       } else if (block.type === 'tool_use') {
         emit(session, {
           t: 'tool_use',
@@ -659,6 +674,7 @@ function handleLine(session: Session, line: string): void {
       }
     }
     session.openChannel = null;
+    session.streamMessageId = '';
     return;
   }
 
@@ -828,6 +844,7 @@ export function send(
       busy: false,
       lastUsed: Date.now(),
       openChannel: null,
+      streamMessageId: '',
       hasRun: false,
     };
     sessions.set(options.sessionId, session);

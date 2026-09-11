@@ -31,6 +31,7 @@ import { toast } from 'sonner';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
 import { useAgentLauncher } from '@/components/agent-launcher-provider';
+import { applyAgentTranscriptEvent, type AgentTranscriptBlock as Block } from '@/lib/agent-transcript';
 import { KnowledgeStatus } from '@/components/knowledge-status';
 
 // ── Claude's mark ───────────────────────────────────────────────────────────
@@ -79,11 +80,6 @@ function ClaudeMark({ className = '', color = 'currentColor' }: { className?: st
 }
 
 // ── Conversation model ──────────────────────────────────────────────────────
-
-type Block =
-  | { kind: 'text'; text: string; live: boolean }
-  | { kind: 'thinking'; text: string; live: boolean }
-  | { kind: 'tool'; id: string; name: string; input: Record<string, unknown>; status: 'running' | 'ok' | 'error'; result: string };
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -388,54 +384,12 @@ export default function ClaudePanel() {
       const next = [...prev];
       const last = next[next.length - 1];
       if (!last || last.role !== 'assistant') return next;
-      const blocks = [...(last.blocks || [])];
+      const blocks = applyAgentTranscriptEvent(last.blocks || [], event);
 
-      const closeLive = () => {
-        for (let i = blocks.length - 1; i >= 0; i--) {
-          const b = blocks[i];
-          if ((b.kind === 'text' || b.kind === 'thinking') && b.live) { blocks[i] = { ...b, live: false }; break; }
-        }
-      };
-
-      if (t === 'block_start') {
-        blocks.push({ kind: event.channel as 'text' | 'thinking', text: '', live: true });
-      } else if (t === 'delta') {
-        const channel = event.channel as 'text' | 'thinking';
-        const i = blocks.findIndex(b => (b.kind === channel) && b.live);
-        if (i >= 0) {
-          const b = blocks[i] as { kind: 'text' | 'thinking'; text: string; live: boolean };
-          blocks[i] = { ...b, text: b.text + String(event.text || '') };
-        } else {
-          blocks.push({ kind: channel, text: String(event.text || ''), live: true });
-        }
-      } else if (t === 'block_end') {
-        // The authoritative text of the block. It replaces whatever the deltas
-        // built, so a dropped delta cannot leave a half-written paragraph.
-        const channel = event.channel as 'text' | 'thinking';
-        const i = blocks.findIndex(b => b.kind === channel && b.live);
-        if (i >= 0) blocks[i] = { kind: channel, text: String(event.text || ''), live: false };
-        else blocks.push({ kind: channel, text: String(event.text || ''), live: false });
-      } else if (t === 'tool_use') {
-        closeLive();
-        blocks.push({
-          kind: 'tool',
-          id: String(event.id || ''),
-          name: String(event.name || ''),
-          input: (event.input || {}) as Record<string, unknown>,
-          status: 'running',
-          result: '',
-        });
-      } else if (t === 'tool_result') {
-        const i = blocks.findIndex(b => b.kind === 'tool' && b.id === event.id);
-        if (i >= 0) {
-          const b = blocks[i] as Extract<Block, { kind: 'tool' }>;
-          blocks[i] = { ...b, status: event.ok === false ? 'error' : 'ok', result: String(event.text || '') };
-        }
-      } else if (t === 'error') {
+      if (t === 'error') {
         next[next.length - 1] = { ...last, blocks, error: String(event.message || '') };
         return next;
       } else if (t === 'done') {
-        closeLive();
         next[next.length - 1] = {
           ...last,
           blocks,

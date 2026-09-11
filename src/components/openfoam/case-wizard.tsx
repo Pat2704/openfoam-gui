@@ -228,6 +228,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
 
   const [caseName, setCaseName] = useState('');
   const [existingCases, setExistingCases] = useState<string[]>([]);
+  const [caseListLoaded, setCaseListLoaded] = useState(false);
   /** Cases carrying the wizard's record, which can be reopened here. */
   const [wizardCases, setWizardCases] = useState<string[]>([]);
 
@@ -419,6 +420,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
         const names = rows.map(c => c.name);
         setExistingCases(names);
         setWizardCases(rows.filter(c => c.wizard).map(c => c.name));
+        setCaseListLoaded(true);
         return names;
       }
     } catch { /* not fatal: handleCreate asks again */ }
@@ -577,6 +579,19 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     setCaseName(''); setUpdateTarget(null); setResult(null); setReview(null);
     setGeometry({}); setStep(0); setDecisions({});
   };
+
+  // Deleting (or renaming) a case from the Dashboard must also forget the
+  // wizard state tied to its old directory. The wizard stays mounted between
+  // tabs, so refreshing only the dropdown otherwise leaves a ghost update.
+  useEffect(() => {
+    const remembered = updateTarget?.caseName ?? result?.caseName;
+    if (!caseListLoaded || !remembered || existingCases.includes(remembered)) return;
+    applySettings(defaultSettings(tier));
+    appliedTier.current = tier;
+    setCaseName(''); setUpdateTarget(null); setResult(null); setReview(null);
+    setGeometry({}); setStep(0); setDecisions({});
+    setNameProblems([]); setSyntaxProblems([]); setPickedCase('');
+  }, [caseListLoaded, existingCases, updateTarget, result, tier]);
 
   // ── The shorter guides' follow-up effects ────────────────────────────────
   // The solver list is per layout, so a solver from the other list cannot stay
@@ -1290,14 +1305,16 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
             </div>
 
             <div>
-              <Label>Case name *</Label>
-              <Input
-                value={caseName}
-                onChange={(e) => setCaseName(e.target.value.replace(/\s/g, ''))}
-                placeholder="e.g. pipeFlow, airfoilTest, myCavity"
-                className="font-mono"
-                disabled={!!updateTarget}
-              />
+              <div className="space-y-2">
+                <Label>Case name *</Label>
+                <Input
+                  value={caseName}
+                  onChange={(e) => setCaseName(e.target.value.replace(/\s/g, ''))}
+                  placeholder="e.g. pipeFlow, airfoilTest, myCavity"
+                  className="font-mono"
+                  disabled={!!updateTarget}
+                />
+              </div>
               <p className="text-xs text-muted-foreground mt-1">
                 {updateTarget
                   ? 'The case being updated. Rename it from the Dashboard; the wizard settings go with it.'

@@ -18,8 +18,8 @@ test('Codex models use account catalog ids and each model’s actual reasoning l
 
 test('Codex streams public summaries and authoritative text without exposing raw reasoning', () => {
   assert.deepEqual(panelEvents('item/reasoning/textDelta', { delta: 'private' }), []);
-  assert.deepEqual(panelEvents('item/reasoning/summaryTextDelta', { delta: 'Checking' }), [{ t: 'delta', channel: 'thinking', text: 'Checking' }]);
-  assert.deepEqual(panelEvents('item/completed', { item: { type: 'agentMessage', text: 'Complete' } }), [{ t: 'block_end', channel: 'text', text: 'Complete' }]);
+  assert.deepEqual(panelEvents('item/reasoning/summaryTextDelta', { itemId: 'reason-1', delta: 'Checking' }), [{ t: 'delta', channel: 'thinking', text: 'Checking', id: 'reason-1' }]);
+  assert.deepEqual(panelEvents('item/completed', { item: { id: 'answer-1', type: 'agentMessage', text: 'Complete' } }), [{ t: 'block_end', channel: 'text', text: 'Complete', id: 'answer-1' }]);
   assert.deepEqual(panelEvents('error', { willRetry: true, error: { message: 'transient' } }), []);
 });
 
