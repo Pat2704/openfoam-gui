@@ -6,8 +6,13 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-09-11 — Decomposed cleanup and cumulative agent replies
+## 2026-09-11 — v5.4.1: decomposed cleanup and cumulative agent replies
 
+- Released `v5.4.1` at the user's request with notes in
+  `docs/releases/v5.4.1.md`. Direct publication reused the paired artifacts
+  built from commit `8c53f18`, renaming them without a second build; therefore
+  source-to-artifact equivalence belongs to that pre-version build rather than
+  to the version-metadata commit.
 - File Editor's Clean TS now reads the same root-plus-`processor*` timestep
   inventory as Monitor instead of inferring it from the visible top-level tree.
   It keeps the initial time, refuses deletion while the case runs, reports
