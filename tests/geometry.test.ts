@@ -68,6 +68,13 @@ describe('parseGeometry', () => {
     assert.deepEqual(g.bbox, { min: [0, 0, 0], max: [2, 1, 1] });
   });
 
+  test('solid names are regions even when they look like `patchN`, and an unnamed solid is none', () => {
+    const two = new TextDecoder().decode(asciiStl('patch1')) + new TextDecoder().decode(asciiStl('patch2'));
+    assert.deepEqual(parseGeometry('flange.stl', new TextEncoder().encode(two)).regions, ['patch1', 'patch2']);
+    const unnamed = new TextDecoder().decode(asciiStl('')).replace(/^solid \n/, 'solid\n');
+    assert.deepEqual(parseGeometry('x.stl', new TextEncoder().encode(unnamed)).regions, []);
+  });
+
   test('binary STL is recognised by its size even when its header says "solid"', () => {
     const g = parseGeometry('box.stl', binaryStl());
     assert.equal(g.binary, true);

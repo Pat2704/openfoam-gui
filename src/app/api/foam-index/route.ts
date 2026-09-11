@@ -71,6 +71,38 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ready: true, version: index.version, types });
     }
 
+    if (action === 'wizardCatalog') {
+      // What the New Case wizard may offer on this installation: every list
+      // comes from foamToC, so nothing is offered that the solver would refuse.
+      const index = getFoamIndexIfReady();
+      if (!index) {
+        void ensureFoamIndex();
+        return NextResponse.json({ ready: false });
+      }
+      const exact = (table: string) => Object.entries(index.names)
+        .filter(([, tables]) => tables.includes(table)).map(([name]) => name).sort();
+      // RAS and LES are shared by momentumTransport and thermophysicalTransport;
+      // the eddy-diffusivity names belong to the latter.
+      const thermoTransport = new Set(['eddyDiffusivity', 'unityLewisEddyDiffusivity', 'nonUnityLewisEddyDiffusivity', 'FickianEddyDiffusivity']);
+      const tables = ['fluidThermo', 'psiThermo', 'rhoFluidThermo', 'liquidThermo', 'solidThermo',
+        'fluidMulticomponentThermo', 'psiMulticomponentThermo', 'rhoFluidMulticomponentThermo'];
+      return NextResponse.json({
+        ready: true,
+        version: index.version,
+        hasToC: index.hasToC,
+        solvers: index.solvers,
+        ras: exact('RAS').filter(n => !thermoTransport.has(n)),
+        les: exact('LES').filter(n => !thermoTransport.has(n)),
+        lesDelta: exact('LESdelta'),
+        relativeVelocityModels: exact('relativeVelocityModel'),
+        thermo: Object.fromEntries(tables.map(t => [t, exact(t)])),
+        functionObjects: index.functionObjects,
+        fvModels: index.fvModels,
+        fvConstraints: index.fvConstraints,
+        bc: index.boundaryConditions,
+      });
+    }
+
     if (action === 'corpus') {
       // Build or report the tutorial corpus the selector ranks over.
       if (searchParams.get('build') === '1') await ensureCorpus(searchParams.get('force') === '1');

@@ -19,13 +19,17 @@
  */
 
 import {
-  DEFAULT_MESH, type FieldConfig, type Flavour, type MeshSpec, type TurbulenceModel,
+  DEFAULT_MESH, type FieldConfig, type Flavour, type MeshSpec, type PatchRole, type TurbulenceModel,
 } from './case-templates';
-import { DEFAULT_SNAPPY, type SnappySettings, type SnappySurface } from './snappy-templates';
+import { ALL_ROLES } from './wizard/roles';
+import { DEFAULT_PHYSICS, type FullPhysics, type PatchValues, type ThermoProps } from './wizard/physics';
+import { THERMO_KEYS, type ThermoCombo } from './wizard/thermo';
+import { DEFAULT_SNAPPY, newRefinementRegion, type SnappySettings, type SnappySurface } from './snappy-templates';
 import type { Bbox, Vec3 } from './geometry';
 
 export const WIZARD_MARKER_PATH = 'system/studioWizard.json';
-export const WIZARD_MARKER_FORMAT = 1;
+/** 2: adds the complete guide's physics (`full`); format-1 records still read. */
+export const WIZARD_MARKER_FORMAT = 2;
 
 const ABOUT = 'Written by the OpenFOAM Studio New Case wizard so the case can be updated from it. '
   + 'OpenFOAM does not read this file; deleting it only removes that option.';
@@ -51,6 +55,8 @@ export interface WizardSettings {
   fields: FieldConfig[];
   /** null: the mesh is blockMesh only. */
   snappy: SnappySettings | null;
+  /** The complete guide's physics (OpenFOAM 13/14); null for the shorter guides. */
+  full: FullPhysics | null;
 }
 
 export interface WizardMarker {
@@ -132,26 +138,132 @@ function normalizeMesh(v: unknown): MeshSpec {
 
 function normalizeFields(v: unknown, d: FieldConfig[]): FieldConfig[] {
   if (!Array.isArray(v)) return d;
-  return v.filter(isObj).map(f => ({
-    fieldName: str(f.fieldName, ''),
-    dimensions: str(f.dimensions, '[0 0 0 0 0 0 0]'),
-    internalField: str(f.internalField, 'uniform 0'),
-    boundaryConditions: (Array.isArray(f.boundaryConditions) ? f.boundaryConditions : [])
-      .filter(isObj)
-      .map(bc => ({ name: str(bc.name, ''), type: str(bc.type, 'zeroGradient'), value: str(bc.value, '') })),
-  }));
+  return v.filter(isObj).map(f => {
+    const out: FieldConfig = {
+      fieldName: str(f.fieldName, ''),
+      dimensions: str(f.dimensions, '[0 0 0 0 0 0 0]'),
+      internalField: str(f.internalField, 'uniform 0'),
+      boundaryConditions: (Array.isArray(f.boundaryConditions) ? f.boundaryConditions : [])
+        .filter(isObj)
+        .map(bc => {
+          const b = { name: str(bc.name, ''), type: str(bc.type, 'zeroGradient'), value: str(bc.value, '') };
+          return typeof bc.extra === 'string' && bc.extra ? { ...b, extra: bc.extra } : b;
+        }),
+    };
+    if (typeof f.cls === 'string') out.cls = f.cls;
+    if (typeof f.preamble === 'string') out.preamble = f.preamble;
+    if (typeof f.boundaryTail === 'string') out.boundaryTail = f.boundaryTail;
+    if (f.orig === true) out.orig = true;
+    return out;
+  });
 }
 
+// ── The complete guide's physics ─────────────────────────────────────────────
+//
+// Every value is checked against the shape of DEFAULT_PHYSICS: a wrong type
+// falls back to the default, unknown keys are dropped.
+
+function merge<T>(d: T, v: unknown): T {
+  if (Array.isArray(d)) return (Array.isArray(v) ? v : d) as T;
+  if (d && typeof d === 'object') {
+    const src = isObj(v) ? v : {};
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(d as Record<string, unknown>)) out[k] = merge((d as Record<string, unknown>)[k], src[k]);
+    return out as T;
+  }
+  return (typeof v === typeof d ? v : d) as T;
+}
+
+function normalizeCombo(v: unknown, d: ThermoCombo): ThermoCombo {
+  const src = isObj(v) ? v : {};
+  const out = Object.fromEntries(THERMO_KEYS.map(k => [k, str(src[k], d[k])])) as ThermoCombo;
+  if (typeof src.properties === 'string') out.properties = src.properties;
+  return out;
+}
+
+function normalizeThermo(v: unknown, d: ThermoProps): ThermoProps {
+  const src = isObj(v) ? v : {};
+  return { combo: normalizeCombo(src.combo, d.combo), coeffs: strRecord(src.coeffs), liquid: str(src.liquid, d.liquid) };
+}
+
+function normalizeFull(v: unknown): FullPhysics | null {
+  if (!isObj(v)) return null;
+  const d = DEFAULT_PHYSICS;
+  const base = merge(d, v);
+  const phases = Array.isArray(v.phases) && v.phases.length === 2 ? v.phases : d.phases;
+  const regionTemplate = { name: 'region', shape: 'box', min: [0, 0, 0], max: [1, 1, 1], centre: [0, 0, 0], radius: 0.1, point1: [0, 0, 0], point2: [1, 0, 0], values: {} };
+  const patchValues: Record<string, PatchValues> = {};
+  if (isObj(v.patchValues)) {
+    for (const [patch, raw] of Object.entries(v.patchValues)) {
+      if (!isObj(raw)) continue;
+      const pv: PatchValues = {};
+      for (const [k, x] of Object.entries(raw)) {
+        if (k === 'Y' && isObj(x)) pv.Y = strRecord(x);
+        else if (typeof x === 'string') (pv as Record<string, string>)[k] = x;
+      }
+      patchValues[patch] = pv;
+    }
+  }
+  const seed = isObj(v.seed) && typeof v.seed.tutorial === 'string' && Array.isArray(v.seed.files)
+    ? {
+      tutorial: v.seed.tutorial,
+      files: v.seed.files.filter(isObj).filter(f => typeof f.path === 'string' && typeof f.content === 'string')
+        .map(f => ({ path: f.path as string, content: f.content as string })),
+      overrides: strRecord(v.seed.overrides),
+    }
+    : null;
+  return {
+    ...base,
+    fluid: normalizeThermo(v.fluid, d.fluid),
+    mixture: normalizeCombo(v.mixture, d.mixture),
+    species: (Array.isArray(v.species) ? v.species : d.species).filter(isObj)
+      .map(s => ({ name: str(s.name, 'specie'), coeffs: strRecord(s.coeffs), initial: str(s.initial, '0') })),
+    phases: phases.filter(isObj).map((ph, i) => ({
+      name: str(ph.name, d.phases[i].name), nu: str(ph.nu, d.phases[i].nu), rho: str(ph.rho, d.phases[i].rho),
+      thermo: normalizeThermo(ph.thermo, d.phases[i].thermo),
+    })) as FullPhysics['phases'],
+    initialRegions: (Array.isArray(v.initialRegions) ? v.initialRegions : []).filter(isObj).map(r => {
+      const m = merge(regionTemplate, r) as unknown as FullPhysics['initialRegions'][number];
+      return {
+        ...m,
+        shape: (['box', 'sphere', 'cylinder'] as const).find(x => x === r.shape) ?? 'box',
+        min: vec3(r.min, [0, 0, 0]), max: vec3(r.max, [1, 1, 1]), centre: vec3(r.centre, [0, 0, 0]),
+        point1: vec3(r.point1, [0, 0, 0]), point2: vec3(r.point2, [1, 0, 0]), values: strRecord(r.values),
+      };
+    }),
+    patchValues,
+    functions: (Array.isArray(v.functions) ? v.functions : []).filter((x): x is string => typeof x === 'string'),
+    seed,
+  };
+}
+
+const role = (v: unknown, d: PatchRole): PatchRole => ALL_ROLES.find(r => r === v) ?? d;
+const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
 function normalizeSurface(v: Record<string, unknown>): SnappySurface {
+  const units = (['m', 'mm', 'cm', 'in'] as const).find(u => u === v.units) ?? 'm';
+  const regionNames = Array.isArray(v.regionNames) ? v.regionNames.filter((x): x is string => typeof x === 'string') : [];
   return {
     name: str(v.name, 'surface'),
     file: str(v.file, ''),
+    units,
     minLevel: numb(v.minLevel, 2),
     maxLevel: numb(v.maxLevel, 3),
     featureLevel: numb(v.featureLevel, 0),
+    role: role(v.role, 'wall'),
+    regionNames,
+    regions: (Array.isArray(v.regions) ? v.regions : []).filter(isObj).map(r => ({
+      region: str(r.region, ''),
+      group: str(r.group, ''),
+      role: role(r.role, 'wall'),
+      type: r.type === 'patch' ? 'patch' as const : 'wall' as const,
+      minLevel: numOrNull(r.minLevel),
+      maxLevel: numOrNull(r.maxLevel),
+    })).filter(r => r.region && r.group),
     bbox: bbox(v.bbox),
     triangles: numb(v.triangles, 0),
-    regions: numb(v.regions, 0),
+    // Format-1 records kept the region count in `regions`.
+    regionCount: numb(v.regionCount, typeof v.regions === 'number' ? v.regions : Math.max(1, regionNames.length)),
     bytes: numb(v.bytes, 0),
   };
 }
@@ -159,20 +271,62 @@ function normalizeSurface(v: Record<string, unknown>): SnappySurface {
 function normalizeSnappy(v: unknown): SnappySettings | null {
   if (!isObj(v)) return null;
   const d = DEFAULT_SNAPPY;
-  const box = isObj(v.refinementBox) ? v.refinementBox : {};
+  const c = isObj(v.castellated) ? v.castellated : {};
+  const sn = isObj(v.snap) ? v.snap : {};
+  const ly = isObj(v.layers) ? v.layers : {};
+  const q = isObj(v.quality) ? v.quality : {};
+  const surfaces = (Array.isArray(v.surfaces) ? v.surfaces : []).filter(isObj).map(normalizeSurface).filter(s => s.file);
+
+  const regions = (Array.isArray(v.refinementRegions) ? v.refinementRegions : []).filter(isObj).map(r => {
+    const base = newRefinementRegion(str(r.name, 'region'), null, numb(r.level, 1));
+    return {
+      ...base,
+      shape: (['box', 'sphere', 'cylinder'] as const).find(x => x === r.shape) ?? 'box',
+      mode: r.mode === 'outside' ? 'outside' as const : 'inside' as const,
+      min: vec3(r.min, base.min), max: vec3(r.max, base.max),
+      centre: vec3(r.centre, base.centre), radius: numb(r.radius, base.radius),
+      point1: vec3(r.point1, base.point1), point2: vec3(r.point2, base.point2),
+    };
+  });
+  // Format 1 had one optional refinement box and flat layer settings.
+  const oldBox = isObj(v.refinementBox) ? v.refinementBox : null;
+  if (oldBox && oldBox.enabled === true && !regions.length) {
+    regions.push({ ...newRefinementRegion('refinementBox', null, numb(oldBox.level, 1)), min: vec3(oldBox.min, [0, 0, 0]), max: vec3(oldBox.max, [1, 1, 1]) });
+  }
+  const layersOn = bool(ly.enabled, bool(v.addLayers, d.layers.enabled));
+
   return {
-    surfaces: (Array.isArray(v.surfaces) ? v.surfaces : []).filter(isObj).map(normalizeSurface)
-      .filter(s => s.file),
-    refinementBox: {
-      enabled: bool(box.enabled, d.refinementBox.enabled),
-      min: vec3(box.min, d.refinementBox.min),
-      max: vec3(box.max, d.refinementBox.max),
-      level: numb(box.level, d.refinementBox.level),
-    },
+    flow: v.flow === 'internal' ? 'internal' : 'external',
+    surfaces,
+    refinementRegions: regions,
     insidePoint: vec3(v.insidePoint, d.insidePoint),
-    addLayers: bool(v.addLayers, d.addLayers),
-    nSurfaceLayers: numb(v.nSurfaceLayers, d.nSurfaceLayers),
     includedAngle: numb(v.includedAngle, d.includedAngle),
+    castellated: {
+      nCellsBetweenLevels: numOrNull(c.nCellsBetweenLevels),
+      resolveFeatureAngle: numOrNull(c.resolveFeatureAngle),
+      maxGlobalCells: numOrNull(c.maxGlobalCells),
+    },
+    snap: {
+      enabled: bool(sn.enabled, true),
+      featureSnap: sn.featureSnap === 'explicit' || sn.featureSnap === 'implicit' ? sn.featureSnap : 'auto',
+      nSmoothPatch: numOrNull(sn.nSmoothPatch), tolerance: numOrNull(sn.tolerance), nSolveIter: numOrNull(sn.nSolveIter),
+      nRelaxIter: numOrNull(sn.nRelaxIter), nFeatureSnapIter: numOrNull(sn.nFeatureSnapIter),
+    },
+    layers: {
+      enabled: layersOn,
+      patches: Array.isArray(ly.patches) ? ly.patches.filter((x): x is string => typeof x === 'string')
+        : layersOn ? surfaces.map(s => s.name) : [],
+      nSurfaceLayers: numb(ly.nSurfaceLayers, numb(v.nSurfaceLayers, d.layers.nSurfaceLayers)),
+      relativeSizes: bool(ly.relativeSizes, d.layers.relativeSizes),
+      expansionRatio: numb(ly.expansionRatio, d.layers.expansionRatio),
+      finalLayerThickness: numb(ly.finalLayerThickness, d.layers.finalLayerThickness),
+      minThickness: numb(ly.minThickness, d.layers.minThickness),
+    },
+    quality: {
+      maxNonOrtho: numOrNull(q.maxNonOrtho), maxBoundarySkewness: numOrNull(q.maxBoundarySkewness),
+      maxInternalSkewness: numOrNull(q.maxInternalSkewness), maxConcave: numOrNull(q.maxConcave),
+      minDeterminant: numOrNull(q.minDeterminant),
+    },
     snappyOverride: strOrNull(v.snappyOverride),
     featuresOverride: strOrNull(v.featuresOverride),
   };
@@ -203,6 +357,7 @@ export function normalizeSettings(v: unknown, d: WizardSettings): WizardSettings
     constantOverrides: strRecord(s.constantOverrides),
     fields: normalizeFields(s.fields, d.fields),
     snappy: normalizeSnappy(s.snappy),
+    full: normalizeFull(s.full),
   };
 }
 
@@ -220,7 +375,7 @@ export function parseMarker(text: string, defaults: WizardSettings):
     return { marker: null, error: `${WIZARD_MARKER_PATH} is not valid JSON.` };
   }
   if (!isObj(raw)) return { marker: null, error: `${WIZARD_MARKER_PATH} is not a wizard record.` };
-  if (raw.format !== WIZARD_MARKER_FORMAT) {
+  if (raw.format !== WIZARD_MARKER_FORMAT && raw.format !== 1) {
     return { marker: null, error: `${WIZARD_MARKER_PATH} was written by a different version of the wizard (format ${String(raw.format)}).` };
   }
   if (!isObj(raw.settings)) return { marker: null, error: `${WIZARD_MARKER_PATH} carries no settings.` };

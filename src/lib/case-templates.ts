@@ -144,9 +144,29 @@ function sig(v: number): number {
 
 // ── Mesh ────────────────────────────────────────────────────────────────────
 
-export type PatchRole = 'inlet' | 'outlet' | 'wall' | 'empty';
+/**
+ * What a patch does, which decides the boundary condition every field gets
+ * there. The first four are the classic box; the rest are what a real case
+ * needs — a lid-driven cavity has a moving wall, a tank an open top, an
+ * external flow a far field.
+ */
+export type PatchRole =
+  | 'inlet' | 'outlet' | 'wall' | 'empty'
+  | 'symmetry' | 'slipWall' | 'movingWall' | 'pressureInlet' | 'atmosphere' | 'freestream'
+  // A solid: heat conduction (solid) and stress analysis (solidDisplacement).
+  | 'fixedTemperature' | 'heatFlux' | 'adiabatic' | 'convection'
+  | 'fixedSupport' | 'traction' | 'tractionFree';
 
-export interface MeshPatch { name: string; role: PatchRole }
+/** blockMesh patch types the wizard writes. Constraint types force the BC type. */
+export type PatchType = 'patch' | 'wall' | 'symmetryPlane' | 'symmetry' | 'empty';
+
+export interface MeshPatch { name: string; role: PatchRole; type?: PatchType }
+
+export type BoxFace = 'xMin' | 'xMax' | 'yMin' | 'yMax' | 'zMin' | 'zMax';
+export const BOX_FACES: BoxFace[] = ['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'];
+
+/** A patch of the box: a name, a type, a role, and the faces it covers. */
+export interface BoxPatch { name: string; type: PatchType; role: PatchRole; faces: BoxFace[] }
 
 export interface MeshSpec {
   x0: number; x1: number;
@@ -157,6 +177,49 @@ export interface MeshSpec {
   scale: number;
   /** 2D case: the two z faces become an `empty` patch and nz is forced to 1. */
   twoD: boolean;
+  /** simpleGrading (x y z): last cell / first cell along each axis. Absent: (1 1 1). */
+  grading?: [number, number, number];
+  /**
+   * The box's patches. Absent: the classic inlet (x min), outlet (x max) and
+   * walls (the rest), plus frontAndBack in 2D — what every earlier case had.
+   * In 2D the z faces always form the empty frontAndBack patch, whatever this says.
+   */
+  patches?: BoxPatch[];
+}
+
+/** The constraint BC a patch type imposes, or null for patch and wall. */
+export function constraintType(type: PatchType | undefined): string | null {
+  return type === 'empty' || type === 'symmetryPlane' || type === 'symmetry' ? type : null;
+}
+
+/** The patch type a role normally has. */
+export function typeForRole(role: PatchRole): PatchType {
+  switch (role) {
+    case 'wall': case 'slipWall': case 'movingWall': return 'wall';
+    // Not symmetryPlane: that one must be a single plane, and a patch made of
+    // several box faces is not (OpenFOAM stops with "is not planar").
+    case 'symmetry': return 'symmetry';
+    case 'empty': return 'empty';
+    default: return 'patch';
+  }
+}
+
+/** The classic box, as explicit patches. */
+export function defaultBoxPatches(twoD: boolean): BoxPatch[] {
+  return [
+    { name: 'inlet', type: 'patch', role: 'inlet', faces: ['xMin'] },
+    { name: 'outlet', type: 'patch', role: 'outlet', faces: ['xMax'] },
+    { name: 'walls', type: 'wall', role: 'wall', faces: twoD ? ['yMin', 'yMax'] : ['yMin', 'yMax', 'zMin', 'zMax'] },
+  ];
+}
+
+/** The box patches blockMesh will actually write, after the 2D rule. */
+export function effectiveBoxPatches(m: MeshSpec): BoxPatch[] {
+  const base = (m.patches ?? defaultBoxPatches(m.twoD))
+    .map(p => ({ ...p, faces: m.twoD ? p.faces.filter(f => f !== 'zMin' && f !== 'zMax') : [...p.faces] }))
+    .filter(p => p.faces.length > 0 && p.type !== 'empty');
+  if (m.twoD) base.push({ name: 'frontAndBack', type: 'empty', role: 'empty', faces: ['zMin', 'zMax'] });
+  return base;
 }
 
 export const DEFAULT_MESH: MeshSpec = {
@@ -174,13 +237,7 @@ export const DEFAULT_MESH: MeshSpec = {
  * common way a hand-built case fails to start.
  */
 export function meshPatches(m: MeshSpec): MeshPatch[] {
-  const patches: MeshPatch[] = [
-    { name: 'inlet', role: 'inlet' },
-    { name: 'outlet', role: 'outlet' },
-    { name: 'walls', role: 'wall' },
-  ];
-  if (m.twoD) patches.push({ name: 'frontAndBack', role: 'empty' });
-  return patches;
+  return effectiveBoxPatches(m).map(p => ({ name: p.name, role: p.role, type: p.type }));
 }
 
 function num(v: number): string {
@@ -229,6 +286,35 @@ export function meshProblems(m: MeshSpec): string[] {
     if (!Number.isFinite(n) || n < 1) out.push(`The ${axis} cell count must be at least 1.`);
   }
 
+  if (m.grading && !m.grading.every(g => Number.isFinite(g) && g > 0)) {
+    out.push('Each grading ratio must be a positive number (1 means uniform cells).');
+  }
+
+  if (m.patches) {
+    const faces = m.twoD ? BOX_FACES.filter(f => f !== 'zMin' && f !== 'zMax') : BOX_FACES;
+    const owner = new Map<BoxFace, string[]>();
+    for (const p of m.patches) for (const f of p.faces) owner.set(f, [...(owner.get(f) ?? []), p.name]);
+    const unassigned = faces.filter(f => !owner.get(f)?.length);
+    if (unassigned.length) out.push(`These box faces belong to no patch: ${unassigned.join(', ')}.`);
+    const twice = faces.filter(f => (owner.get(f)?.length ?? 0) > 1);
+    if (twice.length) out.push(`These box faces are in more than one patch: ${twice.join(', ')}.`);
+    const names = m.patches.filter(p => p.faces.some(f => faces.includes(f))).map(p => p.name);
+    const bad = names.filter(n => !/^[A-Za-z][A-Za-z0-9_]*$/.test(n));
+    if (bad.length) out.push(`Patch names must be a letter followed by letters, digits or underscores: ${bad.join(', ')}.`);
+    const dup = names.filter((n, i) => names.indexOf(n) !== i);
+    if (dup.length) out.push(`Two patches are called ${[...new Set(dup)].join(', ')}.`);
+    if (m.twoD && names.includes('frontAndBack')) out.push('frontAndBack is the name the 2D empty patch takes; rename that patch.');
+    if (!m.twoD && m.patches.some(p => p.type === 'empty' && p.faces.length)) {
+      out.push('An empty patch only makes sense in a 2D case: turn on "2D case" or change its type.');
+    }
+    for (const p of m.patches) {
+      const n = p.faces.filter(f => faces.includes(f)).length;
+      if (p.type === 'symmetryPlane' && n > 1) {
+        out.push(`${p.name}: a symmetryPlane must be one flat face and it spans ${n}; use the symmetry type, or one patch per face.`);
+      }
+    }
+  }
+
   const total = Math.max(1, Math.round(m.nx)) * Math.max(1, Math.round(m.ny))
     * (m.twoD ? 1 : Math.max(1, Math.round(m.nz)));
   if (Number.isFinite(total) && total > 20_000_000) {
@@ -251,21 +337,10 @@ export function generateBlockMeshDict(m: MeshSpec): string {
     v(m.x0, m.y0, m.z1), v(m.x1, m.y0, m.z1), v(m.x1, m.y1, m.z1), v(m.x0, m.y1, m.z1),
   ].join('\n');
 
-  const xMin = '(0 4 7 3)';
-  const xMax = '(1 2 6 5)';
-  const yMin = '(0 1 5 4)';
-  const yMax = '(3 7 6 2)';
-  const zMin = '(0 3 2 1)';
-  const zMax = '(4 5 6 7)';
-
-  const wallFaces = m.twoD ? [yMin, yMax] : [yMin, yMax, zMin, zMax];
-
-  const boundary = [
-    block('inlet', 'patch', [xMin]),
-    block('outlet', 'patch', [xMax]),
-    block('walls', 'wall', wallFaces),
-    ...(m.twoD ? [block('frontAndBack', 'empty', [zMin, zMax])] : []),
-  ].join('\n\n');
+  const boundary = effectiveBoxPatches(m)
+    .map(p => block(p.name, p.type, p.faces.map(f => FACE_VERTICES[f])))
+    .join('\n\n');
+  const g = (m.grading ?? [1, 1, 1]).map(v => (Number.isFinite(v) && v > 0 ? num(v) : '1')).join(' ');
 
   return `${header('dictionary', 'blockMeshDict', 'system')}
 scale   ${num(m.scale)};
@@ -277,7 +352,7 @@ ${vertices}
 
 blocks
 (
-    hex (0 1 2 3 4 5 6 7) (${Math.max(1, Math.round(m.nx))} ${Math.max(1, Math.round(m.ny))} ${nz}) simpleGrading (1 1 1)
+    hex (0 1 2 3 4 5 6 7) (${Math.max(1, Math.round(m.nx))} ${Math.max(1, Math.round(m.ny))} ${nz}) simpleGrading (${g})
 );
 
 edges
@@ -294,6 +369,14 @@ mergePatchPairs
 );
 `;
 }
+
+// Standard hex vertex order: 0-3 the z0 face counter-clockwise, 4-7 the z1
+// face above it. Each face is wound so its normal points out of the block.
+const FACE_VERTICES: Record<BoxFace, string> = {
+  xMin: '(0 4 7 3)', xMax: '(1 2 6 5)',
+  yMin: '(0 1 5 4)', yMax: '(3 7 6 2)',
+  zMin: '(0 3 2 1)', zMax: '(4 5 6 7)',
+};
 
 function block(name: string, type: string, faces: string[]): string {
   return `    ${name}
@@ -331,13 +414,31 @@ ${version}    format      ascii;
 
 // ── 0/ fields ───────────────────────────────────────────────────────────────
 
-export interface BoundaryCondition { name: string; type: string; value: string }
+export interface BoundaryCondition {
+  name: string;
+  type: string;
+  value: string;
+  /** Further entries, one `key value;` per line (inletValue, p0, freestreamValue…). */
+  extra?: string;
+}
 
 export interface FieldConfig {
   fieldName: string;
   dimensions: string;
   internalField: string;
   boundaryConditions: BoundaryCondition[];
+  /** The field class, when it cannot be told from the name (seeded fields). */
+  cls?: string;
+  /** Text written before `dimensions`: #include lines, variables (seeded fields). */
+  preamble?: string;
+  /** Text written inside boundaryField after the patches: #includeEtc lines. */
+  boundaryTail?: string;
+  /**
+   * Written as 0/<name>.orig: setFields reads it (OpenFOAM falls back to the
+   * .orig file) and writes 0/<name> with its initial regions filled in, so the
+   * wizard's own file is never the one setFields rewrites.
+   */
+  orig?: boolean;
 }
 
 /**
@@ -368,6 +469,7 @@ export function dimensionsFor(fieldName: string): string {
 
 /** A vector field is written with a different class, and OpenFOAM checks it. */
 export function fieldClass(f: FieldConfig): string {
+  if (f.cls) return f.cls;
   if (f.fieldName === 'U') return 'volVectorField';
   return /^\s*(uniform\s*)?\(/.test(f.internalField) ? 'volVectorField' : 'volScalarField';
 }
@@ -377,19 +479,32 @@ export function generateFieldFile(f: FieldConfig, flavour: Flavour): string {
     .filter(bc => bc.name.trim())
     .map(bc =>
       `    ${bc.name}\n    {\n        type            ${bc.type};\n` +
+      (bc.extra ?? '').split('\n').map(l => l.trimEnd()).filter(l => l.trim())
+        .map((l, i, all) => {
+          // A keyword whose sub-dictionary opens on the next line takes no `;`
+          // (alphaContactAngle's contactAngleProperties, from a tutorial).
+          const done = /[;{}]$/.test(l) || (all[i + 1] ?? '').trim().startsWith('{');
+          return `        ${done ? l : `${l};`}\n`;
+        }).join('') +
       (bc.value.trim() ? `        value           ${bc.value};\n` : '') +
       `    }`
     )
     .join('\n\n');
 
+  const preamble = f.preamble?.trim() ? `${f.preamble.trim()}\n\n` : '';
+  // A zonal (v14) internalField is a dictionary, written without `;`.
+  const internal = f.internalField.trim().startsWith('{')
+    ? `internalField\n${f.internalField.trim()}`
+    : `internalField   ${f.internalField};`;
+  const tail = f.boundaryTail?.trim() ? `\n\n    ${f.boundaryTail.trim().split('\n').join('\n    ')}` : '';
   return `${header(fieldClass(f), f.fieldName, '0', flavour)}
-dimensions      ${f.dimensions};
+${preamble}dimensions      ${f.dimensions};
 
-internalField   ${f.internalField};
+${internal}
 
 boundaryField
 {
-${bcs}
+${bcs}${tail}
 }
 `;
 }
@@ -403,6 +518,8 @@ export interface FieldContext {
   nu: number;
   /** The case's model; nut's wall function depends on it. */
   turbulence?: TurbulenceModel;
+  /** Velocity of a moving wall (lid), as a vector literal. Default: the inlet velocity. */
+  wallVelocity?: string;
 }
 
 /**
@@ -412,8 +529,43 @@ export interface FieldContext {
  * for the RAS fields, `calculated` for nut, `empty` wherever the mesh is empty.
  */
 export function defaultBC(fieldName: string, patch: MeshPatch, ctx: FieldContext): BoundaryCondition {
-  const at = (type: string, value = '') => ({ name: patch.name, type, value });
-  if (patch.role === 'empty') return at('empty');
+  const at = (type: string, value = '', extra = '') => (extra ? { name: patch.name, type, value, extra } : { name: patch.name, type, value });
+  // A constraint patch type admits exactly its own condition, on every field.
+  const constraint = constraintType(patch.type);
+  if (patch.role === 'empty' || constraint === 'empty') return at('empty');
+  if (constraint) return at(constraint);
+
+  // The roles beyond the classic box. nut is `calculated` wherever there is no
+  // wall function; the turbulence quantities take inletOutlet where flow may
+  // come back in, as the incompressibleFluid tutorials do.
+  const turbulent = ['k', 'epsilon', 'omega', 'nuTilda'].includes(fieldName);
+  const internal = internalFor(fieldName, ctx);
+  switch (patch.role) {
+    case 'symmetry':
+      return at('symmetry');
+    case 'slipWall':
+      if (fieldName === 'U') return at('slip');
+      if (fieldName === 'nut') return at('calculated', 'uniform 0');
+      return at('zeroGradient');
+    case 'movingWall':
+      if (fieldName === 'U') return at('movingWallVelocity', `uniform ${ctx.wallVelocity ?? ctx.inletVelocity}`);
+      break;   // every other field: as on a wall
+    case 'pressureInlet':
+    case 'atmosphere':
+      if (fieldName === 'U') return at('pressureInletOutletVelocity', 'uniform (0 0 0)');
+      if (fieldName === 'p' || fieldName === 'p_rgh') return at('totalPressure', 'uniform 0', 'p0 uniform 0');
+      if (fieldName === 'nut') return at('calculated', 'uniform 0');
+      if (turbulent) return at('inletOutlet', internal, `inletValue ${internal}`);
+      return at('zeroGradient');
+    case 'freestream':
+      if (fieldName === 'U') return at('freestreamVelocity', `uniform ${ctx.inletVelocity}`, `freestreamValue uniform ${ctx.inletVelocity}`);
+      if (fieldName === 'p' || fieldName === 'p_rgh') return at('freestreamPressure', 'uniform 0', 'freestreamValue uniform 0');
+      if (fieldName === 'nut') return at('calculated', 'uniform 0');
+      if (turbulent) return at('freestream', internal, `freestreamValue ${internal}`);
+      return at('zeroGradient');
+  }
+  const role = patch.role === 'movingWall' ? 'wall' : patch.role;
+  if (role !== patch.role) patch = { ...patch, role };
 
   switch (fieldName) {
     case 'U':

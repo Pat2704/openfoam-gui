@@ -19,6 +19,7 @@ import {
   Play, Loader2, CheckCircle2, XCircle, AlertTriangle, Box, Circle, ChevronRight,
 } from 'lucide-react';
 import { parseCheckMeshOutput, type CheckMeshReport } from '@/lib/check-mesh';
+import { meshStepCommand, type MeshStep } from '@/lib/snappy-templates';
 
 type StepState = 'pending' | 'running' | 'done' | 'failed';
 
@@ -84,11 +85,14 @@ function failureReason(log: string): string {
   return reason.slice(0, 300);
 }
 
-export default function MeshRunPanel({ caseName, steps, onShowMesh }: {
+export default function MeshRunPanel({ caseName, steps: stepList, onShowMesh }: {
   caseName: string;
-  steps: string[];
+  steps: MeshStep[];
   onShowMesh: (caseName: string) => void;
 }) {
+  // Each step is known by its log name: two surfaceTransformPoints differ only there.
+  const steps = stepList.map(s => s.log);
+  const byLog = new Map(stepList.map(s => [s.log, s]));
   const [results, setResults] = useState<Record<string, StepResult>>({});
   const [running, setRunning] = useState(false);
   const [shown, setShown] = useState<string | null>(null);
@@ -130,7 +134,8 @@ export default function MeshRunPanel({ caseName, steps, onShowMesh }: {
       try {
         // `tee` keeps log.<app> in the case for the Monitor; pipefail makes the
         // application's exit status, not tee's, the command's.
-        const { exitCode, output } = await runStreamed(caseName, `set -o pipefail; ${app} 2>&1 | tee log.${app}`, onChunk);
+        const step = byLog.get(app)!;
+        const { exitCode, output } = await runStreamed(caseName, `set -o pipefail; ${meshStepCommand(step)} 2>&1 | tee log.${step.log}`, onChunk);
         if (timer) clearTimeout(timer);
         const text = (log || output).slice(-LOG_LIMIT);
 
@@ -165,7 +170,7 @@ export default function MeshRunPanel({ caseName, steps, onShowMesh }: {
 
   const finished = steps.length > 0 && steps.every(s => results[s]?.state === 'done');
   const failedStep = steps.find(s => results[s]?.state === 'failed');
-  const label = steps.length > 2 ? 'the meshing sequence' : steps[0] ?? 'blockMesh';
+  const label = steps.length > 2 ? 'the meshing sequence' : byLog.get(steps[0])?.app ?? 'blockMesh';
   const current = shown ? results[shown] : undefined;
 
   return (

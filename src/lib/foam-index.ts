@@ -749,6 +749,22 @@ echo "${MARK}end"
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
+const componentCache = new WeakMap<FoamIndex, Set<string>>();
+
+/** Every word inside the index's templated names (heRhoThermo, pureMixture, perfectGas…). */
+function componentWords(index: FoamIndex): Set<string> {
+  let words = componentCache.get(index);
+  if (!words) {
+    words = new Set();
+    for (const name of Object.keys(index.names)) {
+      if (!name.includes('<')) continue;
+      for (const w of name.split(/[<>,\s]+/)) if (w) words.add(w);
+    }
+    componentCache.set(index, words);
+  }
+  return words;
+}
+
 export interface NameProblem {
   name: string;
   /** Where it appeared, e.g. "0/U · inlet". */
@@ -774,6 +790,11 @@ export interface NameProblem {
  * Everything else is left alone on purpose: a dictionary is full of words that
  * are patch names, file names or physical quantities, and flagging those would
  * teach the user to ignore the warnings.
+ *
+ * Any other `type` is checked against every name, and against the words inside
+ * the templated ones: foamToC lists a thermo as the whole combination
+ * `heRhoThermo<pureMixture<const<hConst<perfectGas<specie>>,sensibleEnthalpy>>>`,
+ * while a `thermoType { type heRhoThermo; … }` names only its first word.
  */
 export function validateDictText(index: FoamIndex, text: string, label: string): NameProblem[] {
   const problems: NameProblem[] = [];
@@ -787,7 +808,7 @@ export function validateDictText(index: FoamIndex, text: string, label: string):
   let pendingName: string | null = null;
 
   const flag = (name: string, kind: string, pool: Set<string> | null) => {
-    const known = pool ? pool.has(name) : Boolean(index.names[name]);
+    const known = pool ? pool.has(name) : Boolean(index.names[name]) || componentWords(index).has(name);
     if (known) return;
     // Suggestions from the right namespace first, then anything close — and
     // never the name itself, which a wider search can return when the name is

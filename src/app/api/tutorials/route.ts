@@ -4,14 +4,17 @@ import {
   listTutorialCases,
   copyTutorial,
   getTutorialDirectory,
+  readTutorialSeed,
 } from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
-import { validateCaseName } from '@/lib/wsl-input';
+import { validateCaseName, WslInputError } from '@/lib/wsl-input';
 
 // GET /api/tutorials
 //   ?action=categories          → { categories, tutorialDir }
 //   ?action=cases&category=…    → { cases }
 //   ?action=tutDir              → { tutorialDir }
+//   ?action=module&module=…     → { cases } — a solver module's tutorials (New Case wizard)
+//   ?action=seed&path=…         → { files, skipped } — a tutorial's text dictionaries
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -32,9 +35,21 @@ export async function GET(req: NextRequest) {
         const tutorialDir = getTutorialDirectory();
         return NextResponse.json({ tutorialDir });
       }
+      case 'module': {
+        // On 11+ the tutorials are grouped by solver module, one folder each.
+        const mod = searchParams.get('module') || '';
+        if (!/^[A-Za-z][A-Za-z0-9]*$/.test(mod)) throw new WslInputError('Invalid solver module name');
+        const tutorialDir = getTutorialDirectory().replace(/\/+$/, '');
+        let cases: ReturnType<typeof listTutorialCases> = [];
+        try { cases = listTutorialCases(`${tutorialDir}/${mod}`); } catch { cases = []; }
+        return NextResponse.json({ cases: cases.filter(c => !c.wrapper) });
+      }
+      case 'seed': {
+        return NextResponse.json(readTutorialSeed(searchParams.get('path') || ''));
+      }
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: categories, cases, tutDir' },
+          { error: 'Invalid action. Use: categories, cases, tutDir, module, seed' },
           { status: 400 }
         );
     }

@@ -1611,6 +1611,45 @@ exit 0
     }));
 }
 
+/**
+ * The text files of a tutorial the New Case wizard can start a case from: its
+ * 0/ (or 0.orig/), constant/ and system/ dictionaries, plus Allrun for reading.
+ * Mesh data and geometry are left out (polyMesh, geometry, triSurface, .gz,
+ * anything binary), and so is any file above 256 KB: the wizard builds its own
+ * mesh and only needs the physics.
+ */
+export function readTutorialSeed(tutorialPath: string): { files: { path: string; content: string }[]; skipped: string[] } {
+  const source = validatePathWithin(getTutorialDirectory(), tutorialPath, 'Tutorial path').replace(/\/+$/, '');
+  const MARK = '@@SEED@@';
+  const script = `
+T=${shellQuote(source)}
+[ -d "$T/system" ] || { echo "not a tutorial case (no system/)" >&2; exit 1; }
+cd "$T" || exit 1
+for f in Allrun $(find -L 0 0.orig constant system -maxdepth 2 -type f 2>/dev/null | sort); do
+  [ -f "$f" ] || continue
+  case "$f" in constant/polyMesh/*|constant/geometry/*|constant/triSurface/*|*.gz|*/boundaryData/*) echo "${MARK}skip $f"; continue ;; esac
+  s=$(stat -c %s -- "$f")
+  if [ "$s" -gt 262144 ] || ! grep -Iq . -- "$f"; then echo "${MARK}skip $f"; continue; fi
+  echo "${MARK}file $f"
+  base64 -w0 -- "$f"; echo
+done
+exit 0
+`;
+  const out = runInWslScript(Buffer.from(script).toString('base64'), 30000);
+  const files: { path: string; content: string }[] = [];
+  const skipped: string[] = [];
+  const lines = out.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r$/, '');
+    if (line.startsWith(`${MARK}skip `)) skipped.push(line.slice(MARK.length + 5));
+    else if (line.startsWith(`${MARK}file `)) {
+      const p = line.slice(MARK.length + 5);
+      files.push({ path: p, content: Buffer.from((lines[++i] || '').trim(), 'base64').toString('utf-8') });
+    }
+  }
+  return { files, skipped };
+}
+
 export function copyTutorial(tutorialPath: string, newCaseName: string): string {
   const runDir = getRunDirectory();
   const sourcePath = validatePathWithin(getTutorialDirectory(), tutorialPath, 'Tutorial path');

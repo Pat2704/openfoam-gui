@@ -209,10 +209,13 @@ export function parseGeometry(fileName: string, bytes: Uint8Array): ParsedGeomet
     binary = true;
     triangles = parseBinaryStl(bytes);
   } else if (kind === 'stl') {
-    const parsed = parseAsciiStl(new TextDecoder().decode(bytes));
-    triangles = parsed.positions;
-    // Only named solids count as regions; the reader invents `patchN` names.
-    regions = parsed.patches.map(p => p.name).filter(name => !/^patch\d+$/.test(name));
+    const text = new TextDecoder().decode(bytes);
+    triangles = parseAsciiStl(text).positions;
+    // The names on the `solid` lines themselves: the reader invents `patchN`
+    // for an unnamed solid, but a file can genuinely call its solids `patch1`
+    // (the installation's flange.stl does), so the names are read here.
+    const named = [...text.matchAll(/^[ \t]*solid[ \t]+(\S+)/gm)].map(m => m[1]);
+    regions = [...new Set(named)];
   } else {
     ({ triangles, regions } = parseObj(new TextDecoder().decode(bytes)));
   }

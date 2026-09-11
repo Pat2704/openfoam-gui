@@ -3,26 +3,27 @@
 /**
  * New Case wizard.
  *
- * The generation itself lives in `src/lib/case-templates.ts` — including the
- * split between the modular (OpenFOAM 11+) and legacy (≤10) case layouts, which
- * is not cosmetic: a legacy case does not run at all on 11+, and that is what
- * this wizard used to produce unconditionally.
+ * Which guide it gives is decided by the OpenFOAM installation the app is
+ * using, never by the user (src/lib/wizard/modules.ts: guideForVersion):
  *
- * The guiding idea here is that the mesh is the source of truth. Patch names
- * come from the blockMeshDict the wizard builds — plus, with snappyHexMesh, one
- * patch group per imported surface — and every boundary condition is generated
- * against that list, so the 0/ files and the mesh cannot disagree, which is
- * otherwise the most common reason a hand-assembled case dies on the first
- * time step.
+ *   13, 14   the complete guide — every solver module of the installation,
+ *            each with the physics it needs (./wizard/step-physics.tsx), or a
+ *            start from one of the installation's own tutorials of the module;
+ *            the files come from src/lib/wizard/generate.ts and boundary.ts.
+ *   9 – 12   a shorter guide: the incompressible solvers of src/lib/case-templates.ts,
+ *            with the case layout of the version (legacy ≤10, modular 11+).
+ *   unknown  no guide: a case written for the wrong version does not run.
  *
- * Two things build on that:
+ * The mesh is the source of truth. Patch names come from the box the wizard
+ * builds — and, with snappyHexMesh, one patch group per surface or region —
+ * and every boundary condition is generated against that list, so the 0/
+ * files and the mesh cannot disagree. The Mesh step follows a real workflow's
+ * order (./wizard/step-mesh.tsx).
  *
- *   - "Update case" (src/lib/wizard-state.ts): a created case keeps the
- *     settings and the hash of every file written, in system/studioWizard.json,
- *     so the wizard can reopen it, rewrite only the files that changed and ask
- *     about any file somebody edited since.
- *   - Guided snappyHexMesh on OpenFOAM 13 and 14 (src/lib/snappy-templates.ts
- *     and ./wizard-snappy.tsx), only when chosen in the Mesh step.
+ * "Update case" (src/lib/wizard-state.ts): a created case keeps the settings
+ * and the hash of every file written in system/studioWizard.json, so the wizard
+ * can reopen it, rewrite only the files that changed and ask about any file
+ * somebody edited since.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,43 +31,59 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import {
-  Plus, Trash2, FileCode, ChevronRight, ChevronLeft,
-  CheckCircle2, Settings, Zap, Grid3x3, Droplets,
-  Wind, Eye, Check, AlertTriangle, RefreshCw, Info, Wand2, X, FolderOpen, Loader2,
+  Plus, FileCode, ChevronRight, ChevronLeft, CheckCircle2, Settings, Zap, Grid3x3, Droplets,
+  Wind, Check, AlertTriangle, RefreshCw, Info, Wand2, X, FolderOpen, Loader2,
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { caseNameProblem } from '@/lib/case-name';
 import {
   DEFAULT_MESH, TURBULENCE_MODELS,
-  buildField, defaultBC, estimateTurbulence, findSolver, flavourForVersion,
+  buildField, defaultBC, defaultBoxPatches, estimateTurbulence, findSolver,
   generateBlockMeshDict, generateControlDict, generateFvSchemes, generateFvSolution,
   generateGravity, generateTransportProperties, generateTurbulenceProperties,
   generateFieldFile, meshPatches, meshProblems, runCommand, solverChoices, syncFieldPatches,
   transportFileName, turbulenceFieldNames, turbulenceFileName,
-  type FieldConfig, type Flavour, type MeshPatch, type MeshSpec, type TurbulenceModel,
+  type BoxPatch, type FieldConfig, type Flavour, type MeshPatch, type MeshSpec, type PatchRole, type TurbulenceModel,
 } from '@/lib/case-templates';
 import {
-  DEFAULT_SNAPPY, generateMeshQualityDict, generateSnappyHexMeshDict, generateSurfaceFeaturesDict,
-  geometryPath, meshSteps, snappyPatches, snappyProblems,
-  type SnappySettings,
+  DEFAULT_SNAPPY, UNIT_SCALE, generateMeshQualityDict, generateSnappyHexMeshDict, generateSurfaceFeaturesDict,
+  geometryPath, meshStepCommand, meshSteps, snappyPatches, snappyProblems,
+  type MeshStep, type SnappySettings,
 } from '@/lib/snappy-templates';
 import {
   WIZARD_MARKER_PATH, buildMarker, isMeshInput, parseMarker, planUpdate, resolvePlan,
   serializeMarker, settingsEqual, sha256Hex,
   type Decision, type PlanEntry, type WizardMarker, type WizardSettings,
 } from '@/lib/wizard-state';
-import { pointInBox, pointInsideSurface } from '@/lib/geometry';
-import SnappySection, { readGeometry, type InsideCheck, type LoadedGeometry } from '@/components/openfoam/wizard-snappy';
+import { pointInBox, pointInsideSurface, type Vec3 } from '@/lib/geometry';
+import {
+  findModule, guideDescription, guideForVersion, modulesOffered, type GuideTier, type ModuleInfo,
+} from '@/lib/wizard/modules';
+import {
+  fieldNames, physicsForModule, turbulenceValues, vectorMagnitude, type FullPhysics, type PatchValues,
+} from '@/lib/wizard/physics';
+import { bcFor, buildFullField, internalValue, type BcContext } from '@/lib/wizard/boundary';
+import {
+  fullConstantFiles, fullControlDict, fullDecomposeParDict, fullFunctions, fullFvConstraints, fullFvSchemes,
+  fullFvSolution, fullProblems, fullSetFieldsDict, prepSteps, regionFields, seededFiles, solvedFields,
+  type CaseFile, type FullCase,
+} from '@/lib/wizard/generate';
+import { seedFields, seedPhysicsFiles, tutorialPatches } from '@/lib/wizard/seed';
+import { rolesFor, type RoleFamily } from '@/lib/wizard/roles';
+import { parseThermoTable } from '@/lib/wizard/thermo';
+import MeshStepPanel from '@/components/openfoam/wizard/step-mesh';
+import PhysicsStepFull, { type WizardCatalog } from '@/components/openfoam/wizard/step-physics';
+import FieldsStep from '@/components/openfoam/wizard/step-fields';
+import FilesStep, { FunctionsPanel, type EditableFile, type FunctionChoice } from '@/components/openfoam/wizard/step-files';
+import { readGeometry, type InsideCheck, type LoadedGeometry } from '@/components/openfoam/wizard/geometry-io';
 import MeshRunPanel from '@/components/openfoam/wizard-mesh-run';
 import UpdateReview from '@/components/openfoam/wizard-update-review';
 
@@ -107,17 +124,45 @@ interface SnappySupport { version: string; major: number | null; available: bool
 interface WizardResult {
   caseName: string;
   kind: 'created' | 'updated' | 'unchanged';
-  /** A file the mesh is built from changed. */
+  /** A file the mesh (or the initial fields) is built from changed. */
   meshStale: boolean;
   /** constant/polyMesh/boundary exists. */
   hasMesh: boolean;
-  steps: string[];
+  steps: MeshStep[];
   failed: string[];
 }
 
-/** Every patch the 0/ files need an entry for: the box's, and one group per surface. */
-function allPatches(mesh: MeshSpec, snappy: SnappySettings | null): MeshPatch[] {
-  return [...meshPatches(mesh), ...snappyPatches(snappy)];
+const MESH_FILES = /^system\/(blockMeshDict|snappyHexMeshDict|surfaceFeaturesDict|meshQualityDict)$/;
+
+function boxOf(m: MeshSpec): { min: Vec3; max: Vec3 } {
+  return { min: [m.x0, m.y0, m.z0], max: [m.x1, m.y1, m.z1] };
+}
+
+/** Default time controls: steady iterations, or a short transient suited to the module. */
+function timeDefaults(m: ModuleInfo | null, transient: boolean): { endTime: string; deltaT: string; writeInterval: string } {
+  if (!transient) return { endTime: '500', deltaT: '1', writeInterval: '100' };
+  switch (m?.physics) {
+    case 'vof': case 'compressibleVof': case 'driftFlux': return { endTime: '1', deltaT: '0.001', writeInterval: '0.05' };
+    case 'shock': return { endTime: '0.001', deltaT: '1e-7', writeInterval: '1e-4' };
+    case 'solidMechanics': case 'solidThermal': return { endTime: '100', deltaT: '1', writeInterval: '10' };
+    default: return { endTime: '0.5', deltaT: '0.001', writeInterval: '50' };
+  }
+}
+
+const FALLBACK_ROLE: Record<RoleFamily, PatchRole> = { flow: 'wall', solidThermal: 'adiabatic', solidMechanics: 'tractionFree' };
+
+/** A box whose patch roles suit the module's family (a solid has no inlet). */
+function fitBoxToFamily(m: MeshSpec, family: RoleFamily): MeshSpec {
+  const allowed = [...rolesFor(family), 'empty'];
+  const patches = m.patches ?? defaultBoxPatches(m.twoD);
+  if (patches.every(p => allowed.includes(p.role))) return m;
+  const side: BoxPatch['faces'] = m.twoD ? ['yMin', 'yMax'] : ['yMin', 'yMax', 'zMin', 'zMax'];
+  const next: BoxPatch[] = family === 'solidThermal'
+    ? [{ name: 'hot', type: 'wall', role: 'fixedTemperature', faces: ['xMin'] }, { name: 'cold', type: 'wall', role: 'fixedTemperature', faces: ['xMax'] }, { name: 'insulated', type: 'wall', role: 'adiabatic', faces: side }]
+    : family === 'solidMechanics'
+      ? [{ name: 'fixed', type: 'wall', role: 'fixedSupport', faces: ['xMin'] }, { name: 'load', type: 'patch', role: 'traction', faces: ['xMax'] }, { name: 'free', type: 'patch', role: 'tractionFree', faces: side }]
+      : defaultBoxPatches(m.twoD);
+  return { ...m, patches: next };
 }
 
 async function uploadGeometry(caseName: string, file: string, bytes: Uint8Array): Promise<string> {
@@ -142,6 +187,27 @@ async function writeCaseFile(caseName: string, path: string, content: string): P
   return !!res && res.ok;
 }
 
+/** The #includeFunc lines worth offering for this case. */
+function functionChoices(c: FullCase | null, patches: MeshPatch[]): FunctionChoice[] {
+  if (!c) return [];
+  const kind = c.module.physics;
+  const flow = c.module.family === 'flow';
+  const out: FunctionChoice[] = [{ line: `residuals(${solvedFields(c).join(', ')})`, label: 'Residuals', hint: 'Initial residual of every solved field, each time step' }];
+  if (flow) {
+    if (c.transient) out.push({ line: 'CourantNo', label: 'Courant number', hint: 'Writes the Courant number field' });
+    out.push({ line: 'vorticity', label: 'Vorticity', hint: 'Writes the vorticity field' });
+    out.push({ line: 'Q', label: 'Q criterion', hint: 'Vortex identification field' });
+    if (c.phys.simulationType !== 'laminar') out.push({ line: 'yPlus', label: 'y+', hint: 'Wall y+ of every wall patch' });
+    out.push({ line: 'wallShearStress', label: 'Wall shear stress', hint: 'On every wall patch' });
+    if (['thermal', 'multicomponent', 'shock', 'isothermal', 'compressibleVof'].includes(kind)) out.push({ line: 'MachNo', label: 'Mach number', hint: 'Compressible flows' });
+    if (c.transient) out.push({ line: 'fieldAverage(U, p)', label: 'Time averages', hint: 'Mean of U and p over the run' });
+    for (const p of patches.filter(x => x.role === 'outlet')) out.push({ line: `patchFlowRate(patch=${p.name})`, label: `Flow rate at ${p.name}`, hint: 'Mass or volume flow rate through the patch' });
+    for (const p of patches.filter(x => x.role === 'inlet')) out.push({ line: `patchAverage(patch=${p.name}, fields=(p U))`, label: `Averages at ${p.name}`, hint: 'Area-averaged p and U on the patch' });
+  }
+  out.push({ line: 'time', label: 'Timing', hint: 'Clock and CPU time per step' });
+  return out;
+}
+
 export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowMesh }: {
   onCreated: () => void;
   /** "Update case" from the Dashboard: reopen this case's recorded settings. */
@@ -151,16 +217,14 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
 }) {
   const [step, setStep] = useState(0);
 
-  // ── Which OpenFOAM are we writing for ───────────────────────────────────
-  // 11 replaced the solver executables with `foamRun -solver <module>` and
-  // renamed both constant/ dictionaries. Everything downstream depends on it,
-  // so it is detected first and shown to the user, who can override it.
-  const [flavour, setFlavour] = useState<Flavour>('modular');
+  // ── The installation: version (hence the guide), catalogue, snappy ───────
   const [detectedVersion, setDetectedVersion] = useState<string | null>(null);
-  /** Boundary condition names the installation actually offers (see below). */
+  const [versionState, setVersionState] = useState<'checking' | 'done'>('checking');
+  /** Boundary condition names the installation actually offers. */
   const [bcTypes, setBcTypes] = useState<string[]>(BC_TYPES_FALLBACK);
   const [bcFromInstall, setBcFromInstall] = useState(false);
   const [snappySupport, setSnappySupport] = useState<SnappySupport | null>(null);
+  const [catalog, setCatalog] = useState<WizardCatalog | null>(null);
 
   const [caseName, setCaseName] = useState('');
   const [existingCases, setExistingCases] = useState<string[]>([]);
@@ -171,11 +235,12 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   const [transient, setTransient] = useState(false);
   const [turbulence, setTurbulence] = useState<TurbulenceModel>('laminar');
 
-  // Physics inputs the initial conditions are computed from.
+  // Physics inputs of the shorter guides.
   const [nu, setNu] = useState('1e-05');
   const [inletVelocity, setInletVelocity] = useState('(1 0 0)');
   const [intensity, setIntensity] = useState('5');
   const [lengthScale, setLengthScale] = useState('');
+  const [gravity, setGravity] = useState('(0 -9.81 0)');
 
   const [endTime, setEndTime] = useState('500');
   const [deltaT, setDeltaT] = useState('1');
@@ -189,9 +254,12 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   /** Geometry read in the browser, by file name in constant/geometry. */
   const [geometry, setGeometry] = useState<Record<string, LoadedGeometry>>({});
 
+  /** Hand edits of generated files, by case-relative path. */
   const [systemOverrides, setSystemOverrides] = useState<Record<string, string>>({});
   const [constantOverrides, setConstantOverrides] = useState<Record<string, string>>({});
-  const [gravity, setGravity] = useState('(0 -9.81 0)');
+
+  /** The complete guide's physics (13/14). */
+  const [full, setFull] = useState<FullPhysics>(() => physicsForModule(findModule('incompressibleFluid')!, boxOf(DEFAULT_MESH)));
 
   const [showPreview, setShowPreview] = useState(false);
   const [previewField, setPreviewField] = useState<string | null>(null);
@@ -201,9 +269,10 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   const [showNewFieldDialog, setShowNewFieldDialog] = useState(false);
   const [newFieldName, setNewFieldName] = useState('');
   const [activeFieldIdx, setActiveFieldIdx] = useState(0);
+  /** Fields the user added by hand: kept when the physics' own list changes. */
+  const userFields = useRef(new Set<string>());
 
   // ── Update case ─────────────────────────────────────────────────────────
-  /** The case being updated and its record, or null for a new case. */
   const [updateTarget, setUpdateTarget] = useState<{ caseName: string; marker: WizardMarker } | null>(null);
   const [result, setResult] = useState<WizardResult | null>(null);
   const [loadingCase, setLoadingCase] = useState<string | null>(null);
@@ -215,21 +284,11 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [applying, setApplying] = useState(false);
 
-  /**
-   * Names in the files about to be written that this OpenFOAM does not know.
-   *
-   * The wizard generates from templates, so this should normally be empty — it
-   * is here to catch the case where the templates drift away from a version, or
-   * the user hand-edits a dictionary in step 4/5 and mistypes a type.
-   */
+  /** Names in the files about to be written that this OpenFOAM does not know. */
   const [nameProblems, setNameProblems] = useState<{ name: string; where: string; suggestions: string[] }[]>([]);
   /** Files the wizard is about to write that OpenFOAM's parser rejects. */
   const [syntaxProblems, setSyntaxProblems] = useState<{ path: string; message: string; line: number | null }[]>([]);
-  /**
-   * Where that installation check stands. The green "Everything checks out"
-   * used to show while it was still running and when it never ran at all
-   * (index not ready, WSL busy) — and neither of those is "checked".
-   */
+  /** Where that installation check stands: a green box only once it answered. */
   const [installCheck, setInstallCheck] = useState<'checking' | 'done' | 'unavailable'>('checking');
 
   /**
@@ -240,28 +299,40 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
    */
   const restoringRef = useRef(false);
   const [restoreTick, setRestoreTick] = useState(0);
-  /** Once a case is loaded, a late version answer must not change its layout. */
-  const flavourPinnedRef = useRef(false);
 
-  const patches = useMemo(() => allPatches(mesh, snappy), [mesh, snappy]);
+  // ── Derived: the guide, the module, the patches ─────────────────────────
+  const detectedMajor = parseInt((detectedVersion || '').match(/\d+/)?.[0] ?? '', 10);
+  const major = Number.isFinite(detectedMajor) ? detectedMajor : null;
+  const tier: GuideTier | null = versionState === 'checking' ? null : guideForVersion(major);
+  const isFull = tier === 'full';
+  const flavour: Flavour = tier === 'basic-legacy' ? 'legacy' : 'modular';
+  const offered = useMemo(() => modulesOffered(catalog?.solvers ?? null), [catalog]);
+  const mod: ModuleInfo | null = isFull ? (offered.find(m => m.id === solver) ?? findModule(solver) ?? null) : null;
+  const family: RoleFamily = mod?.family ?? 'flow';
+  const roles = useMemo(() => rolesFor(family), [family]);
+
+  const patches = useMemo(() => [...meshPatches(mesh), ...snappyPatches(snappy)], [mesh, snappy]);
+  const patchSignature = patches.map(p => `${p.name}:${p.role}:${p.type ?? ''}`).join('|');
 
   // Turbulent inlet conditions from U, I and L — see estimateTurbulence.
   const turbEstimate = useMemo(() => {
-    const speed = Math.hypot(...(inletVelocity.match(/-?[\d.eE+-]+/g) || ['0'])
-      .map(Number)
-      .filter(Number.isFinite));
+    const speed = vectorMagnitude(inletVelocity);
     const L = Number(lengthScale) || 0.07 * Math.abs(mesh.y1 - mesh.y0) || 0.01;
     return estimateTurbulence(speed || 1, (Number(intensity) || 5) / 100, L);
   }, [inletVelocity, intensity, lengthScale, mesh.y0, mesh.y1]);
 
   const fieldCtx = useMemo(() => ({
-    inletVelocity,
-    k: turbEstimate.k,
-    epsilon: turbEstimate.epsilon,
-    omega: turbEstimate.omega,
-    nu: Number(nu) || 1e-5,
-    turbulence,
+    inletVelocity, k: turbEstimate.k, epsilon: turbEstimate.epsilon, omega: turbEstimate.omega,
+    nu: Number(nu) || 1e-5, turbulence,
   }), [inletVelocity, turbEstimate, nu, turbulence]);
+
+  const fullCtx: BcContext | null = useMemo(() => (mod ? {
+    kind: mod.physics,
+    phys: full,
+    turb: turbulenceValues(full, vectorMagnitude(full.inletVelocity), 0.07 * Math.abs(mesh.y1 - mesh.y0), Number(full.nu) || 1e-5),
+  } : null), [mod, full, mesh.y0, mesh.y1]);
+
+  const fullNames = useMemo(() => (mod && !full.seed && mod.physics !== 'tutorial' ? fieldNames(mod.physics, full) : []), [mod, full]);
 
   const [fields, setFields] = useState<FieldConfig[]>(() => {
     const p = meshPatches(DEFAULT_MESH);
@@ -269,20 +340,17 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     return [buildField('U', p, ctx, 'modular'), buildField('p', p, ctx, 'modular')];
   });
 
-  // ── The installation: version, condition types, snappy support ──────────
-  // Read on mount and again on every OpenFOAM switch: the tab stays mounted
-  // once visited, and a layout, a condition list or a "not available here"
-  // from the previous installation is wrong for the next one.
+  // ── Detect the installation, and follow a switch ─────────────────────────
   const detectInstallation = useCallback(async () => {
+    setVersionState('checking');
     try {
       const res = await fetch('/api/wsl?action=version');
       const data = await res.json();
-      if (data?.version) {
-        const major = parseInt(String(data.version).match(/\d+/)?.[0] ?? '', 10);
-        setDetectedVersion(String(data.version).trim());
-        if (!flavourPinnedRef.current) setFlavour(flavourForVersion(Number.isFinite(major) ? major : null));
-      }
-    } catch { /* keep the modular default */ }
+      setDetectedVersion(data?.version ? String(data.version).trim() : null);
+    } catch {
+      setDetectedVersion(null);
+    }
+    setVersionState('done');
 
     // The real boundary-condition list, straight from foamToC. Falls back to the
     // short built-in list if the index is not built yet or the version predates
@@ -297,6 +365,16 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     } catch { /* keep the fallback */ }
 
     try {
+      const res = await fetch('/api/foam-index?action=wizardCatalog');
+      const data = await res.json();
+      if (data?.ready) {
+        const thermo: WizardCatalog['thermo'] = {};
+        for (const [t, list] of Object.entries(data.thermo ?? {})) thermo[t] = parseThermoTable(list as string[]);
+        setCatalog({ solvers: data.solvers ?? [], ras: data.ras ?? [], les: data.les ?? [], thermo, functionObjects: data.functionObjects ?? [] });
+      }
+    } catch { /* lists stay unnarrowed until it answers */ }
+
+    try {
       const res = await fetch('/api/wsl?action=snappySupport');
       const data = await res.json();
       setSnappySupport(res.ok && typeof data?.available === 'boolean'
@@ -309,10 +387,26 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
 
   useEffect(() => {
     void detectInstallation();
-    const onChange = () => { setSnappySupport(null); void detectInstallation(); };
+    const onChange = () => { setSnappySupport(null); setCatalog(null); void detectInstallation(); };
     window.addEventListener('foam-version-changed', onChange);
     return () => window.removeEventListener('foam-version-changed', onChange);
   }, [detectInstallation]);
+
+  // The catalogue answers after the index is built (~10 s on a cold start): ask again.
+  useEffect(() => {
+    if (catalog || versionState !== 'done' || !isFull) return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch('/api/foam-index?action=wizardCatalog');
+        const data = await res.json();
+        if (!data?.ready) return;
+        const thermo: WizardCatalog['thermo'] = {};
+        for (const [t, list] of Object.entries(data.thermo ?? {})) thermo[t] = parseThermoTable(list as string[]);
+        setCatalog({ solvers: data.solvers ?? [], ras: data.ras ?? [], les: data.les ?? [], thermo, functionObjects: data.functionObjects ?? [] });
+      } catch { /* try again */ }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [catalog, versionState, isFull]);
 
   // Refuse to silently write into a case that already exists (see handleCreate),
   // and know which cases the wizard made (see "Update a case" on the first step).
@@ -337,129 +431,64 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     return () => window.removeEventListener('case-list-changed', onList);
   }, [refreshCases]);
 
-  // The solver list is per-flavour, so a solver from the other list cannot stay
-  // selected. Dimensions are version-independent (see dimensionsFor).
-  useEffect(() => {
-    if (restoringRef.current) return;
-    setSolver(prev => (findSolver(flavour, prev) ? prev : solverChoices(flavour)[0].value));
-  }, [flavour]);
-
-  // Solver choice carries a default time treatment.
-  const solverInfo = findSolver(flavour, solver);
-  useEffect(() => {
-    if (restoringRef.current) return;
-    const s = findSolver(flavour, solver);
-    if (!s) return;
-    setTransient(s.transient);
-  }, [solver, flavour]);
-
-  // Steady and transient want completely different controlDict numbers.
-  useEffect(() => {
-    if (restoringRef.current) return;
-    if (transient) { setEndTime('0.5'); setDeltaT('0.001'); setWriteInterval('50'); }
-    else { setEndTime('500'); setDeltaT('1'); setWriteInterval('100'); }
-  }, [transient]);
-
-  // The mesh owns the patch list: whenever it changes, re-project it onto every
-  // field, keeping any boundary condition the user has already edited by name.
-  const patchSignature = patches.map(p => `${p.name}:${p.role}`).join('|');
-  useEffect(() => {
-    if (restoringRef.current) return;
-    setFields(prev => prev.map(f => syncFieldPatches(f, patches, fieldCtx)));
-    // fieldCtx is intentionally not a dependency: re-syncing on every keystroke
-    // in the physics step would overwrite boundary conditions the user is
-    // editing. The "Apply physics" button in step 3 is the explicit path.
-  }, [patchSignature]);
-
-  // Picking a RAS model implies extra 0/ files; a case that names kEpsilon in
-  // momentumTransport but has no k/epsilon/nut fails on startup.
-  useEffect(() => {
-    if (restoringRef.current) return;
-    const needed = turbulenceFieldNames(turbulence);
-    setFields(prev => {
-      const have = new Set(prev.map(f => f.fieldName));
-      const missing = needed.filter(n => !have.has(n));
-      // nut is needed by every RAS model, so it survives a model change — but
-      // its wall function depends on the model (Spalart-Allmaras has no k).
-      // Only a wall function the wizard chose itself is swapped; an edit stays.
-      const NUT_DEFAULTS = ['nutkWallFunction', 'nutUSpaldingWallFunction'];
-      let changed = false;
-      const updated = prev.map(f => {
-        if (f.fieldName !== 'nut') return f;
-        const boundaryConditions = f.boundaryConditions.map(bc => {
-          const patch = patches.find(p => p.name === bc.name);
-          if (!patch || patch.role !== 'wall' || !NUT_DEFAULTS.includes(bc.type)) return bc;
-          const type = defaultBC('nut', patch, fieldCtx).type;
-          if (type === bc.type) return bc;
-          changed = true;
-          return { ...bc, type };
-        });
-        return changed ? { ...f, boundaryConditions } : f;
-      });
-      if (missing.length === 0 && !changed) return prev;
-      return [...updated, ...missing.map(n => buildField(n, patches, fieldCtx, flavour))];
-    });
-    // Same reasoning as above — only the model change should trigger this.
-  }, [turbulence]);
-
-  const staleTurbulenceFields = useMemo(() => {
-    const needed = new Set(turbulenceFieldNames(turbulence));
-    const allTurb = ['k', 'epsilon', 'omega', 'nut', 'nuTilda'];
-    return fields.filter(f => allTurb.includes(f.fieldName) && !needed.has(f.fieldName)).map(f => f.fieldName);
-  }, [fields, turbulence]);
-
-  // ── Generated file contents ─────────────────────────────────────────────
-  const sysOpts = useMemo(() => ({
-    flavour, solver, transient, endTime, deltaT, writeInterval, turbulence,
-  }), [flavour, solver, transient, endTime, deltaT, writeInterval, turbulence]);
-
-  const blockMeshDict = meshOverride ?? generateBlockMeshDict(mesh);
-  const controlDict = systemOverrides.controlDict ?? generateControlDict(sysOpts);
-  const fvSchemes = systemOverrides.fvSchemes ?? generateFvSchemes(sysOpts);
-  const fvSolution = systemOverrides.fvSolution ?? generateFvSolution(sysOpts);
-  const snappyDict = snappy ? (snappy.snappyOverride ?? generateSnappyHexMeshDict(snappy)) : '';
-  const featuresDict = snappy ? (snappy.featuresOverride ?? generateSurfaceFeaturesDict(snappy)) : '';
-
-  // icoFoam on 10 reads physicalProperties, so the major version takes part.
-  const detectedMajor = parseInt((detectedVersion || '').match(/\d+/)?.[0] ?? '', 10);
-  const transportName = transportFileName(flavour, solver, Number.isFinite(detectedMajor) ? detectedMajor : null);
-  const turbulenceName = turbulenceFileName(flavour);
-  const transportProps = constantOverrides[transportName] ?? generateTransportProperties(nu, flavour, transportName);
-  const turbProps = constantOverrides[turbulenceName] ?? generateTurbulenceProperties(turbulence, flavour);
-  const needsGravity = Boolean(solverInfo?.buoyant);
-
   // ── Settings: what "Update case" records and restores ───────────────────
   const currentSettings = (): WizardSettings => ({
     flavour, solver, transient, turbulence, nu, inletVelocity, intensity, lengthScale,
     endTime, deltaT, writeInterval, gravity, mesh, meshOverride, systemOverrides, constantOverrides,
-    fields, snappy,
+    fields, snappy, full: isFull ? full : null,
   });
 
-  /** A fresh wizard for the detected installation. */
-  const defaultSettings = (): WizardSettings => {
-    const fl = flavourForVersion(Number.isFinite(detectedMajor) ? detectedMajor : null);
+  /** A fresh wizard for a guide. */
+  const defaultSettings = (t: GuideTier | null): WizardSettings => {
     const p = meshPatches(DEFAULT_MESH);
-    const ctx = { inletVelocity: '(1 0 0)', k: 0.00375, epsilon: 0.0027, omega: 8, nu: 1e-5 };
+    const base = {
+      transient: false, turbulence: 'laminar' as TurbulenceModel, nu: '1e-05', inletVelocity: '(1 0 0)', intensity: '5', lengthScale: '',
+      endTime: '500', deltaT: '1', writeInterval: '100', gravity: '(0 -9.81 0)', mesh: DEFAULT_MESH, meshOverride: null,
+      systemOverrides: {}, constantOverrides: {}, snappy: null,
+    };
+    if (t === 'full') {
+      const m = findModule('incompressibleFluid')!;
+      const phys = physicsForModule(m, boxOf(DEFAULT_MESH));
+      const ctx: BcContext = { kind: m.physics, phys, turb: turbulenceValues(phys, 1, 0.014, 1e-5) };
+      return { ...base, flavour: 'modular', solver: m.id, fields: fieldNames(m.physics, phys).map(n => buildFullField(n, p, ctx)), full: phys };
+    }
+    const fl: Flavour = t === 'basic-legacy' ? 'legacy' : 'modular';
     const first = solverChoices(fl)[0];
+    const ctx = { inletVelocity: '(1 0 0)', k: 0.00375, epsilon: 0.0027, omega: 8, nu: 1e-5 };
     return {
-      flavour: fl, solver: first.value, transient: first.transient, turbulence: 'laminar',
-      nu: '1e-05', inletVelocity: '(1 0 0)', intensity: '5', lengthScale: '',
-      endTime: first.transient ? '0.5' : '500', deltaT: first.transient ? '0.001' : '1', writeInterval: first.transient ? '50' : '100',
-      gravity: '(0 -9.81 0)', mesh: DEFAULT_MESH, meshOverride: null, systemOverrides: {}, constantOverrides: {},
-      fields: [buildField('U', p, ctx, fl), buildField('p', p, ctx, fl)], snappy: null,
+      ...base, flavour: fl, solver: first.value, transient: first.transient,
+      ...(first.transient ? { endTime: '0.5', deltaT: '0.001', writeInterval: '50' } : {}),
+      fields: [buildField('U', p, ctx, fl), buildField('p', p, ctx, fl)], full: null,
     };
   };
 
   const applySettings = (s: WizardSettings) => {
     restoringRef.current = true;
-    setFlavour(s.flavour); setSolver(s.solver); setTransient(s.transient); setTurbulence(s.turbulence);
+    setSolver(s.solver); setTransient(s.transient); setTurbulence(s.turbulence);
     setNu(s.nu); setInletVelocity(s.inletVelocity); setIntensity(s.intensity); setLengthScale(s.lengthScale);
     setEndTime(s.endTime); setDeltaT(s.deltaT); setWriteInterval(s.writeInterval); setGravity(s.gravity);
     setMesh(s.mesh); setMeshOverride(s.meshOverride);
     setSystemOverrides(s.systemOverrides); setConstantOverrides(s.constantOverrides);
     setFields(s.fields); setSnappyState(s.snappy); setActiveFieldIdx(0);
+    if (s.full) setFull(s.full);
+    userFields.current = new Set();
     setRestoreTick(t => t + 1);
   };
+
+  /** Which guide recorded settings belong to. */
+  const tierOf = (s: WizardSettings): GuideTier => (s.full ? 'full' : s.flavour === 'legacy' ? 'basic-legacy' : 'basic-modular');
+
+  // A guide becomes known (or changes with an installation switch): start from
+  // its defaults — unless a case is being updated, whose settings stay.
+  const appliedTier = useRef<GuideTier | null>(null);
+  useEffect(() => {
+    if (!tier || tier === 'none' || updateTarget) return;
+    if (appliedTier.current === tier) return;
+    const first = appliedTier.current === null;
+    appliedTier.current = tier;
+    applySettings(defaultSettings(tier));
+    if (!first) toast.info(`The installation changed: the wizard now follows the ${tier === 'full' ? 'complete' : 'shorter'} guide for OpenFOAM ${detectedVersion}.`);
+  }, [tier]);
 
   /** Unsaved work in the wizard that loading another case would throw away. */
   const hasPendingUploads = Object.values(geometry).some(g => g.upload);
@@ -495,10 +524,15 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
         toast.error(`"${name}" was not created by the wizard, so it has no settings to reopen.`);
         return false;
       }
-      const parsed = parseMarker(String(data.text), defaultSettings());
+      const parsed = parseMarker(String(data.text), defaultSettings(tier));
       if (!parsed.marker) { toast.error(parsed.error); return false; }
-      flavourPinnedRef.current = true;
+      const recordedTier = tierOf(parsed.marker.settings);
+      if (tier && recordedTier !== tier) {
+        toast.error(`"${name}" was written for OpenFOAM ${parsed.marker.foamVersion ?? '?'} and the wizard's ${recordedTier === 'full' ? 'complete' : 'shorter'} guide; the selected installation (OpenFOAM ${detectedVersion}) takes another. Select that installation in the Dashboard to update it.`);
+        return false;
+      }
       applySettings(parsed.marker.settings);
+      appliedTier.current = recordedTier;
       setCaseName(name);
       setUpdateTarget({ caseName: name, marker: parsed.marker });
       setResult(null); setReview(null); setStep(0);
@@ -538,18 +572,177 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       `Changes made since "${updateTarget.caseName}" was loaded have not been written. Start a new case anyway?`,
       { title: 'Discard the changes?', confirmLabel: 'Discard', destructive: true },
     ))) return;
-    flavourPinnedRef.current = false;
-    applySettings(defaultSettings());
+    applySettings(defaultSettings(tier));
+    appliedTier.current = tier;
     setCaseName(''); setUpdateTarget(null); setResult(null); setReview(null);
     setGeometry({}); setStep(0); setDecisions({});
   };
+
+  // ── The shorter guides' follow-up effects ────────────────────────────────
+  // The solver list is per layout, so a solver from the other list cannot stay
+  // selected.
+  useEffect(() => {
+    if (restoringRef.current || isFull || !tier) return;
+    setSolver(prev => (findSolver(flavour, prev) ? prev : solverChoices(flavour)[0].value));
+  }, [flavour]);
+
+  // Solver choice carries a default time treatment.
+  const solverInfo = findSolver(flavour, solver);
+  useEffect(() => {
+    if (restoringRef.current || isFull) return;
+    const s = findSolver(flavour, solver);
+    if (s) setTransient(s.transient);
+  }, [solver, flavour]);
+
+  // Steady and transient want completely different controlDict numbers.
+  useEffect(() => {
+    if (restoringRef.current || isFull) return;
+    if (transient) { setEndTime('0.5'); setDeltaT('0.001'); setWriteInterval('50'); }
+    else { setEndTime('500'); setDeltaT('1'); setWriteInterval('100'); }
+  }, [transient]);
+
+  // The mesh owns the patch list: whenever it changes, re-project it onto every
+  // field, keeping any boundary condition the user has already edited by name.
+  useEffect(() => {
+    if (restoringRef.current || isFull) return;
+    setFields(prev => prev.map(f => syncFieldPatches(f, patches, fieldCtx)));
+  }, [patchSignature]);
+
+  // Picking a RAS model implies extra 0/ files.
+  useEffect(() => {
+    if (restoringRef.current || isFull) return;
+    const needed = turbulenceFieldNames(turbulence);
+    setFields(prev => {
+      const have = new Set(prev.map(f => f.fieldName));
+      const missing = needed.filter(n => !have.has(n));
+      const NUT_DEFAULTS = ['nutkWallFunction', 'nutUSpaldingWallFunction'];
+      let changed = false;
+      const updated = prev.map(f => {
+        if (f.fieldName !== 'nut') return f;
+        const boundaryConditions = f.boundaryConditions.map(bc => {
+          const patch = patches.find(p => p.name === bc.name);
+          if (!patch || patch.role !== 'wall' || !NUT_DEFAULTS.includes(bc.type)) return bc;
+          const type = defaultBC('nut', patch, fieldCtx).type;
+          if (type === bc.type) return bc;
+          changed = true;
+          return { ...bc, type };
+        });
+        return changed ? { ...f, boundaryConditions } : f;
+      });
+      if (missing.length === 0 && !changed) return prev;
+      return [...updated, ...missing.map(n => buildField(n, patches, fieldCtx, flavour))];
+    });
+  }, [turbulence]);
+
+  // ── The complete guide: the fields follow the physics and the patches ───
+  const regions = useMemo(() => regionFields(full), [full]);
+  const seedHasSetFields = !!full.seed?.files.some(f => f.path === 'system/setFieldsDict');
+  const fullSignature = isFull
+    ? [mod?.id, full.seed?.tutorial ?? '', fullNames.join(','), [...regions].join(','), patchSignature].join('|')
+    : '';
+  useEffect(() => {
+    if (restoringRef.current || !isFull || !mod || !fullCtx) return;
+    if (full.seed) {
+      const seeded = seedFields(full.seed.files, patches);
+      setFields(prev => {
+        const byName = new Map(prev.map(f => [f.fieldName, f]));
+        return seeded.map(f => {
+          const had = byName.get(f.fieldName);
+          if (!had) return f;
+          const bcs = new Map(had.boundaryConditions.map(b => [b.name, b]));
+          return { ...f, boundaryConditions: f.boundaryConditions.map(b => bcs.get(b.name) ?? b) };
+        });
+      });
+      return;
+    }
+    setFields(prev => {
+      const byName = new Map(prev.map(f => [f.fieldName, f]));
+      const out = fullNames.map(n => {
+        const had = byName.get(n);
+        const fresh = buildFullField(n, patches, fullCtx);
+        const orig = regions.has(n) ? { orig: true } : {};
+        if (!had || had.dimensions !== fresh.dimensions) return { ...fresh, ...orig };
+        const bcs = new Map(had.boundaryConditions.map(b => [b.name, b]));
+        const { orig: _drop, ...rest } = had;
+        return { ...rest, cls: fresh.cls, ...orig, boundaryConditions: patches.map(p => bcs.get(p.name) ?? bcFor(n, p, fullCtx)) };
+      });
+      const extras = prev.filter(f => !fullNames.includes(f.fieldName) && userFields.current.has(f.fieldName));
+      return [...out, ...extras];
+    });
+  }, [fullSignature]);
+
+  /** Rebuild every generated field from the physics and the patch values. */
+  const applyFull = () => {
+    if (!mod || !fullCtx) return;
+    if (full.seed) {
+      setFields(seedFields(full.seed.files, patches));
+      toast.success('Conditions re-targeted from the tutorial');
+      return;
+    }
+    setFields(prev => [
+      ...fullNames.map(n => ({ ...buildFullField(n, patches, fullCtx), ...(regions.has(n) ? { orig: true } : {}) })),
+      ...prev.filter(f => !fullNames.includes(f.fieldName) && userFields.current.has(f.fieldName)),
+    ]);
+    toast.success('Boundary conditions rebuilt from the physics and the patch values');
+  };
+
+  /** A patch's values changed: rebuild that patch's conditions on every generated field. */
+  const setPatchValues = (name: string, v: PatchValues) => {
+    if (!mod || !fullCtx) return;
+    const phys = { ...full, patchValues: { ...full.patchValues, [name]: v } };
+    setFull(phys);
+    const patch = patches.find(p => p.name === name);
+    if (!patch) return;
+    const ctx = { ...fullCtx, phys };
+    setFields(prev => prev.map(f => (fullNames.includes(f.fieldName)
+      ? { ...f, boundaryConditions: f.boundaryConditions.map(b => (b.name === name ? bcFor(f.fieldName, patch, ctx) : b)) }
+      : f)));
+  };
+
+  const onModule = (id: string) => {
+    const m = offered.find(x => x.id === id);
+    if (!m || m.id === solver) return;
+    setSolver(id);
+    const phys = physicsForModule(m, boxOf(mesh));
+    setFull(phys);
+    const tr = m.transientOnly || !m.steady ? true : transient;
+    setTransient(tr);
+    const t = timeDefaults(m, tr);
+    setEndTime(t.endTime); setDeltaT(t.deltaT); setWriteInterval(t.writeInterval);
+    setMesh(msh => fitBoxToFamily(msh, m.family));
+    const allowed = rolesFor(m.family);
+    const fallback = FALLBACK_ROLE[m.family];
+    setSnappyState(s => (s ? {
+      ...s,
+      surfaces: s.surfaces.map(x => ({
+        ...x,
+        role: allowed.includes(x.role) ? x.role : fallback,
+        regions: x.regions.map(r => (allowed.includes(r.role) ? r : { ...r, role: fallback })),
+      })),
+    } : s));
+    // The files differ between modules: edits of the previous one's do not carry over.
+    setSystemOverrides({}); setConstantOverrides({});
+  };
+
+  const onTransient = (v: boolean) => {
+    setTransient(v);
+    const t = timeDefaults(mod, v);
+    setEndTime(t.endTime); setDeltaT(t.deltaT); setWriteInterval(t.writeInterval);
+  };
+
+  const staleTurbulenceFields = useMemo(() => {
+    if (isFull) return [];
+    const needed = new Set(turbulenceFieldNames(turbulence));
+    const allTurb = ['k', 'epsilon', 'omega', 'nut', 'nuTilda'];
+    return fields.filter(f => allTurb.includes(f.fieldName) && !needed.has(f.fieldName)).map(f => f.fieldName);
+  }, [fields, turbulence, isFull]);
 
   // ── Mesh mode ───────────────────────────────────────────────────────────
   const setSnappy = (update: (s: SnappySettings) => SnappySettings) => setSnappyState(s => (s ? update(s) : s));
 
   const enableSnappy = () => {
     if (!snappySupport?.available) return;
-    setSnappyState(s => s ?? { ...DEFAULT_SNAPPY });
+    setSnappyState(s => s ?? structuredClone(DEFAULT_SNAPPY));
     // snappyHexMesh is 3D and reads the geometry in its own units.
     setMesh(m => ({ ...m, twoD: false, scale: 1 }));
   };
@@ -564,32 +757,119 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     setGeometry({});
   };
 
-  // ── Field editing ───────────────────────────────────────────────────────
-  const updateField = (i: number, u: Partial<FieldConfig>) =>
-    setFields(prev => prev.map((f, idx) => (idx === i ? { ...f, ...u } : f)));
+  /** The ray test against every loaded surface, in metres (after unit scaling). */
+  const isInsideBody = useMemo(() => {
+    const loaded = (snappy?.surfaces ?? []).filter(s => geometry[s.file]?.parsed);
+    if (!loaded.length) return undefined;
+    return (p: Vec3) => loaded.some(s => pointInsideSurface(geometry[s.file].parsed!, p.map(v => v / (UNIT_SCALE[s.units] ?? 1)) as Vec3));
+  }, [snappy, geometry]);
 
-  const removeField = (i: number) => {
-    setFields(prev => prev.filter((_, idx) => idx !== i));
-    setActiveFieldIdx(prev => Math.max(0, prev > i ? prev - 1 : Math.min(prev, fields.length - 2)));
+  // ── insidePoint: in the box, and on the fluid's side of the geometry ────
+  const insideCheck: InsideCheck = useMemo(() => {
+    if (!snappy) return { tone: 'unknown', message: '' };
+    const p = snappy.insidePoint;
+    if (!p.every(Number.isFinite)) return { tone: 'bad', message: 'insidePoint must be three numbers.' };
+    if (!pointInBox(p, { min: [mesh.x0, mesh.y0, mesh.z0], max: [mesh.x1, mesh.y1, mesh.z1] })) {
+      return { tone: 'bad', message: 'Outside the background box: snappyHexMesh would find no fluid to keep.' };
+    }
+    if (!snappy.surfaces.length) return { tone: 'unknown', message: 'Inside the background box. Import a geometry to check which side of it the point is on.' };
+    const unchecked = snappy.surfaces.filter(s => !geometry[s.file]?.parsed);
+    if (unchecked.length) return { tone: 'unknown', message: `Inside the background box; not yet checked against ${unchecked.map(s => s.name).join(', ')}, whose geometry is not loaded.` };
+    const inside = isInsideBody?.(p) ?? false;
+    if (snappy.flow === 'external' && inside) {
+      return { tone: 'bad', message: 'insidePoint is inside the geometry: snappyHexMesh would mesh the inside of the body and drop the flow around it. For a flow inside the surface, choose "Inside the geometry".' };
+    }
+    if (snappy.flow === 'internal' && !inside) {
+      return { tone: 'bad', message: 'insidePoint is outside the geometry, but the fluid is inside it: snappyHexMesh would keep the wrong side.' };
+    }
+    return { tone: 'ok', message: snappy.flow === 'internal' ? 'Inside the geometry, where the fluid is.' : 'Inside the background box and outside the geometry.' };
+  }, [snappy, geometry, mesh, isInsideBody]);
+
+  // ── Generated files ─────────────────────────────────────────────────────
+  const fullCase: FullCase | null = isFull && mod && major !== null ? {
+    major, module: mod, phys: full, transient, endTime, deltaT, writeInterval, patches,
+  } : null;
+
+  const blockMeshDict = meshOverride ?? generateBlockMeshDict(mesh);
+  const snappyDict = snappy ? (snappy.snappyOverride ?? generateSnappyHexMeshDict(snappy)) : '';
+  const featuresDict = snappy ? (snappy.featuresOverride ?? generateSurfaceFeaturesDict(snappy)) : '';
+  const qualityDict = generateMeshQualityDict(snappy);
+
+  // The shorter guides' dictionaries (icoFoam on 10 reads physicalProperties).
+  const transportName = transportFileName(flavour, solver, major);
+  const turbulenceName = turbulenceFileName(flavour);
+  const needsGravity = Boolean(solverInfo?.buoyant);
+
+  /** Generated system/ and constant/ files (before hand edits), and the seeded ones' patch mentions. */
+  const generated = useMemo((): { system: CaseFile[]; constant: CaseFile[]; extra0: CaseFile[]; mentions: Record<string, string[]> } => {
+    if (fullCase?.phys.seed) {
+      const { files, mentions } = seededFiles({ ...fullCase, phys: { ...fullCase.phys, seed: { ...fullCase.phys.seed, overrides: {} } } });
+      return {
+        system: files.filter(f => f.path.startsWith('system/')),
+        constant: files.filter(f => f.path.startsWith('constant/')),
+        extra0: files.filter(f => f.path.startsWith('0/')),
+        mentions,
+      };
+    }
+    if (fullCase) {
+      const sys: CaseFile[] = [
+        { path: 'system/controlDict', content: fullControlDict(fullCase) },
+        { path: 'system/fvSchemes', content: fullFvSchemes(fullCase) },
+        { path: 'system/fvSolution', content: fullFvSolution(fullCase) },
+      ];
+      const fn = fullFunctions(fullCase); if (fn) sys.push({ path: 'system/functions', content: fn });
+      const dp = fullDecomposeParDict(fullCase); if (dp) sys.push({ path: 'system/decomposeParDict', content: dp });
+      const defaults = fullCtx ? Object.fromEntries([...regions].map(n => [n, internalValue(n, fullCtx)])) : {};
+      const sf = fullSetFieldsDict(fullCase, defaults); if (sf) sys.push({ path: 'system/setFieldsDict', content: sf });
+      const fc = fullFvConstraints(fullCase); if (fc) sys.push({ path: 'system/fvConstraints', content: fc });
+      return { system: sys, constant: fullConstantFiles(fullCase), extra0: [], mentions: {} };
+    }
+    const sysOpts = { flavour, solver, transient, endTime, deltaT, writeInterval, turbulence };
+    const constant: CaseFile[] = [
+      { path: `constant/${transportName}`, content: generateTransportProperties(nu, flavour, transportName) },
+      { path: `constant/${turbulenceName}`, content: generateTurbulenceProperties(turbulence, flavour) },
+    ];
+    if (needsGravity) constant.push({ path: 'constant/g', content: generateGravity(gravity, flavour) });
+    return {
+      system: [
+        { path: 'system/controlDict', content: generateControlDict(sysOpts) },
+        { path: 'system/fvSchemes', content: generateFvSchemes(sysOpts) },
+        { path: 'system/fvSolution', content: generateFvSolution(sysOpts) },
+      ],
+      constant, extra0: [], mentions: {},
+    };
+  }, [fullCase?.module.id, full, transient, endTime, deltaT, writeInterval, patchSignature, flavour, solver, turbulence, nu, gravity,
+      transportName, turbulenceName, needsGravity, major, regions, fullCtx]);
+
+  const withEdits = (list: CaseFile[], edits: Record<string, string>) => list.map(f => ({ ...f, content: edits[f.path] ?? f.content }));
+  // Memoised: filesToWrite depends on them, and the installation check runs
+  // whenever filesToWrite changes identity.
+  const systemFiles = useMemo(() => withEdits(generated.system, systemOverrides), [generated, systemOverrides]);
+  const constantFiles = useMemo(() => withEdits(generated.constant, constantOverrides), [generated, constantOverrides]);
+
+  /** Physics files that still name a patch of the tutorial's mesh, after the user's edits. */
+  const mentions = useMemo((): Record<string, string[]> => {
+    if (!isFull || !full.seed) return {};
+    const own = new Set(patches.map(p => p.name));
+    const names = tutorialPatches(full.seed.files).map(p => p.name).filter(n => !own.has(n));
+    const edited = [...withEdits(generated.system, systemOverrides), ...withEdits(generated.constant, constantOverrides)];
+    return seedPhysicsFiles(edited, names).mentionsPatches;
+  }, [isFull, full.seed, patchSignature, generated, systemOverrides, constantOverrides]);
+
+  /** Commands after the mesh: setFields when initial regions exist. */
+  const prep: MeshStep[] = fullCase
+    ? (full.seed ? (seedHasSetFields ? [{ app: 'setFields', args: '', log: 'setFields' }] : []) : prepSteps(fullCase))
+    : [];
+  const runSteps = [...meshSteps(snappy), ...prep];
+
+  const previewFile = (content: string, name: string) => {
+    setPreviewContent(content); setPreviewField(name); setShowPreview(true);
   };
 
-  const addBC = (fi: number) =>
-    updateField(fi, { boundaryConditions: [...fields[fi].boundaryConditions, { name: '', type: 'fixedValue', value: '' }] });
-
-  const updateBC = (fi: number, bi: number, u: Partial<{ name: string; type: string; value: string }>) =>
-    updateField(fi, {
-      boundaryConditions: fields[fi].boundaryConditions.map((bc, idx) => (idx === bi ? { ...bc, ...u } : bc)),
-    });
-
-  const removeBC = (fi: number, bi: number) =>
-    updateField(fi, { boundaryConditions: fields[fi].boundaryConditions.filter((_, idx) => idx !== bi) });
-
-  /** Rebuild the generated fields from the current physics inputs. */
+  // ── Field editing (shorter guides; the complete guide uses its own sync) ─
   const applyPhysicsToFields = () => {
     const managed = new Set([...CORE_FIELDS, ...turbulenceFieldNames(turbulence)]);
-    setFields(prev => prev.map(f =>
-      managed.has(f.fieldName) ? buildField(f.fieldName, patches, fieldCtx, flavour) : f
-    ));
+    setFields(prev => prev.map(f => (managed.has(f.fieldName) ? buildField(f.fieldName, patches, fieldCtx, flavour) : f)));
     toast.success('Boundary conditions regenerated from the physics inputs');
   };
 
@@ -598,62 +878,39 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     if (!name) { toast.error('Enter a name'); return; }
     if (/\s/.test(name)) { toast.error('No spaces in the name'); return; }
     if (fields.some(f => f.fieldName === name)) { toast.error(`Field "${name}" already exists`); return; }
-    setFields(prev => [...prev, buildField(name, patches, fieldCtx, flavour)]);
+    const f = isFull && fullCtx ? buildFullField(name, patches, fullCtx) : buildField(name, patches, fieldCtx, flavour);
+    userFields.current.add(name);
+    setFields(prev => [...prev, f]);
     setActiveFieldIdx(fields.length);
     setNewFieldName('');
     setShowNewFieldDialog(false);
     toast.success(`Field "${name}" added`);
   };
 
-  const previewFile = (content: string, name: string) => {
-    setPreviewContent(content); setPreviewField(name); setShowPreview(true);
-  };
-
-  // ── insidePoint: in the box, and clear of the body ──────────────────────
-  const insideCheck: InsideCheck = useMemo(() => {
-    if (!snappy) return { tone: 'unknown', message: '' };
-    const p = snappy.insidePoint;
-    if (!p.every(Number.isFinite)) return { tone: 'bad', message: 'insidePoint must be three numbers.' };
-    if (!pointInBox(p, { min: [mesh.x0, mesh.y0, mesh.z0], max: [mesh.x1, mesh.y1, mesh.z1] })) {
-      return { tone: 'bad', message: 'Outside the background box: snappyHexMesh would find no fluid to keep.' };
-    }
-    if (!snappy.surfaces.length) return { tone: 'unknown', message: 'Inside the background box. Import a geometry to check it is clear of the body.' };
-    const inside = snappy.surfaces.filter(s => { const g = geometry[s.file]?.parsed; return g ? pointInsideSurface(g, p) : false; });
-    if (inside.length) {
-      return {
-        tone: 'bad',
-        message: `insidePoint is inside ${inside.map(s => s.name).join(', ')}: snappyHexMesh would mesh the inside of the body and drop the flow around it. (Only right for an internal flow, where the fluid is inside the surface.)`,
-      };
-    }
-    const unchecked = snappy.surfaces.filter(s => !geometry[s.file]?.parsed);
-    if (unchecked.length) {
-      return { tone: 'unknown', message: `Inside the background box; not yet checked against ${unchecked.map(s => s.name).join(', ')}, whose geometry is not loaded.` };
-    }
-    return { tone: 'ok', message: 'Inside the background box and outside the geometry.' };
-  }, [snappy, geometry, mesh]);
-
   // ── Preflight checks, shown on the last step ────────────────────────────
   const problems = useMemo(() => {
     const out: string[] = [];
+    if (tier === 'none') out.push(guideDescription('none', detectedVersion));
     const name = caseName.trim();
-    // The same rule the server applies, from the same module — the two used to
-    // be written separately and disagreed, so the wizard approved names like
-    // ".hidden" that creation then refused, and refused names like "café" that
-    // it would have accepted.
     const nameProblem = caseNameProblem(name);
     if (nameProblem) out.push(nameProblem);
     else if (!updateTarget && existingCases.includes(name)) out.push(`A case called "${name}" already exists — creating will overwrite its files.`);
 
     if (!blockMeshDict.trim()) out.push('system/blockMeshDict is empty, so blockMesh has nothing to build.');
-    // A degenerate, inverted or enormous box is only discovered by blockMesh
-    // otherwise, and it reports it in terms of face normals and cell indices.
     out.push(...meshProblems(mesh));
     if (snappy) {
-      out.push(...snappyProblems(snappy, mesh, insideCheck.tone === 'bad' && insideCheck.message.startsWith('insidePoint is inside') ? insideCheck.message : null));
-      if (flavour !== 'modular') out.push('snappyHexMesh is guided on OpenFOAM 13 and 14, which use the 11+ layout: switch the layout on the first step.');
+      const body = insideCheck.tone === 'bad' && /geometry/.test(insideCheck.message) ? insideCheck.message : null;
+      out.push(...snappyProblems(snappy, mesh, body, meshPatches(mesh).map(p => p.name)));
       if (snappySupport && !snappySupport.available) out.push(`snappyHexMesh: ${snappySupport.reason}`);
       for (const s of snappy.surfaces) {
         if (!updateTarget && !geometry[s.file]?.upload) out.push(`${s.name}: its geometry file is not loaded; import it again.`);
+      }
+    }
+    if (fullCase) {
+      if (fullCase.module.physics === 'tutorial' && !full.seed) out.push(`Choose which ${fullCase.module.id} tutorial to start from (Physics step).`);
+      if (!full.seed) out.push(...fullProblems(fullCase, catalog?.thermo ?? null));
+      for (const [path, names] of Object.entries(mentions)) {
+        out.push(`${path} names the tutorial's patch${names.length > 1 ? 'es' : ''} ${names.join(', ')}, which this mesh does not have: edit it (constant/ or system/ step) to use this case's patches.`);
       }
     }
     if (fields.length === 0) out.push('No fields in 0/.');
@@ -663,49 +920,58 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       if (!f.fieldName.trim()) { out.push('A field has no name.'); continue; }
       const covered = new Set(f.boundaryConditions.map(bc => bc.name.trim()).filter(Boolean));
       const missing = [...patchNames].filter(p => !covered.has(p));
-      if (missing.length) out.push(`0/${f.fieldName} has no condition for: ${missing.join(', ')}.`);
+      if (missing.length && !f.boundaryTail) out.push(`0/${f.fieldName} has no condition for: ${missing.join(', ')}.`);
       const extra = [...covered].filter(p => !patchNames.has(p));
       if (extra.length) out.push(`0/${f.fieldName} defines patches the mesh does not have: ${extra.join(', ')}.`);
     }
 
-    for (const n of turbulenceFieldNames(turbulence)) {
-      if (!fields.some(f => f.fieldName === n)) out.push(`${turbulence} needs a 0/${n} field.`);
-    }
-    if (turbulence === 'laminar' && staleTurbulenceFields.length) {
-      out.push(`Laminar run, but 0/ still carries ${staleTurbulenceFields.join(', ')}.`);
+    if (!isFull) {
+      for (const n of turbulenceFieldNames(turbulence)) {
+        if (!fields.some(f => f.fieldName === n)) out.push(`${turbulence} needs a 0/${n} field.`);
+      }
+      if (turbulence === 'laminar' && staleTurbulenceFields.length) {
+        out.push(`Laminar run, but 0/ still carries ${staleTurbulenceFields.join(', ')}.`);
+      }
     }
 
     for (const p of nameProblems) {
-      out.push(
-        `${p.where}: "${p.name}" does not exist in this OpenFOAM` +
-        (p.suggestions.length ? ` — did you mean ${p.suggestions.join(', ')}?` : '.'),
-      );
+      out.push(`${p.where}: "${p.name}" does not exist in this OpenFOAM` + (p.suggestions.length ? ` — did you mean ${p.suggestions.join(', ')}?` : '.'));
     }
     for (const p of syntaxProblems) {
       out.push(`${p.path}: OpenFOAM cannot parse this file — ${p.message}${p.line ? ` (line ${p.line})` : ''}.`);
     }
     return out;
-  }, [caseName, existingCases, updateTarget, blockMeshDict, mesh, snappy, insideCheck, flavour, snappySupport, geometry,
-      fields, patches, turbulence, staleTurbulenceFields, nameProblems, syntaxProblems]);
+  }, [tier, detectedVersion, caseName, existingCases, updateTarget, blockMeshDict, mesh, snappy, insideCheck, snappySupport, geometry,
+      fullCase, full, catalog, mentions, fields, patches, isFull, turbulence, staleTurbulenceFields, nameProblems, syntaxProblems]);
 
   const filesToWrite = useMemo(() => {
     const list: { path: string; content: string }[] = [];
-    for (const f of fields) if (f.fieldName.trim()) list.push({ path: `0/${f.fieldName}`, content: generateFieldFile(f, flavour) });
-    list.push({ path: 'system/controlDict', content: controlDict });
-    list.push({ path: 'system/fvSchemes', content: fvSchemes });
-    list.push({ path: 'system/fvSolution', content: fvSolution });
+    for (const f of fields) if (f.fieldName.trim()) list.push({ path: `0/${f.fieldName}${f.orig ? '.orig' : ''}`, content: generateFieldFile(f, flavour) });
+    list.push(...generated.extra0);
+    list.push(...systemFiles);
     list.push({ path: 'system/blockMeshDict', content: blockMeshDict });
     if (snappy) {
       list.push({ path: 'system/snappyHexMeshDict', content: snappyDict });
       list.push({ path: 'system/surfaceFeaturesDict', content: featuresDict });
-      list.push({ path: 'system/meshQualityDict', content: generateMeshQualityDict() });
+      list.push({ path: 'system/meshQualityDict', content: qualityDict });
     }
-    list.push({ path: `constant/${transportName}`, content: transportProps });
-    list.push({ path: `constant/${turbulenceName}`, content: turbProps });
-    if (needsGravity) list.push({ path: 'constant/g', content: generateGravity(gravity, flavour) });
-    return list;
-  }, [fields, flavour, controlDict, fvSchemes, fvSolution, blockMeshDict, snappy, snappyDict, featuresDict,
-      transportName, turbulenceName, transportProps, turbProps, needsGravity, gravity]);
+    list.push(...constantFiles);
+    // A seeded case's own mesh dictionaries were dropped; one path each.
+    const seen = new Set<string>();
+    return list.filter(f => (seen.has(f.path) ? false : (seen.add(f.path), true)));
+  }, [fields, flavour, generated, systemFiles, constantFiles, blockMeshDict, snappy, snappyDict, featuresDict, qualityDict]);
+
+  /**
+   * What the installation check reads. A tutorial file copied unchanged is the
+   * installation's own, and some of its names (phase systems, for one) are in
+   * no foamToC table, so checking it could only raise false alarms.
+   */
+  const filesToCheck = useMemo(() => {
+    if (!full.seed) return filesToWrite;
+    const copied = new Set([...generated.system, ...generated.constant, ...generated.extra0]
+      .map(f => f.path).filter(p => !(p in systemOverrides) && !(p in constantOverrides)));
+    return filesToWrite.filter(f => !copied.has(f.path));
+  }, [filesToWrite, full.seed, generated, systemOverrides, constantOverrides]);
 
   /** Geometry files with new bytes (imported in this session), and the ones already in the case. */
   const geometryUploads = (snappy?.surfaces ?? [])
@@ -719,14 +985,12 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     if (step !== 6) return;
     let cancelled = false;
     setInstallCheck('checking');
-    // Findings from an earlier run describe files that are no longer the ones
-    // about to be written, so a check that cannot run clears them.
     const unavailable = () => { setNameProblems([]); setSyntaxProblems([]); setInstallCheck('unavailable'); };
     (async () => {
       try {
         const res = await fetch('/api/foam-index', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'validate', files: filesToWrite }),
+          body: JSON.stringify({ action: 'validate', files: filesToCheck }),
         });
         const data = await res.json();
         if (cancelled) return;
@@ -739,7 +1003,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       }
     })();
     return () => { cancelled = true; };
-  }, [step, filesToWrite]);
+  }, [step, filesToCheck]);
 
   /** The hashes the record keeps: of every text file, and of each geometry file's bytes. */
   const hashesOf = async (texts: { path: string; content: string }[], geo: { path: string; bytes: Uint8Array }[]) => {
@@ -755,11 +1019,10 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   const handleCreate = async () => {
     const c = caseName.trim();
     if (!c) { toast.error('Enter a case name'); setStep(0); return; }
+    if (tier === 'none') { toast.error(guideDescription('none', detectedVersion)); return; }
 
     // The API creates directories with `mkdir -p`, so writing into a name that
-    // already exists silently replaces that case's files. Ask the server now:
-    // the list read when the wizard first opened misses every case made since,
-    // because the tab stays mounted once visited.
+    // already exists silently replaces that case's files. Ask the server now.
     const known = (await refreshCases()) ?? existingCases;
     if (known.includes(c)) {
       const ok = await confirmDialog(
@@ -774,7 +1037,6 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     try {
       const created = await fetch('/api/cases', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        // The server refuses an existing name unless told the user agreed.
         body: JSON.stringify({ action: 'create', caseName: c, overwrite: known.includes(c) }),
       });
       if (!created.ok) {
@@ -795,13 +1057,12 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       if (failed.length) {
         toast.error(`${failed.length} of ${total} files failed: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`);
       } else {
-        // The record that makes "Update case" possible. Without it the case is
-        // fine, it simply cannot be reopened here, and the user is told so.
+        // The record that makes "Update case" possible.
         const marker = buildMarker(currentSettings(), await hashesOf(filesToWrite, geometryUploads), detectedVersion, null);
         const recorded = await saveMarker(c, marker);
         setGeometry(g => Object.fromEntries(Object.entries(g).map(([k, v]) => [k, { ...v, upload: null }])));
         if (recorded) setUpdateTarget({ caseName: c, marker });
-        setResult({ caseName: c, kind: 'created', meshStale: true, hasMesh: false, steps: meshSteps(snappy), failed: [] });
+        setResult({ caseName: c, kind: 'created', meshStale: true, hasMesh: false, steps: runSteps, failed: [] });
         if (recorded) toast.success(`Case "${c}" created: ${total} files.`);
         else toast.warning(`Case "${c}" created, but ${WIZARD_MARKER_PATH} could not be written, so it cannot be updated from the wizard.`);
       }
@@ -841,13 +1102,11 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       const plan = planUpdate({ recorded, onDisk, next, untouched });
       const hasMesh = onDisk['constant/polyMesh/boundary'] !== null;
       if (plan.every(e => e.action === 'same')) {
-        // The files already match; record the settings anyway if they changed
-        // (a value no file depends on, for instance).
         if (!settingsEqual(currentSettings(), updateTarget.marker.settings)) {
           const marker = buildMarker(currentSettings(), resolvePlan(plan, {}, next, recorded, untouched).recorded, detectedVersion, updateTarget.marker);
           if (await saveMarker(c, marker)) setUpdateTarget({ caseName: c, marker });
         }
-        setResult({ caseName: c, kind: 'unchanged', meshStale: false, hasMesh, steps: meshSteps(snappy), failed: [] });
+        setResult({ caseName: c, kind: 'unchanged', meshStale: false, hasMesh, steps: runSteps, failed: [] });
         toast.success('Nothing to update: the case files already match these settings.');
         return;
       }
@@ -861,6 +1120,9 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     }
   };
 
+  /** A change that makes the mesh or the setFields output stale. */
+  const staleInput = (p: string) => isMeshInput(p) || p === 'system/setFieldsDict' || /^0\/.+\.orig$/.test(p);
+
   const applyUpdate = async () => {
     if (!review || !updateTarget) return;
     const c = updateTarget.caseName;
@@ -868,8 +1130,6 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     if (resolved.undecided.length) return;
     setApplying(true);
     const failed: string[] = [];
-    // A write or deletion that failed leaves the disk as it was, so the record
-    // keeps what it said before for that path.
     const keepOld = (p: string) => {
       if (updateTarget.marker.files[p]) resolved.recorded[p] = updateTarget.marker.files[p];
       else delete resolved.recorded[p];
@@ -896,8 +1156,8 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       else setUpdateTarget({ caseName: c, marker });
       setGeometry(g => Object.fromEntries(Object.entries(g).map(([k, v]) => [k, { ...v, upload: null }])));
 
-      const meshStale = [...resolved.write, ...resolved.remove].some(isMeshInput);
-      setResult({ caseName: c, kind: 'updated', meshStale, hasMesh: review.hasMesh, steps: meshSteps(snappy), failed });
+      const meshStale = [...resolved.write, ...resolved.remove].some(staleInput);
+      setResult({ caseName: c, kind: 'updated', meshStale, hasMesh: review.hasMesh, steps: runSteps, failed });
       setReview(null);
       if (failed.length) toast.error(`${failed.length} change${failed.length > 1 ? 's' : ''} could not be applied: ${failed.slice(0, 3).join(', ')}`);
       else toast.success(`"${c}" updated: ${resolved.write.length} written, ${resolved.remove.length} removed.`);
@@ -910,20 +1170,16 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   // Last effect on purpose: see restoringRef.
   useEffect(() => { restoringRef.current = false; }, [restoreTick]);
 
-  const activeField = fields[Math.min(activeFieldIdx, Math.max(0, fields.length - 1))];
-  const meshField = (label: string, key: keyof MeshSpec, step = 'any') => (
-    <div>
-      <Label className="text-xs">{label}</Label>
-      <Input
-        type="number" step={step} value={String(mesh[key])}
-        onChange={(e) => setMesh(m => ({ ...m, [key]: Number(e.target.value) }))}
-        className="font-mono text-xs h-8 mt-0.5"
-      />
-    </div>
-  );
-  const cellCount = Math.max(1, Math.round(mesh.nx)) * Math.max(1, Math.round(mesh.ny)) * (mesh.twoD ? 1 : Math.max(1, Math.round(mesh.nz)));
+  // ── Rendering helpers ───────────────────────────────────────────────────
   const canJump = (i: number) => !!updateTarget || i <= step;
   const versionMismatch = updateTarget?.marker.foamVersion && detectedVersion && updateTarget.marker.foamVersion !== detectedVersion;
+  const cellCount = Math.max(1, Math.round(mesh.nx)) * Math.max(1, Math.round(mesh.ny)) * (mesh.twoD ? 1 : Math.max(1, Math.round(mesh.nz)));
+  const runLabel = fullCase ? 'foamRun' : runCommand(flavour, solver);
+  const editableFiles = (list: CaseFile[], edits: Record<string, string>, gen: CaseFile[]): EditableFile[] =>
+    list.filter(f => !MESH_FILES.test(f.path)).map(f => ({
+      path: f.path, content: f.content, overridden: f.path in edits,
+      note: mentions[f.path] ? `Names the tutorial's patch${mentions[f.path].length > 1 ? 'es' : ''} ${mentions[f.path].join(', ')}: use this case's patch names.` : undefined,
+    })).filter(f => gen.some(g => g.path === f.path));
 
   return (
     <div className="space-y-4">
@@ -952,26 +1208,21 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
                 </Button>
               </div>
             </div>
-
             {result.kind === 'created' && (
               <p className="text-xs text-muted-foreground">
-                Next, build the mesh (below), then run <span className="font-mono">{runCommand(flavour, solver)}</span> from
+                Next, build the mesh{prep.length ? ' and fill the initial regions' : ''} (below), then run <span className="font-mono">{runLabel}</span> from
                 the Commands panel. The wizard keeps this case open: go back to any step and review the update to change it.
               </p>
             )}
             {result.kind !== 'created' && result.meshStale && result.hasMesh && (
               <p className="text-xs text-amber-700 dark:text-amber-400 flex items-start gap-1">
                 <AlertTriangle className="w-3.5 h-3.5 mt-px flex-shrink-0" />
-                The mesh in constant/polyMesh was built from the previous mesh settings and no longer matches them.
-                Rebuild it when you are ready; nothing was re-meshed.
+                The mesh (or the initial fields setFields writes) was built from the previous settings and no longer matches them.
+                Rebuild it when you are ready; nothing was re-run.
               </p>
             )}
-            {result.kind !== 'created' && !result.hasMesh && (
-              <p className="text-xs text-muted-foreground">The case has no mesh yet.</p>
-            )}
-            {result.kind !== 'created' && result.hasMesh && !result.meshStale && (
-              <p className="text-xs text-muted-foreground">The mesh is not affected by these changes.</p>
-            )}
+            {result.kind !== 'created' && !result.hasMesh && <p className="text-xs text-muted-foreground">The case has no mesh yet.</p>}
+            {result.kind !== 'created' && result.hasMesh && !result.meshStale && <p className="text-xs text-muted-foreground">The mesh is not affected by these changes.</p>}
             {(result.kind === 'created' || result.meshStale || !result.hasMesh) && onShowMesh && (
               <MeshRunPanel key={`${result.caseName}|${result.kind}|${restoreTick}`} caseName={result.caseName} steps={result.steps} onShowMesh={onShowMesh} />
             )}
@@ -1013,11 +1264,31 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
         ))}
       </div>
 
-      {/* STEP 0: name + target version */}
+      {/* STEP 0: name, and the guide the installation decides */}
       {step === 0 && (
         <Card>
-          <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="w-5 h-5" /> Case Name</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="w-5 h-5" /> Case</CardTitle></CardHeader>
           <CardContent className="space-y-3">
+            <div className={`rounded-md border px-3 py-2 text-sm flex items-start gap-2 ${tier === 'none' ? 'border-red-300 bg-red-50 dark:bg-red-950/20' : tier === 'full' ? 'border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20' : 'bg-muted/40'}`}>
+              {tier === null ? <Loader2 className="w-4 h-4 mt-0.5 animate-spin" /> : tier === 'none' ? <AlertTriangle className="w-4 h-4 mt-0.5 text-red-600" /> : <Info className="w-4 h-4 mt-0.5" />}
+              <div className="space-y-0.5">
+                <div className="font-medium flex items-center gap-2">
+                  {tier === null ? 'Detecting the OpenFOAM installation…' : guideDescription(tier, detectedVersion)}
+                  {detectedVersion && <Badge variant="secondary" className="font-mono text-[10px]">OpenFOAM {detectedVersion}</Badge>}
+                </div>
+                {tier !== null && tier !== 'none' && (
+                  <div className="text-xs text-muted-foreground">
+                    The case is written for the installation the app is using ({flavour === 'modular' ? 'solver modules run by foamRun' : 'solver applications'}). To write for another version, select it in the Dashboard.
+                  </div>
+                )}
+                {tier === 'none' && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs mt-1" onClick={() => void detectInstallation()}>
+                    <RefreshCw className="w-3 h-3 mr-1" /> Check again
+                  </Button>
+                )}
+              </div>
+            </div>
+
             <div>
               <Label>Case name *</Label>
               <Input
@@ -1032,8 +1303,6 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
                   ? 'The case being updated. Rename it from the Dashboard; the wizard settings go with it.'
                   : <>Letters, numbers, <code>. - _</code>. This becomes the folder name in $FOAM_RUN.</>}
               </p>
-              {/* The same rule the summary applies, shown where the name is typed:
-                  an invalid name used to surface only at the last step. */}
               {caseName.trim() && caseNameProblem(caseName.trim()) && (
                 <p className="text-xs text-danger mt-1 flex items-center gap-1">
                   <AlertTriangle className="w-3 h-3" /> {caseNameProblem(caseName.trim())}
@@ -1043,8 +1312,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
                 <p className="text-xs text-amber-600 mt-1 flex items-center gap-1 flex-wrap">
                   <AlertTriangle className="w-3 h-3" /> A case with this name already exists.
                   {wizardCases.includes(caseName.trim()) && (
-                    <Button size="sm" variant="link" className="h-auto p-0 text-xs"
-                      onClick={() => void loadCaseForUpdate(caseName.trim())}>
+                    <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadCaseForUpdate(caseName.trim())}>
                       It was made by the wizard: load it to update it instead.
                     </Button>
                   )}
@@ -1067,61 +1335,38 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
                     {loadingCase ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null} Load its settings
                   </Button>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Cases made by the wizard carry {WIZARD_MARKER_PATH}; others cannot be reopened here.
-                </p>
+                <p className="text-[11px] text-muted-foreground">Cases made by the wizard carry {WIZARD_MARKER_PATH}; others cannot be reopened here.</p>
               </div>
             )}
-
-            <Separator />
-
-            <div>
-              <Label className="flex items-center gap-2">
-                Case layout
-                {detectedVersion && <Badge variant="secondary" className="font-mono text-[10px]">detected: v{detectedVersion}</Badge>}
-              </Label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 mt-1">
-                {([
-                  { v: 'modular' as Flavour, l: 'OpenFOAM 11 → 14', d: 'foamRun -solver …, physicalProperties + momentumTransport' },
-                  { v: 'legacy' as Flavour, l: 'OpenFOAM 9 / 10', d: 'application simpleFoam, transportProperties + turbulenceProperties' },
-                ]).map(o => (
-                  <button
-                    key={o.v}
-                    onClick={() => { flavourPinnedRef.current = true; setFlavour(o.v); }}
-                    className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors ${flavour === o.v ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-                  >
-                    <div className="font-medium">{o.l}</div>
-                    <div className="text-[10px] text-muted-foreground font-mono">{o.d}</div>
-                  </button>
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                OpenFOAM 11 replaced the solver executables with solver modules and renamed the
-                constant/ dictionaries. A case written the old way will not run on 11+.
-              </p>
-            </div>
 
             <div className="bg-muted/50 p-3 rounded text-sm">
               <div className="font-medium mb-1 flex items-center gap-1.5"><Info className="w-3.5 h-3.5" /> Tip</div>
               <p className="text-muted-foreground">
-                For a ready-made case, copy an <strong>OpenFOAM tutorial</strong> from the Dashboard
-                (&quot;Tutorial&quot; tab). This wizard builds a <strong>custom case from scratch</strong>,
-                with a parametric box mesh, optionally around an imported geometry.
+                To copy an <strong>OpenFOAM tutorial</strong> unchanged, use the Dashboard&apos;s Tutorial tab. This wizard builds a
+                <strong> case of your own</strong>: {isFull ? 'any solver module, a box mesh or a mesh around imported geometry, and every dictionary it needs.' : 'an incompressible case on a parametric box mesh.'}
               </p>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* STEP 1: solver + physics */}
-      {step === 1 && (
+      {/* STEP 1: physics */}
+      {step === 1 && isFull && mod && (
+        <PhysicsStepFull
+          modules={offered} module={mod} onModule={onModule}
+          phys={full} setPhys={u => setFull(p => u(p))}
+          transient={transient} setTransient={onTransient}
+          endTime={endTime} setEndTime={setEndTime} deltaT={deltaT} setDeltaT={setDeltaT}
+          writeInterval={writeInterval} setWriteInterval={setWriteInterval}
+          catalog={catalog} fields={fullNames} box={boxOf(mesh)}
+        />
+      )}
+      {step === 1 && !isFull && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Zap className="w-5 h-5" /> Solver &amp; Physics</CardTitle>
             <CardDescription>
-              {flavour === 'modular'
-                ? 'Solver modules are run with foamRun and named in system/controlDict.'
-                : 'The solver executable is named in system/controlDict.'}
+              {flavour === 'modular' ? 'Solver modules are run with foamRun and named in system/controlDict.' : 'The solver executable is named in system/controlDict.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -1129,76 +1374,50 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
               <Label>{flavour === 'modular' ? 'Solver module' : 'Solver application'}</Label>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 mt-1">
                 {solverChoices(flavour).map(s => (
-                  <button
-                    key={s.value}
-                    className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors ${solver === s.value ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-                    onClick={() => setSolver(s.value)}
-                  >
+                  <button key={s.value} onClick={() => setSolver(s.value)}
+                    className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors ${solver === s.value ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}>
                     <div className="font-mono font-medium">{s.label}</div>
                     <div className="text-xs text-muted-foreground">{s.desc}</div>
                   </button>
                 ))}
               </div>
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Only solvers whose files this wizard can write are listed. For compressible, multiphase,
-                reacting or solid cases, start from a tutorial: Dashboard → Tutorial.
+                The shorter guide covers the incompressible solvers. For other physics start from a tutorial (Dashboard → Tutorial),
+                or use OpenFOAM 13 or 14, where the complete guide covers every solver module.
               </p>
             </div>
-
             <Separator />
-
             <div className="flex flex-wrap items-center gap-4">
               <div>
                 <Label className="mb-1 block">Time treatment</Label>
                 <div className="flex gap-1.5">
                   {[{ v: false, l: 'Steady-state' }, { v: true, l: 'Transient' }].map(t => (
-                    <button
-                      key={String(t.v)}
-                      onClick={() => setTransient(t.v)}
-                      className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${transient === t.v ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-                    >{t.l}</button>
+                    <button key={String(t.v)} onClick={() => setTransient(t.v)}
+                      className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${transient === t.v ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}>{t.l}</button>
                   ))}
                 </div>
               </div>
-              <div>
-                <Label className="text-xs">endTime</Label>
-                <Input value={endTime} onChange={e => setEndTime(e.target.value)} className="font-mono text-xs h-8 w-28 mt-0.5" />
-              </div>
-              <div>
-                <Label className="text-xs">deltaT</Label>
-                <Input value={deltaT} onChange={e => setDeltaT(e.target.value)} className="font-mono text-xs h-8 w-28 mt-0.5" />
-              </div>
-              <div>
-                <Label className="text-xs">writeInterval</Label>
-                <Input value={writeInterval} onChange={e => setWriteInterval(e.target.value)} className="font-mono text-xs h-8 w-28 mt-0.5" />
-              </div>
+              {([['endTime', endTime, setEndTime], ['deltaT', deltaT, setDeltaT], ['writeInterval', writeInterval, setWriteInterval]] as const).map(([l, v, s]) => (
+                <div key={l}>
+                  <Label className="text-xs">{l}</Label>
+                  <Input value={v} onChange={e => s(e.target.value)} className="font-mono text-xs h-8 w-28 mt-0.5" />
+                </div>
+              ))}
             </div>
-
             <Separator />
-
             <div>
               <Label>Turbulence model</Label>
               <div className="flex flex-wrap gap-2 mt-1">
                 {TURBULENCE_MODELS.map(t => (
-                  <button
-                    key={t.value}
-                    className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors ${turbulence === t.value ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-                    onClick={() => setTurbulence(t.value)}
-                  >
+                  <button key={t.value} onClick={() => setTurbulence(t.value)}
+                    className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors ${turbulence === t.value ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}>
                     <div className="font-medium">{t.label}</div>
                     <div className="text-[10px] text-muted-foreground">{t.desc}</div>
                   </button>
                 ))}
               </div>
-              {turbulence !== 'laminar' && (
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  Adds <code className="font-mono">{turbulenceFieldNames(turbulence).join(', ')}</code> to 0/ automatically.
-                </p>
-              )}
             </div>
-
             <Separator />
-
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
                 <Label className="text-xs">Kinematic viscosity ν [m²/s]</Label>
@@ -1215,393 +1434,92 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
               </div>
               <div>
                 <Label className="text-xs">Length scale L [m]</Label>
-                <Input
-                  value={lengthScale} onChange={e => setLengthScale(e.target.value)}
-                  className="font-mono text-xs h-8 mt-0.5"
-                  placeholder={String((0.07 * Math.abs(mesh.y1 - mesh.y0)).toFixed(4))}
-                />
-                <p className="text-[10px] text-muted-foreground mt-0.5">empty = 7% of the box height</p>
+                <Input value={lengthScale} onChange={e => setLengthScale(e.target.value)} className="font-mono text-xs h-8 mt-0.5"
+                  placeholder={String((0.07 * Math.abs(mesh.y1 - mesh.y0)).toFixed(4))} />
               </div>
             </div>
-
-            {turbulence !== 'laminar' && (
-              <div className="bg-muted/40 rounded p-2.5 text-xs font-mono flex flex-wrap gap-x-5 gap-y-1">
-                <span>k = {turbEstimate.k}</span>
-                <span>ε = {turbEstimate.epsilon}</span>
-                <span>ω = {turbEstimate.omega}</span>
-                <span className="text-muted-foreground font-sans">
-                  k = 1.5(U·I)² · ε = Cμ¾k^1.5/L · ω = √k/(Cμ¼L)
-                </span>
-              </div>
-            )}
           </CardContent>
         </Card>
       )}
 
       {/* STEP 2: mesh */}
       {step === 2 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Grid3x3 className="w-5 h-5" /> Mesh</CardTitle>
-            <CardDescription>
-              {snappy
-                ? <>The box is the background mesh snappyHexMesh refines around the geometry. The patches — {patches.map(p => p.name).join(', ')} — are what the boundary conditions in 0/ are generated against; each surface&apos;s patches are one group.</>
-                : <>A single-block box. The patches defined here — {patches.map(p => p.name).join(', ')} — are what the boundary conditions in 0/ are generated against.</>}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {/* The option: the default stays blockMesh only. */}
-            <div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                <button
-                  onClick={() => void disableSnappy()}
-                  className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors ${!snappy ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-                >
-                  <div className="font-medium">Box only (blockMesh)</div>
-                  <div className="text-[10px] text-muted-foreground">A single-block box with inlet, outlet and walls patches</div>
-                </button>
-                <button
-                  onClick={enableSnappy}
-                  disabled={!snappySupport?.available && !snappy}
-                  aria-disabled={!snappySupport?.available}
-                  className={`text-left px-3 py-2 rounded-lg border text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${snappy ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-                >
-                  <div className="font-medium">Box + geometry (snappyHexMesh)</div>
-                  <div className="text-[10px] text-muted-foreground">Import an STL/OBJ; surfaceFeatures and snappyHexMesh mesh around it</div>
-                </button>
-              </div>
-              {snappySupport === null ? (
-                <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Checking the installation for snappyHexMesh support…</p>
-              ) : !snappySupport.available && (
-                <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><Info className="w-3 h-3 flex-shrink-0" /> {snappySupport.reason}</p>
-              )}
-            </div>
-
-            <Separator />
-
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-              {meshField('x min', 'x0')}
-              {meshField('x max', 'x1')}
-              {meshField('y min', 'y0')}
-              {meshField('y max', 'y1')}
-              {meshField('z min', 'z0')}
-              {meshField('z max', 'z1')}
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end">
-              {meshField('cells x', 'nx', '1')}
-              {meshField('cells y', 'ny', '1')}
-              <div className={mesh.twoD ? 'opacity-50 pointer-events-none' : ''}>
-                {meshField('cells z', 'nz', '1')}
-              </div>
-              {meshField('scale', 'scale')}
-              <label className={`flex items-center gap-2 h-8 ${snappy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`} title={snappy ? 'snappyHexMesh builds a 3D mesh' : undefined}>
-                <Checkbox checked={mesh.twoD} disabled={!!snappy} onCheckedChange={v => setMesh(m => ({ ...m, twoD: v as boolean }))} />
-                <span className="text-sm">2D case</span>
-              </label>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {mesh.twoD
-                ? 'A 2D case has one cell across z and the two z faces become an empty patch — that is what makes OpenFOAM solve it in 2D.'
-                : 'Full 3D: the z faces join the walls patch.'}
-              {' '}{snappy ? 'Background cells' : 'Cells'}: <span className="font-mono">{cellCount}</span>.
-            </p>
-
-            {snappy && (
-              <>
-                <Separator />
-                <SnappySection
-                  snappy={snappy}
-                  setSnappy={setSnappy}
-                  mesh={mesh}
-                  setMesh={(u) => setMesh(m => u(m))}
-                  geometry={geometry}
-                  setGeometry={(u) => setGeometry(g => u(g))}
-                  insideCheck={insideCheck}
-                  snappyDict={snappyDict}
-                  featuresDict={featuresDict}
-                  onPreview={previewFile}
-                />
-              </>
-            )}
-
-            <Separator />
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label>system/blockMeshDict{snappy ? ' (background mesh)' : ''} {meshOverride !== null && <Badge variant="secondary" className="ml-1 text-[10px]">edited by hand</Badge>}</Label>
-                <div className="flex gap-1">
-                  {meshOverride !== null && (
-                    <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setMeshOverride(null)}>
-                      <RefreshCw className="w-3 h-3 mr-1" /> Regenerate from the form
-                    </Button>
-                  )}
-                  <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => previewFile(blockMeshDict, 'system/blockMeshDict')}>
-                    <Eye className="w-3 h-3 mr-1" /> Preview
-                  </Button>
-                </div>
-              </div>
-              <Textarea
-                value={blockMeshDict}
-                onChange={(e) => setMeshOverride(e.target.value)}
-                className="font-mono text-xs min-h-[320px]"
-                spellCheck={false}
-              />
-              {meshOverride !== null && (
-                <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" />
-                  Hand-edited: the fields above no longer change this file. If you renamed a patch, update the boundary conditions in 0/ to match.
-                </p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <MeshStepPanel
+          tier={isFull ? 'full' : 'basic'}
+          mesh={mesh} setMesh={u => setMesh(m => u(m))}
+          meshOverride={meshOverride} setMeshOverride={setMeshOverride} blockMeshDict={blockMeshDict}
+          snappy={snappy} setSnappy={setSnappy} onEnableSnappy={enableSnappy} onDisableSnappy={() => void disableSnappy()}
+          snappySupport={snappySupport} geometry={geometry} setGeometry={u => setGeometry(g => u(g))}
+          insideCheck={insideCheck} isInsideBody={isInsideBody} roles={roles}
+          snappyDict={snappyDict} featuresDict={featuresDict} qualityDict={qualityDict} onPreview={previewFile}
+        />
       )}
 
       {/* STEP 3: fields */}
       {step === 3 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Wind className="w-5 h-5" /> Initial Fields (0/)</CardTitle>
-            <CardDescription>One condition per mesh patch, per field.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Label className="font-semibold text-sm">Active field:</Label>
-              <Select value={String(activeFieldIdx)} onValueChange={(v) => setActiveFieldIdx(Number(v))}>
-                <SelectTrigger className="w-48 font-mono text-sm"><SelectValue placeholder="Select field" /></SelectTrigger>
-                <SelectContent>
-                  {fields.map((f, i) => (
-                    <SelectItem key={i} value={String(i)} className="font-mono text-xs">
-                      {f.fieldName || '(unnamed)'}
-                      <span className="text-muted-foreground ml-2">({f.boundaryConditions.length} BC)</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Badge variant="secondary" className="text-xs">{fields.length} fields</Badge>
-              <div className="ml-auto flex gap-1">
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={applyPhysicsToFields}
-                  title="Rebuild U, p and the turbulence fields from the values in the Physics step">
-                  <RefreshCw className="w-3 h-3 mr-1" /> Apply physics
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setNewFieldName(''); setShowNewFieldDialog(true); }}>
-                  <Plus className="w-3 h-3 mr-1" /> Add field
-                </Button>
-                {fields.length > 0 && (
-                  <Button size="sm" variant="outline" className="h-7 text-xs text-red-500 hover:text-red-700" onClick={() => removeField(activeFieldIdx)}>
-                    <Trash2 className="w-3 h-3 mr-1" /> Delete
-                  </Button>
-                )}
-              </div>
+        <FieldsStep
+          fields={fields} setFields={u => setFields(f => u(f))} patches={patches} bcTypes={bcTypes}
+          bcNote={bcFromInstall
+            ? `Condition types: ${bcTypes.length}, read from the installed OpenFOAM${detectedVersion ? ' ' + detectedVersion : ''}.`
+            : 'Condition types: built-in short list (the installation has not answered yet).'}
+          active={activeFieldIdx} setActive={setActiveFieldIdx}
+          onApply={isFull ? applyFull : applyPhysicsToFields}
+          onAddField={() => { setNewFieldName(''); setShowNewFieldDialog(true); }}
+          onPreview={f => previewFile(generateFieldFile(f, flavour), `0/${f.fieldName}${f.orig ? '.orig' : ''}`)}
+          full={isFull && mod ? { kind: mod.physics, phys: full, setPatchValues, seeded: !!full.seed } : undefined}
+          staleNote={!isFull && turbulence === 'laminar' && staleTurbulenceFields.length > 0 ? (
+            <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs">
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>The run is laminar but 0/ still has {staleTurbulenceFields.join(', ')}.</span>
+              <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto"
+                onClick={() => setFields(prev => prev.filter(f => !staleTurbulenceFields.includes(f.fieldName)))}>Remove them</Button>
             </div>
-
-            {turbulence === 'laminar' && staleTurbulenceFields.length > 0 && (
-              <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs">
-                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                <span>The run is laminar but 0/ still has {staleTurbulenceFields.join(', ')}.</span>
-                <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto"
-                  onClick={() => setFields(prev => prev.filter(f => !staleTurbulenceFields.includes(f.fieldName)))}>
-                  Remove them
-                </Button>
-              </div>
-            )}
-
-            {fields.length === 0 && (
-              <div className="text-center py-12 text-muted-foreground">
-                <Wind className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                <p className="text-sm">No fields configured.</p>
-              </div>
-            )}
-
-            {activeField && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.5fr_1.5fr] gap-2">
-                  <div>
-                    <Label className="text-xs">Field name</Label>
-                    <Input
-                      value={activeField.fieldName}
-                      onChange={(e) => updateField(activeFieldIdx, { fieldName: e.target.value })}
-                      className="font-mono text-sm h-8 mt-0.5"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Dimensions</Label>
-                    <Input
-                      value={activeField.dimensions}
-                      onChange={(e) => updateField(activeFieldIdx, { dimensions: e.target.value })}
-                      className="font-mono text-xs h-8 mt-0.5"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs">Internal value</Label>
-                      <Button size="sm" variant="ghost" className="h-5 text-[10px] px-1"
-                        onClick={() => previewFile(generateFieldFile(activeField, flavour), `0/${activeField.fieldName}`)}>
-                        <Eye className="w-3 h-3 mr-0.5" /> File preview
-                      </Button>
-                    </div>
-                    <Input
-                      value={activeField.internalField}
-                      onChange={(e) => updateField(activeFieldIdx, { internalField: e.target.value })}
-                      className="font-mono text-xs h-8 mt-0.5"
-                    />
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <Label className="text-sm font-medium">Boundary conditions ({activeField.boundaryConditions.length})</Label>
-                    <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => addBC(activeFieldIdx)}>
-                      <Plus className="w-3 h-3 mr-1" /> Add BC
-                    </Button>
-                  </div>
-                  <ScrollArea className="max-h-[300px]">
-                    <div className="space-y-2">
-                      {activeField.boundaryConditions.map((bc, bi) => {
-                        const known = patches.some(p => p.name === bc.name.trim());
-                        return (
-                          <div key={bi} className="grid grid-cols-[1fr_1.3fr_1fr_auto] gap-1.5 items-center bg-muted/30 p-2 rounded-lg">
-                            <Input
-                              value={bc.name}
-                              onChange={(e) => updateBC(activeFieldIdx, bi, { name: e.target.value })}
-                              placeholder="patch"
-                              className={`h-7 text-xs font-mono ${known ? '' : 'border-amber-400'}`}
-                              title={known ? '' : 'This patch is not in the mesh'}
-                            />
-                            <Select value={bc.type} onValueChange={(v) => updateBC(activeFieldIdx, bi, { type: v })}>
-                              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                              <SelectContent className="max-h-72">
-                                {bcTypes.map(t => <SelectItem key={t} value={t} className="text-xs font-mono">{t}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
-                            <Input
-                              value={bc.value}
-                              onChange={(e) => updateBC(activeFieldIdx, bi, { value: e.target.value })}
-                              placeholder="value"
-                              className="h-7 text-xs font-mono"
-                            />
-                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 flex-shrink-0" aria-label={`Remove the condition on ${bc.name || 'this patch'}`} title="Remove this condition" onClick={() => removeBC(activeFieldIdx, bi)}>
-                              <Trash2 className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </ScrollArea>
-                  <p className="text-[11px] text-muted-foreground mt-1.5">
-                    Mesh patches: {patches.map(p => `${p.name} (${p.role})`).join(' · ')}
-                  </p>
-                  {snappy && snappy.surfaces.length > 0 && (
-                    <p className="text-[11px] text-muted-foreground">
-                      A <span className="font-mono">…Group</span> entry sets every patch snappyHexMesh cuts from that surface
-                      (one per region, named <span className="font-mono">surface_region</span>).
-                    </p>
-                  )}
-                  <p className="text-[11px] text-muted-foreground">
-                    {bcFromInstall
-                      ? `Condition types: ${bcTypes.length}, read from the installed OpenFOAM${detectedVersion ? ' ' + detectedVersion : ''}.`
-                      : 'Condition types: built-in short list (the installation has not answered yet).'}
-                  </p>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          ) : undefined}
+        />
       )}
 
       {/* STEP 4: system/ */}
       {step === 4 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><FileCode className="w-5 h-5" /> system/</CardTitle>
-            <CardDescription>Generated from the previous steps. Edit freely — an edited file stays as you left it.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Tabs defaultValue="controlDict">
-              <TabsList className="grid w-full grid-cols-4">
-                <TabsTrigger value="controlDict" className="text-xs">controlDict</TabsTrigger>
-                <TabsTrigger value="fvSchemes" className="text-xs">fvSchemes</TabsTrigger>
-                <TabsTrigger value="fvSolution" className="text-xs">fvSolution</TabsTrigger>
-                <TabsTrigger value="blockMesh" className="text-xs">blockMeshDict</TabsTrigger>
-              </TabsList>
-              {([
-                ['controlDict', controlDict, (v: string) => setSystemOverrides(p => ({ ...p, controlDict: v }))],
-                ['fvSchemes', fvSchemes, (v: string) => setSystemOverrides(p => ({ ...p, fvSchemes: v }))],
-                ['fvSolution', fvSolution, (v: string) => setSystemOverrides(p => ({ ...p, fvSolution: v }))],
-              ] as const).map(([key, value, onChange]) => (
-                <TabsContent key={key} value={key}>
-                  <Card className="mt-2"><CardContent className="p-2">
-                    <Textarea value={value} onChange={(e) => onChange(e.target.value)} className="font-mono text-xs min-h-[350px]" spellCheck={false} />
-                    {systemOverrides[key] !== undefined && (
-                      <Button size="sm" variant="ghost" className="h-6 text-xs mt-1"
-                        onClick={() => setSystemOverrides(p => { const n = { ...p }; delete n[key]; return n; })}>
-                        <RefreshCw className="w-3 h-3 mr-1" /> Regenerate
-                      </Button>
-                    )}
-                  </CardContent></Card>
-                </TabsContent>
-              ))}
-              <TabsContent value="blockMesh">
-                <Card className="mt-2"><CardContent className="p-2">
-                  <Textarea value={blockMeshDict} onChange={(e) => setMeshOverride(e.target.value)} className="font-mono text-xs min-h-[350px]" spellCheck={false} />
-                </CardContent></Card>
-              </TabsContent>
-            </Tabs>
-            {snappy && (
-              <p className="text-xs text-muted-foreground mt-2">
-                snappyHexMeshDict and surfaceFeaturesDict are edited in the Mesh step; meshQualityDict only includes the installation&apos;s defaults.
-              </p>
-            )}
-          </CardContent>
-        </Card>
+        <FilesStep
+          icon={<FileCode className="w-5 h-5" />} title="system/"
+          description={full.seed ? 'The tutorial\'s control, schemes and solution dictionaries, and any other it had. Edit freely.' : 'Generated from the previous steps. Edit freely — an edited file stays as you left it.'}
+          files={editableFiles(systemFiles, systemOverrides, generated.system)}
+          onEdit={(path, content) => setSystemOverrides(p => { const n = { ...p }; if (content === null) delete n[path]; else n[path] = content; return n; })}
+          extra={fullCase && !full.seed ? (
+            <div className="space-y-2">
+              <FunctionsPanel lines={full.functions} onChange={l => setFull(p => ({ ...p, functions: l }))} suggestions={functionChoices(fullCase, patches)} />
+              <div className="flex items-center gap-3 rounded-md border p-2 text-xs flex-wrap">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox checked={full.decompose.enabled} onCheckedChange={v => setFull(p => ({ ...p, decompose: { ...p.decompose, enabled: v === true } }))} />
+                  Parallel run: write system/decomposeParDict (scotch)
+                </label>
+                {full.decompose.enabled && (
+                  <Input type="number" min={2} value={String(full.decompose.n)} aria-label="Subdomains"
+                    onChange={e => setFull(p => ({ ...p, decompose: { ...p.decompose, n: Number(e.target.value) } }))} className="h-7 w-20 font-mono text-xs" />
+                )}
+                {['isothermal', 'thermal', 'multicomponent'].includes(fullCase.module.physics) && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <Checkbox checked={full.limitPressure} onCheckedChange={v => setFull(p => ({ ...p, limitPressure: v === true }))} />
+                    Pressure limiter (fvConstraints limitPressure)
+                  </label>
+                )}
+              </div>
+            </div>
+          ) : undefined}
+        />
       )}
 
       {/* STEP 5: constant/ */}
       {step === 5 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Droplets className="w-5 h-5" /> constant/</CardTitle>
-            <CardDescription className="font-mono text-xs">
-              {transportName} · {turbulenceName}{needsGravity ? ' · g' : ''}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Tabs defaultValue="transport">
-              <TabsList className={`grid w-full ${needsGravity ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                <TabsTrigger value="transport" className="text-xs font-mono">{transportName}</TabsTrigger>
-                <TabsTrigger value="turbulence" className="text-xs font-mono">{turbulenceName}</TabsTrigger>
-                {needsGravity && <TabsTrigger value="gravity" className="text-xs font-mono">g</TabsTrigger>}
-              </TabsList>
-              <TabsContent value="transport">
-                <Card className="mt-2"><CardContent className="p-2">
-                  <Textarea value={transportProps}
-                    onChange={(e) => setConstantOverrides(p => ({ ...p, [transportName]: e.target.value }))}
-                    className="font-mono text-xs min-h-[250px]" spellCheck={false} />
-                </CardContent></Card>
-              </TabsContent>
-              <TabsContent value="turbulence">
-                <Card className="mt-2"><CardContent className="p-2">
-                  <Textarea value={turbProps}
-                    onChange={(e) => setConstantOverrides(p => ({ ...p, [turbulenceName]: e.target.value }))}
-                    className="font-mono text-xs min-h-[250px]" spellCheck={false} />
-                </CardContent></Card>
-              </TabsContent>
-              {needsGravity && (
-                <TabsContent value="gravity">
-                  <Card className="mt-2"><CardContent className="p-2">
-                    <Label className="text-xs">value</Label>
-                    <Input value={gravity} onChange={(e) => setGravity(e.target.value)} className="font-mono text-xs h-8 mt-0.5" />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {solver} is a buoyant solver, so constant/g is required.
-                    </p>
-                  </CardContent></Card>
-                </TabsContent>
-              )}
-            </Tabs>
-          </CardContent>
-        </Card>
+        <FilesStep
+          icon={<Droplets className="w-5 h-5" />} title="constant/"
+          description={full.seed ? 'The tutorial\'s physical properties and models, as it wrote them.' : 'Physical properties and models, generated from the Physics step.'}
+          files={editableFiles(constantFiles, constantOverrides, generated.constant)}
+          onEdit={(path, content) => setConstantOverrides(p => { const n = { ...p }; if (content === null) delete n[path]; else n[path] = content; return n; })}
+          extra={!isFull && needsGravity ? (
+            <div><Label className="text-xs">g</Label><Input value={gravity} onChange={e => setGravity(e.target.value)} className="font-mono text-xs h-8 w-40 mt-0.5" /></div>
+          ) : undefined}
+        />
       )}
 
       {/* STEP 6: summary */}
@@ -1612,15 +1530,15 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
                 ['Case name', caseName || '—'],
-                [flavour === 'modular' ? 'Solver module' : 'Application', solver],
-                ['Layout', flavour === 'modular' ? 'OpenFOAM 11+' : 'OpenFOAM ≤10'],
+                [isFull ? 'Solver module' : flavour === 'modular' ? 'Solver module' : 'Application', solver],
+                ['OpenFOAM', detectedVersion ? `${detectedVersion} (${isFull ? 'complete guide' : 'shorter guide'})` : '—'],
                 ['Time', transient ? 'Transient' : 'Steady-state'],
-                ['Turbulence', turbulence],
+                ['Turbulence', isFull ? (full.seed ? 'from the tutorial' : full.simulationType === 'laminar' ? 'laminar' : `${full.simulationType} ${full.model}`) : turbulence],
                 ['Mesh', snappy
                   ? `snappyHexMesh, ${snappy.surfaces.length} surface${snappy.surfaces.length === 1 ? '' : 's'} on ${cellCount} background cells`
                   : `${cellCount} cells${mesh.twoD ? ', 2D' : ''}`],
                 ['Patches', patches.map(p => p.name).join(', ')],
-                ['ν', nu],
+                [isFull ? 'Source' : 'ν', isFull ? (full.seed ? full.seed.tutorial.split('/').slice(-2).join('/') : 'guided forms') : nu],
               ].map(([k, v]) => (
                 <div key={k} className="bg-muted/30 p-3 rounded">
                   <div className="text-xs text-muted-foreground">{k}</div>
@@ -1634,9 +1552,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
                 <div className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
                   <AlertTriangle className="w-4 h-4" /> {problems.length} thing{problems.length > 1 ? 's' : ''} to check
                 </div>
-                <ul className="list-disc pl-5 space-y-0.5">
-                  {problems.map((p, i) => <li key={i}>{p}</li>)}
-                </ul>
+                <ul className="list-disc pl-5 space-y-0.5">{problems.map((p, i) => <li key={i}>{p}</li>)}</ul>
               </div>
             ) : installCheck === 'checking' ? (
               <div className="rounded-md border px-3 py-2 text-xs flex items-center gap-1.5 text-muted-foreground">
@@ -1656,38 +1572,30 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
               <Label className="text-sm font-medium">Files ({filesToWrite.length + (snappy?.surfaces.length ?? 0) + 1})</Label>
               <div className="font-mono text-xs mt-1 space-y-0.5 text-muted-foreground columns-2">
                 {filesToWrite.map(f => (
-                  <div key={f.path} className="flex items-center gap-1">
-                    <button className="hover:text-foreground hover:underline text-left" onClick={() => previewFile(f.content, f.path)}>
-                      {f.path}
-                    </button>
+                  <div key={f.path}>
+                    <button className="hover:text-foreground hover:underline text-left" onClick={() => previewFile(f.content, f.path)}>{f.path}</button>
                   </div>
                 ))}
                 {(snappy?.surfaces ?? []).map(s => (
-                  <div key={s.file} title={geometry[s.file]?.upload ? 'Copied into the case' : 'Already in the case'}>
-                    {geometryPath(s.file)} <span className="font-sans">({(s.bytes / 1048576).toFixed(1)} MB{geometry[s.file]?.upload ? '' : ', in the case'})</span>
-                  </div>
+                  <div key={s.file}>{geometryPath(s.file)} <span className="font-sans">({(s.bytes / 1048576).toFixed(1)} MB{geometry[s.file]?.upload ? '' : ', in the case'})</span></div>
                 ))}
                 <div title="The wizard's record, which makes Update case possible">{WIZARD_MARKER_PATH}</div>
               </div>
             </div>
 
             <div className="bg-muted/40 rounded p-3 text-xs">
-              <div className="font-medium mb-1">Then</div>
-              <pre className="font-mono">{`${meshSteps(snappy).join('\n')}\n${runCommand(flavour, solver)}`}</pre>
-              <p className="text-muted-foreground mt-1">The mesh steps can be run from here once the case is {updateTarget ? 'updated' : 'created'}; the solver from the Commands panel.</p>
+              <div className="font-medium mb-1">Then, in this order</div>
+              <pre className="font-mono">{[...runSteps.map(meshStepCommand), runLabel].join('\n')}</pre>
+              <p className="text-muted-foreground mt-1">The mesh steps{prep.length ? ' and setFields' : ''} run from here once the case is {updateTarget ? 'updated' : 'created'}; the solver from the Commands panel.</p>
             </div>
 
             {updateTarget ? (
               <Button className="w-full py-6 text-base" onClick={handleReviewUpdate} disabled={creating}>
-                {creating
-                  ? <><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Comparing with the case…</>
-                  : <><Wand2 className="w-5 h-5 mr-2" /> Review the update of &quot;{updateTarget.caseName}&quot;</>}
+                {creating ? <><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Comparing with the case…</> : <><Wand2 className="w-5 h-5 mr-2" /> Review the update of &quot;{updateTarget.caseName}&quot;</>}
               </Button>
             ) : (
-              <Button className="w-full py-6 text-base" onClick={handleCreate} disabled={creating || !caseName.trim()}>
-                {creating
-                  ? <><span className="animate-spin mr-2">⟳</span> Creating…</>
-                  : <><CheckCircle2 className="w-5 h-5 mr-2" /> Create case &quot;{caseName || '…'}&quot;</>}
+              <Button className="w-full py-6 text-base" onClick={handleCreate} disabled={creating || !caseName.trim() || tier === 'none' || tier === null}>
+                {creating ? <><span className="animate-spin mr-2">⟳</span> Creating…</> : <><CheckCircle2 className="w-5 h-5 mr-2" /> Create case &quot;{caseName || '…'}&quot;</>}
               </Button>
             )}
           </CardContent>
@@ -1712,17 +1620,13 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
         ))}
       </div>
 
-      {/* Navigation.
-          pr-16 keeps "Next" clear of the floating FOAMy launcher, which is
-          fixed at the bottom-right with z-100 and otherwise sits exactly on top
-          of it — measured: the launcher occupies 1194-1250 px and the button
-          1172-1254 px on a 1280-wide window, so the click opens the chat. */}
+      {/* Navigation. pr-16 keeps "Next" clear of the floating FOAMy launcher. */}
       <div className="flex justify-between sticky bottom-0 bg-background py-2 pr-16 border-t mt-2">
         <Button variant="outline" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>
           <ChevronLeft className="w-4 h-4 mr-1" /> Back
         </Button>
         {step < STEPS.length - 1 && (
-          <Button onClick={() => {
+          <Button disabled={tier === null || tier === 'none'} onClick={() => {
             if (step === 0 && !caseName.trim()) { toast.error('Enter a name'); return; }
             const nameProblem = step === 0 ? caseNameProblem(caseName.trim()) : null;
             if (nameProblem) { toast.error(nameProblem); return; }
@@ -1740,22 +1644,13 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
           <div className="space-y-3 pt-2">
             <div>
               <Label>Field name</Label>
-              <Input
-                value={newFieldName}
-                onChange={(e) => setNewFieldName(e.target.value.replace(/\s/g, ''))}
-                placeholder="e.g. T, alphat, p_rgh"
-                className="font-mono"
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateNewField()}
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Boundary conditions are pre-filled for every mesh patch. Known names (T, p_rgh, nut…) get sensible defaults.
-              </p>
+              <Input value={newFieldName} onChange={(e) => setNewFieldName(e.target.value.replace(/\s/g, ''))}
+                placeholder="e.g. T, alphat, p_rgh" className="font-mono" onKeyDown={(e) => e.key === 'Enter' && handleCreateNewField()} />
+              <p className="text-xs text-muted-foreground mt-1">Boundary conditions are pre-filled for every mesh patch.</p>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setShowNewFieldDialog(false)}>Cancel</Button>
-              <Button onClick={handleCreateNewField} disabled={!newFieldName.trim()}>
-                <Plus className="w-4 h-4 mr-1" /> Add
-              </Button>
+              <Button onClick={handleCreateNewField} disabled={!newFieldName.trim()}><Plus className="w-4 h-4 mr-1" /> Add</Button>
             </div>
           </div>
         </DialogContent>
@@ -1782,7 +1677,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
         onApply={() => void applyUpdate()}
         applying={applying}
         wizardContent={(p) => review?.contents[p] ?? null}
-        meshWillChange={!!review && review.plan.some(e => e.action !== 'same' && isMeshInput(e.path))}
+        meshWillChange={!!review && review.plan.some(e => e.action !== 'same' && staleInput(e.path))}
       />
     </div>
   );

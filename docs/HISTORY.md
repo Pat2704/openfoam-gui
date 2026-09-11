@@ -6,6 +6,78 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-11 — New Case wizard: the complete guide for OpenFOAM 13 and 14
+
+- **The installation picks the guide; the user does not.** `guideForVersion`
+  (`src/lib/wizard/modules.ts`): 13 and 14 get the complete guide, 11–12 the
+  shorter modular one (incompressibleFluid), 9–10 the shorter legacy one
+  (simpleFoam, pimpleFoam, pisoFoam, icoFoam), an unknown version none (Next
+  disabled). The layout toggle is gone; `foam-version-changed` switches the
+  guide, and Update case refuses a record made under another guide.
+- **Every solver module of the installation**, as the user chose (forms per
+  module plus tutorials). Guided forms: incompressibleFluid, isothermalFluid,
+  fluid, shockFluid, multicomponentFluid, incompressibleVoF, compressibleVoF,
+  incompressibleDriftFlux, solid, solidDisplacement. The rest (multiphaseEuler,
+  XiFluid, the two multiphase VoF modules, incompressibleDenseParticleFluid,
+  isothermalFilm, film, movingMesh, functions) start from one of the
+  installation's tutorials of that module (`src/lib/wizard/seed.ts`): physics
+  dictionaries kept and editable, mesh dictionaries dropped, every 0/ field
+  re-targeted onto the wizard's patches by role; a physics file still naming a
+  tutorial patch is flagged until edited. Modules, RAS/LES models, thermo
+  combinations per table and function objects come from foamToC
+  (`/api/foam-index?action=wizardCatalog`).
+- Physics: steady or transient (adjustTimeStep, maxCo, maxAlphaCo),
+  laminar/RAS/LES, thermophysics with presets, species, phases, drift, gravity
+  and p_rgh, solid and elastic properties, initial regions by setFields (box,
+  sphere, cylinder). Per-patch values (velocity, pressure, temperature, heat
+  flux, convection, traction) sit in the Fields step and drive the conditions
+  (`src/lib/wizard/boundary.ts`). Also system/functions (#includeFunc),
+  decomposeParDict (scotch) and fvConstraints limitPressure. Files use forms
+  both 13 and 14 accept, taken from the subagent survey
+  (`docs/agent-log/module-spec.md`, ignored), and version-specific ones only
+  where they differ (LES `<x>Coeffs` vs `<x>`, driftFlux and plastic sub-dicts,
+  combustion vs reaction properties).
+- **The Mesh step follows a real workflow.** Box only: domain → cells and
+  grading → patches (each face given to a named patch with a role; presets) →
+  blockMeshDict. With geometry (13/14): geometry (units, flow inside or around
+  it, surface role) → surfaceFeatures → background box and its patches →
+  refinement (surface levels, regions as their own patches, box/sphere/cylinder
+  regions) → insidePoint → snapping → layers → mesh quality → review. Commands
+  run in that order: surfaceTransformPoints for non-metre units, surfaceFeatures
+  (only with a feature level), blockMesh, snappyHexMesh, checkMesh, then
+  setFields. A .cfg default is shown and written only when changed. Record
+  format 2; format-1 records migrate.
+- Fixed on the way: ASCII STL solids named `patchN` were lost as regions; a
+  symmetry patch over several faces was written as symmetryPlane ("is not
+  planar") — the role now writes `symmetry` and a multi-face symmetryPlane is
+  refused; an extra condition entry opening a sub-dictionary
+  (`contactAngleProperties`) got a stray `;`; the summary's installation check
+  called `heRhoThermo` missing (foamToC lists whole combinations; words inside
+  templated names now count) and re-ran on every render (177 requests in one
+  visit; the file lists are memoised, and tutorial files copied unchanged are
+  not checked).
+- Verified: typecheck, lint, 317 tests (the usual skip). In WSL, 16 guided
+  variants (every form module; laminar, RAS, LES; buoyant; heat-flux and
+  convective walls; setFields; 2D and 3D) ran foamRun on v14 and v13. Five
+  tutorial-seeded cases with renamed patches ran on v14 (bubbleColumnLaminar,
+  damBreak4phaseLaminar in both VoF modules, column after the flagged
+  cloudProperties edit, XiFluid 1Dlaminar) and four on v13, which has no
+  1Dlaminar. An internal snappy flange meshed (46,581 cells, its regions in
+  inlet and outlet groups) and ran on v14. In the dev server on v14 the wizard
+  showed the complete guide, the 19 modules and the fluid forms; `wizard_test`
+  was created, meshed from the wizard (checkMesh OK, 1200 cells) and foamRun
+  ended by itself at iteration 299; an unchanged review found nothing to
+  write, and the record is format 2. For multiphaseEuler the forms choice is
+  disabled and the tutorial list offers the module's 29 tutorials;
+  bubbleColumnLaminar on the wizard's box reached a clean summary (22 files).
+  Disposable cases were removed. The Electron build passed and the v5.3.1
+  portable executable and folder ZIP in `Working/` were replaced with the new
+  build (SHA-256 of each copy checked against `dist-electron/`).
+- Limits: isothermalFilm needs the `filmWall` patch type, which the box does
+  not write; engine, kivaTest and stored-phi tutorials cannot be re-targeted; a
+  tutorial's zones keep its coordinates; a hand-edited phaseProperties can
+  still raise a false alarm, because phase systems are in no foamToC table.
+
 ## 2026-09-10 — New Case wizard: "Update case" and guided snappyHexMesh
 
 - **Update case.** A case the wizard creates carries `system/studioWizard.json`
@@ -160,56 +232,18 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
   `test` 0/U, clicking the `cavity_test` chip asked "Unsaved changes"; Cancel
   kept `test` open with the buffer intact, and 0/U on disk was untouched.
 
-## 2026-09-10 — Dead templates removed; clipboard feedback
+## 2026-09-10 — Honest states and dead code (in brief; details in Git)
 
-- `CASE_TEMPLATES`, `FILE_TEMPLATES` and `STANDALONE_FILE_TEMPLATES` (with
-  their two types) were deleted from `src/lib/openfoam-data.ts`: nothing
-  imported them, they predated `case-templates.ts` and carried none of its
-  fixes. The file is now only the built-in command table (1378 lines removed).
-- The File Editor's copy button and the OpenFOAM file browser report a
-  clipboard refusal instead of a success toast (or silence).
-- Lint, typecheck and the 214 tests pass.
-
-## 2026-09-10 — Failures no longer read as normal states
-
-- OpenFOAM file browser: a failed folder read shows the server's reason with
-  "Try again" instead of "Directory not found — the section may not be
-  available in this installation"; folder and file reads that arrive after a
-  newer click are discarded.
-- Commands: when the installation's command list never arrives, the subtitle
-  says so and offers "Try again" instead of "reading the installation…" for
-  ever. Monitor: a failed residual read says so instead of "No residuals found".
-- Wizard: an invalid case name is reported under the field and blocks Next on
-  the first step, with the rule the summary already applied (`caseNameProblem`).
-- File Editor "Clean TS" asks the server for running processes first and
-  refuses while one belongs to the case (and when the check fails), as the
-  Monitor's button already did. `isProcessForCase` moved from `monitor.tsx` to
-  `src/lib/case-processes.ts`, with its own tests.
-- Lint, typecheck and 214 tests pass. In the dev server "foo#1" showed the
-  name rule under the field and Next stayed on the first step; Applications
-  still lists normally. Not exercised at runtime: the failure paths (they need
-  WSL to fail) and Clean TS during a real run.
-
-## 2026-09-10 — Honest states: Undo, deletes, Monitor log, wizard check
-
-- File Editor: Undo is disabled on an unmodified file and asks before
-  discarding; a folder that cannot be created says why; a batch delete reports
-  "Deleted N of M" and names what was left (the `deleteBatch` route now returns
-  `failed`), instead of an empty success toast.
-- Monitor: the log pane tells loading, an empty log and a failed read apart;
-  it used to read "Loading..." for ever in the last two cases. A refresh that
-  fails after the log was shown keeps the text on screen.
-- Wizard summary: "Everything checks out" appears only after the installation
-  check has answered; while it runs the box says so, and if it cannot run
-  (index not ready, WSL busy) a neutral note says only the built-in checks
-  passed and stale findings from an earlier run are cleared.
-- Tutorials follow an installation change: when the tutorial directory changes
-  the open category and its list are closed, and a distro switch now reloads
-  the tutorial categories as a version switch already did.
-- Lint, typecheck and the 211 tests pass. In the dev server the wizard
-  summary showed "Checking the files with the installation…" on arrival and
-  the green box about 6 s later, once the check answered; an empty log made
-  in the `test` case (then removed) read "The log is empty so far.".
+- Failures no longer read as normal states: the file browser, Commands list,
+  Monitor residuals and log, File Editor Undo, folder creation and batch delete
+  ("Deleted N of M") each say what failed. The wizard's name rule blocks Next
+  on the first step, and "Everything checks out" waits for the installation
+  check. File Editor "Clean TS" refuses while a process of the case runs
+  (`src/lib/case-processes.ts`). Tutorials follow an installation or distro
+  change.
+- `CASE_TEMPLATES`, `FILE_TEMPLATES` and `STANDALONE_FILE_TEMPLATES` were
+  deleted from `src/lib/openfoam-data.ts` (unused, 1378 lines); clipboard
+  refusals are reported instead of a success toast.
 
 ## 2026-09-10 — Wizard writes only runnable cases; accessibility pass
 

@@ -34,7 +34,7 @@ const DEFAULTS: WizardSettings = {
   nu: '1e-05', inletVelocity: '(1 0 0)', intensity: '5', lengthScale: '',
   endTime: '500', deltaT: '1', writeInterval: '100', gravity: '(0 -9.81 0)',
   mesh: DEFAULT_MESH, meshOverride: null, systemOverrides: {}, constantOverrides: {},
-  fields: [], snappy: null,
+  fields: [], snappy: null, full: null,
 };
 
 describe('planUpdate', () => {
@@ -135,7 +135,7 @@ describe('the record', () => {
 
   test('unusable records are refused in words', () => {
     assert.match(parseMarker('{', DEFAULTS).error ?? '', /not valid JSON/);
-    assert.match(parseMarker('{"format":2,"settings":{}}', DEFAULTS).error ?? '', /different version/);
+    assert.match(parseMarker('{"format":3,"settings":{}}', DEFAULTS).error ?? '', /different version/);
     assert.match(parseMarker('{"format":1}', DEFAULTS).error ?? '', /no settings/);
   });
 

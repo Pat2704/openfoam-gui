@@ -34,6 +34,9 @@ import {
   transportFileName,
   turbulenceFieldNames,
   turbulenceFileName,
+  typeForRole,
+  type BoxFace,
+  type BoxPatch,
   type FieldContext,
   type MeshSpec,
   type SystemOptions,
@@ -208,6 +211,81 @@ describe('generateBlockMeshDict', () => {
         assert.match(dict, new RegExp(`\\b${p.name}\\b`), `${p.name} missing from a ${twoD ? '2D' : '3D'} dict`);
       }
     }
+  });
+});
+
+describe('box patches chosen by the user', () => {
+  const cavity: MeshSpec = {
+    ...DEFAULT_MESH, twoD: true,
+    patches: [
+      { name: 'movingWall', type: 'wall', role: 'movingWall', faces: ['yMax'] },
+      { name: 'fixedWalls', type: 'wall', role: 'wall', faces: ['xMin', 'xMax', 'yMin'] },
+    ],
+  };
+
+  test('each face goes to its patch, and 2D still adds the empty frontAndBack', () => {
+    const dict = generateBlockMeshDict(cavity);
+    const block = (name: string) => { const s = dict.slice(dict.indexOf(`    ${name}\n`)); return s.slice(0, s.indexOf('}') + 1); };
+    assert.match(block('movingWall'), /type wall;[\s\S]*\(3 7 6 2\)/);
+    assert.equal((block('fixedWalls').match(/\(\d \d \d \d\)/g) ?? []).length, 3);
+    assert.match(block('frontAndBack'), /type empty;/);
+    assert.deepEqual(meshPatches(cavity).map(p => p.name), ['movingWall', 'fixedWalls', 'frontAndBack']);
+    assert.deepEqual(meshProblems(cavity), []);
+  });
+
+  test('grading reaches simpleGrading', () => {
+    assert.match(generateBlockMeshDict({ ...DEFAULT_MESH, grading: [1, 4, 0.25] }), /simpleGrading \(1 4 0\.25\)/);
+    assert.ok(meshProblems({ ...DEFAULT_MESH, grading: [1, 0, 1] }).some(p => /grading/.test(p)));
+  });
+
+  test('a face in no patch, or in two, a bad name and a 3D empty patch are reported', () => {
+    const has = (m: MeshSpec, re: RegExp) => assert.ok(meshProblems(m).some(p => re.test(p)), re.source);
+    has({ ...cavity, patches: [cavity.patches![0]] }, /belong to no patch: xMin, xMax, yMin/);
+    has({ ...cavity, patches: [...cavity.patches!, { name: 'extra', type: 'patch', role: 'outlet', faces: ['xMax'] }] }, /more than one patch: xMax/);
+    has({ ...cavity, patches: [{ ...cavity.patches![0], name: 'lid top' }, cavity.patches![1]] }, /letter followed by/);
+    has({ ...DEFAULT_MESH, twoD: false, patches: [{ name: 'all', type: 'empty', role: 'empty', faces: ['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'] }] }, /only makes sense in a 2D case/);
+  });
+
+  test('a symmetry patch over several faces is the symmetry type; symmetryPlane there is refused', () => {
+    // OpenFOAM stops with "Symmetry plane 'x' is not planar" (found on a seeded column case).
+    assert.equal(typeForRole('symmetry'), 'symmetry');
+    const sides = { name: 'sides', role: 'symmetry' as const, faces: ['xMin', 'xMax', 'yMin', 'yMax'] as BoxFace[] };
+    const rest: BoxPatch[] = [{ name: 'ends', type: 'wall', role: 'wall', faces: ['zMin', 'zMax'] }];
+    const m = (type: 'symmetry' | 'symmetryPlane'): MeshSpec => ({ ...DEFAULT_MESH, twoD: false, patches: [{ ...sides, type }, ...rest] });
+    assert.deepEqual(meshProblems(m('symmetry')), []);
+    assert.ok(meshProblems(m('symmetryPlane')).some(p => /sides: a symmetryPlane must be one flat face and it spans 4/.test(p)));
+    assert.equal(defaultBC('U', { name: 'sides', role: 'symmetry' }, CTX).type, 'symmetry');
+  });
+
+  test('the new roles get the conditions the tutorials use', () => {
+    const lid = { name: 'lid', role: 'movingWall' as const, type: 'wall' as const };
+    assert.deepEqual(defaultBC('U', lid, { ...CTX, wallVelocity: '(1 0 0)' }), { name: 'lid', type: 'movingWallVelocity', value: 'uniform (1 0 0)' });
+    assert.equal(defaultBC('p', lid, CTX).type, 'zeroGradient');
+    assert.equal(defaultBC('k', lid, CTX).type, 'kqRWallFunction');
+
+    const top = { name: 'atmosphere', role: 'atmosphere' as const, type: 'patch' as const };
+    assert.equal(defaultBC('U', top, CTX).type, 'pressureInletOutletVelocity');
+    assert.deepEqual(defaultBC('p', top, CTX), { name: 'atmosphere', type: 'totalPressure', value: 'uniform 0', extra: 'p0 uniform 0' });
+    assert.equal(defaultBC('k', top, CTX).type, 'inletOutlet');
+
+    const sym = { name: 'sides', role: 'symmetry' as const, type: 'symmetryPlane' as const };
+    for (const f of ['U', 'p', 'k']) assert.equal(defaultBC(f, sym, CTX).type, 'symmetryPlane');
+    assert.equal(defaultBC('U', { name: 's', role: 'slipWall', type: 'wall' }, CTX).type, 'slip');
+  });
+
+  test('extra entries are written inside the patch, before value', () => {
+    const f = buildField('p', [{ name: 'top', role: 'atmosphere', type: 'patch' }], CTX, 'modular');
+    const text = generateFieldFile(f, 'modular');
+    assert.match(text, /top\n\s+\{\n\s+type\s+totalPressure;\n\s+p0 uniform 0;\n\s+value\s+uniform 0;\n\s+\}/);
+  });
+
+  test('a sub-dictionary among the extra entries keeps its keyword without a semicolon', () => {
+    // alphaContactAngle from a tutorial: `contactAngleProperties;` was a fatal error.
+    const extra = 'contactAngleProperties\n{\n    air             { theta0 90; }\n}\nlimit none';
+    const f = { fieldName: 'alpha.water', dimensions: '[0 0 0 0 0 0 0]', internalField: 'uniform 0', boundaryConditions: [{ name: 'walls', type: 'alphaContactAngle', value: '', extra }] };
+    const text = generateFieldFile(f, 'modular');
+    assert.match(text, /\n\s+contactAngleProperties\n\s+\{\n\s+air\s+\{ theta0 90; \}\n\s+\}\n\s+limit none;\n/);
+    assert.doesNotMatch(text, /contactAngleProperties;/);
   });
 });
 
