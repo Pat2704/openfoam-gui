@@ -6,6 +6,17 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-11 — v5.4.0: complete case creation and guided surface meshing
+
+- Released `v5.4.0` at the user's request; notes in
+  `docs/releases/v5.4.0.md`. Its centrepiece is the complete v13/v14 New Case
+  guide and its safe STL/OBJ → `surfaceFeatures` → `snappyHexMesh` workflow,
+  together with hash-aware case updates and the wizard/agent fixes below.
+- Direct publication reused the paired v5.3.1 artifacts built from commit
+  `6d264fa`, renaming them for v5.4.0 without rebuilding; source-to-artifact
+  equivalence therefore belongs to that pre-version build, not the version
+  metadata commit.
+
 ## 2026-09-11 — Wizard lifecycle and agent transcript fixes
 
 - New Case now reconciles the case it remembers with every refreshed case
