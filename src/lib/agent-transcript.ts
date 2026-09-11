@@ -1,6 +1,6 @@
 export type AgentTranscriptBlock =
-  | { kind: 'text'; id?: string; text: string; live: boolean }
-  | { kind: 'thinking'; id?: string; text: string; live: boolean }
+  | { kind: 'text'; id?: string; text: string; live: boolean; snapshot?: string }
+  | { kind: 'thinking'; id?: string; text: string; live: boolean; snapshot?: string }
   | { kind: 'tool'; id: string; name: string; input: Record<string, unknown>; status: 'running' | 'ok' | 'error'; result: string };
 
 /**
@@ -8,7 +8,8 @@ export type AgentTranscriptBlock =
  *
  * Claude and Codex both stream deltas and later send an authoritative snapshot.
  * Providers may replay that snapshot, especially around a tool call. Block IDs
- * make those replays updates rather than a second copy of the same answer.
+ * handle literal replays; cumulative snapshots sometimes arrive under a fresh
+ * ID, so their already-rendered prefix is removed as well.
  */
 export function applyAgentTranscriptEvent(
   previous: AgentTranscriptBlock[],
@@ -37,6 +38,14 @@ export function applyAgentTranscriptEvent(
     }
   };
 
+  const previousFinal = (channel: 'text' | 'thinking', before: number): number => {
+    for (let i = before - 1; i >= 0; i--) {
+      const block = blocks[i];
+      if (block.kind === channel && !block.live) return i;
+    }
+    return -1;
+  };
+
   if (type === 'block_start') {
     const channel = event.channel as 'text' | 'thinking';
     const existing = id ? findTextBlock(channel, false) : -1;
@@ -63,8 +72,31 @@ export function applyAgentTranscriptEvent(
       if (last?.kind === channel && !last.live && last.text === text) return blocks;
       index = findTextBlock(channel, true);
     }
-    if (index >= 0) blocks[index] = { kind: channel, id: id ?? blocks[index].id, text, live: false };
-    else blocks.push({ kind: channel, id, text, live: false });
+    const priorIndex = previousFinal(channel, index >= 0 ? index : blocks.length);
+    const prior = priorIndex >= 0
+      ? blocks[priorIndex] as Extract<AgentTranscriptBlock, { kind: 'text' | 'thinking' }>
+      : undefined;
+    const priorSnapshot = prior?.snapshot ?? prior?.text ?? '';
+
+    // Claude and Codex can publish A, then A+B, then A+B+C as separate
+    // completed items around tool calls. Preserve the tool ordering, but show
+    // only the new suffix instead of rendering the growing prefix each time.
+    if (priorSnapshot && text.length > priorSnapshot.length && text.startsWith(priorSnapshot)) {
+      if (index >= 0 && priorIndex === index - 1) {
+        blocks.splice(priorIndex, 2, { kind: channel, id, text, live: false });
+      } else if (index < 0 && priorIndex === blocks.length - 1) {
+        blocks[priorIndex] = { kind: channel, id, text, live: false };
+      } else {
+        const suffix = text.slice(priorSnapshot.length).replace(/^(?:\r?\n)+/, '');
+        const next = { kind: channel, id: id ?? (index >= 0 ? blocks[index].id : undefined), text: suffix, live: false, snapshot: text } as const;
+        if (index >= 0) blocks[index] = next;
+        else blocks.push(next);
+      }
+    } else if (index >= 0) {
+      blocks[index] = { kind: channel, id: id ?? blocks[index].id, text, live: false };
+    } else {
+      blocks.push({ kind: channel, id, text, live: false });
+    }
   } else if (type === 'tool_use') {
     closeLive();
     const toolId = String(event.id || '');

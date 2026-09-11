@@ -12,6 +12,7 @@ import definitions from '../../electron/mcp/openfoam-tools.json';
 import { callTool } from './agent-policy';
 import { buildCaseNotice, buildModeNotice, sanitizeUserMessage } from './agent-prompt';
 import { CODEX_CONFIG, modelChoices, panelEvents, type PanelEvent, type CodexModel } from './codex-protocol';
+import { codexDynamicTools } from './codex-tools';
 
 const run = promisify(execFile);
 type Listener = (event: PanelEvent) => void;
@@ -220,8 +221,7 @@ export async function send(options: { sessionId: string; message: string; model:
       config, baseInstructions: options.systemPrompt, developerInstructions: 'Only use the provided OpenFOAM functions. You have no native environment. The user selects Guarded or No limits; tool arguments never change that mode.' };
     if (!session.threadId) {
       const result = await rpc.request('thread/start', { ...common, environments: [],
-        dynamicTools: definitions.map(t => ({ type: 'function', name: t.name, inputSchema: t.inputSchema,
-          description: t.name === 'run_openfoam' ? `${t.description} When the user switches to No limits, the same tool accepts a WSL shell command, except /mnt/ paths.` : t.description })) });
+        dynamicTools: codexDynamicTools(definitions) });
       session.threadId = result.thread.id;
     } else {
       // A loaded thread can rejoin without applying new instructions. Unload

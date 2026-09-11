@@ -6,6 +6,20 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-11 — Decomposed cleanup and cumulative agent replies
+
+- File Editor's Clean TS now reads the same root-plus-`processor*` timestep
+  inventory as Monitor instead of inferring it from the visible top-level tree.
+  It keeps the initial time, refuses deletion while the case runs, reports
+  backend failures and refreshes the tree after a successful cleanup.
+- The shared Claude/Codex transcript recognises cumulative snapshots even when
+  the provider changes block ID. Adjacent snapshots collapse to the newest;
+  around tools, only each new suffix is rendered, preserving event order.
+- Both Guarded and No limits prompts keep their paragraph boundaries and are
+  provider-neutral. Codex's durable `run_openfoam` description now explains
+  both modes without becoming stale after a mode switch; enforcement remains
+  server-side. Regression tests cover both snapshot forms and the mode contract.
+
 ## 2026-09-11 — v5.4.0: complete case creation and guided surface meshing
 
 - Released `v5.4.0` at the user's request; notes in

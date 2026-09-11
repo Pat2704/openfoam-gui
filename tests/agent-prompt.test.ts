@@ -94,6 +94,15 @@ describe('buildSystemPrompt', () => {
     assert.match(prompt, /"cavity"/);
     assert.ok(!buildSystemPrompt('', '', false).includes('The case currently open'));
   });
+
+  test('is provider-neutral and preserves instruction paragraph boundaries', () => {
+    for (const unrestricted of [true, false]) {
+      const prompt = buildSystemPrompt('14', 'cavity', unrestricted);
+      assert.match(prompt, /You are the AI agent/);
+      assert.ok(!prompt.includes('You are the Claude agent'));
+      assert.match(prompt, /\n\nANSWERING IS THE DEFAULT/);
+    }
+  });
 });
 
 describe('appNotice', () => {

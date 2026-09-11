@@ -20,12 +20,6 @@ import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { isProcessForCase } from '@/lib/case-processes';
 
-// Canonical timestep regex: matches integer (0, 100), decimal (0.001, 1.5),
-// and scientific notation (1e-5, 1.5E-3, 1e+5). Mirrors the WSL-side regex in
-// src/lib/wsl.ts so the frontend count stays consistent with the backend deletion.
-const TIMESTEP_RE = /^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/;
-const NON_TIMESTEP_DIRS = new Set(['0', 'system', 'constant', 'postProcessing']);
-
 interface FileItem {
   name: string;
   path: string;
@@ -515,44 +509,51 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   };
 
   const handleDeleteTimesteps = async () => {
-    // The same rule as the server: 0 and the earliest time stay — a case need
-    // not start at 0 (kivaTest starts at -180).
-    const times = allDirNames.filter(d => !d.startsWith('processor') && TIMESTEP_RE.test(d));
-    const earliest = times.reduce<string | null>((a, b) => (a === null || parseFloat(b) < parseFloat(a) ? b : a), null);
-    const tsDirs = times.filter(d => d !== '0' && d !== earliest);
-    if (tsDirs.length === 0) { toast.info('No timesteps to delete'); return; }
-    // The Monitor disables its own Clean TS while the case runs; this one did
-    // not know. Deleting time folders the solver is still writing leaves
-    // half-written directories and a latestTime restart that does not match the
-    // run. If the check itself fails, nothing is deleted.
+    if (deletingTimesteps) return;
+    setDeletingTimesteps(true);
     try {
-      const res = await fetch('/api/wsl?action=processes', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      // Use the same lightweight case scan as Monitor. The editor tree only
+      // knows directories the user has expanded and, in a decomposed case, the
+      // useful times may exist only below processor*/.
+      const timesResponse = await fetch(`/api/cases?action=timesteps&name=${encodeURIComponent(caseName)}`, { cache: 'no-store' });
+      const timesData = await timesResponse.json().catch(() => ({}));
+      if (!timesResponse.ok) throw new Error(timesData.error || `HTTP ${timesResponse.status}`);
+      const rawTimes: unknown[] = Array.isArray(timesData.timeSteps) ? timesData.timeSteps : [];
+      const times = rawTimes.filter((time): time is string => typeof time === 'string');
+      // Match the server's retention rule: keep 0 and the earliest numeric time
+      // (which may be negative for cases such as kivaTest).
+      const earliest = times.reduce<string | null>((a, b) => (a === null || parseFloat(b) < parseFloat(a) ? b : a), null);
+      const deletable = times.filter(time => time !== '0' && time !== earliest);
+      if (deletable.length === 0) { toast.info('No timesteps to delete'); return; }
+
+      // Deleting time folders while a solver writes them can leave a corrupt
+      // restart. If this check fails, fail closed and leave the case untouched.
+      const processesResponse = await fetch('/api/wsl?action=processes', { cache: 'no-store' });
+      if (!processesResponse.ok) throw new Error(`HTTP ${processesResponse.status}`);
+      const data = await processesResponse.json();
       const processes: { cwd?: string }[] = Array.isArray(data.processes) ? data.processes : [];
       const running = processes.filter(p => isProcessForCase(p, caseName)).length;
       if (running > 0) {
         toast.error(`"${caseName}" is running (${running} process${running === 1 ? '' : 'es'}). Stop it before deleting its timesteps.`);
         return;
       }
-    } catch {
-      toast.error('Could not check whether the case is running, so its timesteps were left alone.');
-      return;
-    }
-    if (!(await confirmDialog(`Delete ${tsDirs.length} timestep folders (all except the initial time), and the same times inside processor*/ if the case is decomposed?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
-    setDeletingTimesteps(true);
-    try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
+
+      if (!(await confirmDialog(`Delete ${deletable.length} timestep values (all except the initial time), including their copies inside processor*/?`, { title: 'Delete timesteps', confirmLabel: 'Delete', destructive: true }))) return;
+      const deleteResponse = await fetch(`/api/cases/${encodeURIComponent(caseName)}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'deleteTimesteps' }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        toast.success(data.message);
-        fetchCaseInfo();
-      } else toast.error('Error');
-    } catch { toast.error('Error'); }
-    setDeletingTimesteps(false);
+      const deleteData = await deleteResponse.json().catch(() => ({}));
+      if (!deleteResponse.ok) throw new Error(deleteData.error || `HTTP ${deleteResponse.status}`);
+      toast.success(deleteData.message || `Deleted ${deleteData.count ?? deletable.length} timesteps`);
+      await fetchCaseInfo();
+    } catch (error) {
+      toast.error(error instanceof Error
+        ? `Timesteps were left alone: ${error.message}`
+        : 'Timesteps were left alone because the operation failed.');
+    } finally {
+      setDeletingTimesteps(false);
+    }
   };
 
   const deleteSingle = async (path: string) => {
@@ -898,7 +899,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
             className="h-6 text-[10px] px-2 border-danger/40 text-danger hover:bg-danger hover:text-white hover:border-danger"
             disabled={deletingTimesteps}
             onClick={handleDeleteTimesteps}
-            title="Delete every timestep folder except 0/"
+            title="Delete every timestep folder except the initial time"
           >
             <Timer className="w-3 h-3 mr-0.5" />{deletingTimesteps ? 'Deleting…' : 'Clean TS'}
           </Button>

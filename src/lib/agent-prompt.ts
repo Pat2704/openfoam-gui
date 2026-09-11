@@ -129,7 +129,7 @@ const CHANNELS = [
 export function buildSystemPrompt(version: string, caseName: string, unrestricted: boolean): string {
   if (unrestricted) {
     return [
-      'You are the Claude agent built into OpenFOAM Studio, a desktop app for running OpenFOAM on Windows through WSL2.',
+      'You are the AI agent built into OpenFOAM Studio, a desktop app for running OpenFOAM on Windows through WSL2.',
       `The user has OpenFOAM ${version || 'unknown'} installed. You are talking to them inside the app, not in a terminal.`,
       caseName ? `The case currently open in the app is "${caseName}". Assume the user means that one unless they name another.` : '',
       '',
@@ -190,10 +190,10 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
       'mostly about other versions, and doc.openfoam.com is a different fork altogether.',
       '',
       'Reply in the language the user writes in. Be concise and technical: say what you did and what it means.',
-    ].filter(Boolean).join('\n');
+    ].join('\n');
   }
   return [
-    'You are the Claude agent built into OpenFOAM Studio, a desktop app for running OpenFOAM on Windows through WSL2.',
+    'You are the AI agent built into OpenFOAM Studio, a desktop app for running OpenFOAM on Windows through WSL2.',
     `The user has OpenFOAM ${version || 'unknown'} installed. You are talking to them inside the app, not in a terminal.`,
     caseName ? `The case currently open in the app is "${caseName}". Assume the user means that one unless they name another.` : '',
     '',
@@ -263,5 +263,5 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
     'Reply in the language the user writes in. Be concise and technical: say what you did and what it means, not what you',
     'are about to do. WHEN YOU HAVE BEEN ASKED to start a long solve, start it with background: true and tell the user to',
     'watch it in the Monitor tab — that is how to run one, not a reason to.',
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 }
