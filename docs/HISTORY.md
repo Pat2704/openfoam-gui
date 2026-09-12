@@ -6,6 +6,24 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-12 — File Editor fits the window; preflight beside Clean TS
+
+- The File Editor fills its tab exactly at any window size and follows resizes:
+  the tree and the open file each scroll inside their own card, so both stay
+  on screen and the page itself never scrolls. The fixed `calc(100vh - 300px)`
+  tree cap and the 32rem minimum that pushed the page are gone.
+- Case preflight is launched from a green box in the tree's toolbar, beside
+  Clean TS (with a ✓ or error count after a run). Its results always open in a
+  section below; while open it takes the larger share of the height (tree and
+  file keep a 12rem floor, the results 8rem) and scrolls inside. An unsaved
+  buffer opens the section with the "save first" note instead of running.
+- The work row is measured: below 440 px the new-file/folder inputs fold behind
+  a + button and the line-count footer hides; below `xl` the file header shows
+  icon-only Rename, Undo and Wrap.
+- Checked in the dev server on `test` at 1024×768, 900×520 and 1600×1000, with
+  and without results: no page overflow; tree list and text scroll alone (at
+  900×520 with results: tree 132 px, text 145 px, results body 82 px).
+
 ## 2026-09-12 — larger initial workspaces and wizard-marker exclusion
 
 - The desktop window now opens at up to 1600×1000, bounded by the monitor's
@@ -376,23 +394,11 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
 
-- Dashboard → Tutorial: the category list and a category's tutorials now
-  scroll independently. Before, both cards grew to full length and `main`
-  scrolled them together. The grid's height is measured by `tutGridRef` so it
-  ends at `main`'s bottom (a `calc(100dvh - 17rem)` guess was 92 px off at
-  1366×768 and stays only as first-paint fallback); below `md` the cards stack
-  with a height cap. Opening another category starts its list at the top.
-  Checked in the dev server at 1366×768 (no page overflow, each list scrolls
-  alone), at 900×600 (400 px floor, the page scrolls the short remainder) and
-  at 700 px wide.
-- `electron/build/icon.ico` has no vector source; the 256 px frame was repaired
-  as a raster: the dark dash inside the airfoil near the trailing edge and the
-  small barb above that edge were removed, and the lower streamline right of
-  the airfoil, which faded out between x≈210 and x≈232, was redrawn as a
-  continuous 1.65 px line matching its intact segments. Every smaller frame was
-  a LANCZOS downsample of that frame and is regenerated the same way; 20, 40
-  and 96 px were added for 125/150/250 % display scaling. Windows may show
-  the old icon from its icon cache until that cache refreshes.
+- Dashboard → Tutorial: categories and a category's tutorials scroll
+  independently, in a grid measured by `tutGridRef` to end at `main`'s bottom.
+- `electron/build/icon.ico` was repaired as a raster (airfoil dash, barb and
+  a broken streamline); smaller frames are LANCZOS downsamples, with 20, 40 and
+  96 px added for display scaling.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
 

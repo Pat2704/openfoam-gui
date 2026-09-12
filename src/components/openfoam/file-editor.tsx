@@ -19,7 +19,7 @@ import { Label } from '@/components/ui/label';
 import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { isProcessForCase } from '@/lib/case-processes';
-import CasePreflightPanel from './case-preflight-panel';
+import { CasePreflightResults, CasePreflightTrigger, useCasePreflight } from './case-preflight-panel';
 
 interface FileItem {
   name: string;
@@ -718,6 +718,28 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   useEffect(() => { setUnsavedFile(isModified && currentFile ? currentFile : null); }, [isModified, currentFile, setUnsavedFile]);
   useEffect(() => () => setUnsavedFile(null), [setUnsavedFile]);
 
+  const preflight = useCasePreflight(caseName, isModified ? currentFile : null);
+
+  // ── Fitting the window ──
+  // The editor fills its pane exactly; the tree and the open file scroll inside
+  // their own cards. The row holding them is measured so that, when the window
+  // (or the preflight results below) leave it short, the less essential chrome
+  // folds away and the tree list and the text keep the room.
+  const workRowRef = useRef<HTMLDivElement>(null);
+  const [workRowHeight, setWorkRowHeight] = useState<number | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  useEffect(() => {
+    const el = workRowRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setWorkRowHeight(Math.round(entry.contentRect.height)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  // The row's height never depends on what folds, so this cannot oscillate.
+  // A hidden tab measures 0: nothing is visible then, so compact is harmless.
+  const compact = workRowHeight !== null && workRowHeight < 440;
+  const createVisible = !compact || showCreate;
+
   // Build top-level dir list
   const allDirNames = Object.keys(directories).filter(k => k !== '_root' && !k.includes('/'));
   const rootFileItems: FileItem[] = directories['_root'] || [];
@@ -885,10 +907,15 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   };
 
   return (
-    <div className="flex min-h-full flex-col gap-3">
-      <div className="flex min-h-[32rem] flex-1 gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      {/* With the preflight results open the two share the height: the results
+          take the larger part, the tree and the file keep a floor of their own. */}
+      <div
+        ref={workRowRef}
+        className={`flex min-h-0 gap-3 ${preflight.open ? 'min-h-[12rem] basis-[42%] flex-shrink' : 'flex-1'}`}
+      >
       {/* ═══ File Tree Sidebar ═══ */}
-      <Card className="w-72 flex-shrink-0 flex flex-col">
+      <Card className="w-60 xl:w-72 flex-shrink-0 flex flex-col min-h-0 gap-0 py-0 overflow-hidden">
         <div className="px-2 pt-2 pb-0 flex items-center gap-1">
           {/* Still red, because it deletes results — but outlined rather than
               filled. As a solid red block it was the loudest thing in the file
@@ -913,9 +940,24 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
           >
             {multiSelectMode ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
           </Button>
+          {compact && (
+            <Button
+              size="sm" variant={showCreate ? 'secondary' : 'ghost'}
+              className="h-6 w-6 p-0"
+              title={showCreate ? 'Hide new file and folder' : 'New file or folder'}
+              aria-label={showCreate ? 'Hide new file and folder' : 'New file or folder'}
+              aria-pressed={showCreate}
+              onClick={() => setShowCreate(v => !v)}
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          <div className="ml-auto min-w-0">
+            <CasePreflightTrigger preflight={preflight} />
+          </div>
         </div>
 
-        <div className="px-2 pb-0.5">
+        <div className="px-2 pt-1 pb-0.5">
           <CardTitle className="text-sm flex items-center gap-1">
             <FolderTree className="w-4 h-4" /> <span className="truncate">{caseName}</span>
             <button
@@ -944,8 +986,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
           </div>
         )}
 
-        <CardContent className="p-0 flex-1 overflow-hidden">
-          <ScrollArea className="h-full" style={{ maxHeight: 'calc(100vh - 300px)' }}>
+        <CardContent className="p-0 flex-1 min-h-0 overflow-hidden">
+          <ScrollArea className="h-full">
             <div className="px-2 py-1 space-y-0">
               {/* Standard directories rendered first (0, system, constant) */}
               {['0', 'system', 'constant']
@@ -1107,8 +1149,9 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
           </ScrollArea>
         </CardContent>
 
-        {/* New file/dir creation */}
-        <div className="border-t p-2 space-y-2">
+        {/* New file/dir creation — folded behind the + button when short */}
+        {createVisible && (
+        <div className="border-t p-2 space-y-2 flex-shrink-0">
           <div className="flex gap-1">
             <Select value={newFileDir} onValueChange={setNewFileDir}>
               <SelectTrigger className="h-7 text-xs w-24"><SelectValue /></SelectTrigger>
@@ -1133,16 +1176,17 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
             </Button>
           </div>
         </div>
+        )}
       </Card>
 
       {/* ═══ Editor Area ═══ */}
-      <Card className="flex-1 flex flex-col min-w-0">
+      <Card className="flex-1 flex flex-col min-w-0 min-h-0 gap-0 py-0 overflow-hidden">
         {currentFile ? (
           <>
-            <div className="flex items-center justify-between px-4 py-2 border-b">
-              <div className="flex items-center gap-2">
-                <FileCode className="w-4 h-4 text-primary" />
-                <span className="font-mono text-sm font-medium">{caseName}/{currentFile}</span>
+            <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 py-1.5 border-b">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <FileCode className="w-4 h-4 flex-shrink-0 text-primary" />
+                <span className="truncate font-mono text-sm font-medium" title={`${caseName}/${currentFile}`}>{caseName}/{currentFile}</span>
                 {isModified && <Badge variant="secondary" className="text-[10px] text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30">modified</Badge>}
               </div>
               {/* Only ever shown for a DIRTY buffer: a clean one is reloaded
@@ -1174,9 +1218,9 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   </Button>
                 </div>
               )}
-              <div className="flex gap-1">
-                <Button size="sm" variant="ghost" onClick={() => currentFile && startRename(currentFile, false)} title="Rename or move this file">
-                  <Pencil className="w-3 h-3 mr-1" /> Rename
+              <div className="flex flex-shrink-0 gap-1">
+                <Button size="sm" variant="ghost" onClick={() => currentFile && startRename(currentFile, false)} title="Rename or move this file" aria-label="Rename or move this file">
+                  <Pencil className="w-3 h-3 xl:mr-1" /> <span className="hidden xl:inline">Rename</span>
                 </Button>
                 {/* Undo throws away every unsaved edit at once, so it asks — and
                     there is nothing to throw away while the file is unmodified. */}
@@ -1186,8 +1230,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                     setFileContent(originalContent);
                     toast.info('Changes discarded');
                   }
-                }}>
-                  <RotateCcw className="w-3 h-3 mr-1" /> Undo
+                }} title="Discard unsaved changes" aria-label="Discard unsaved changes">
+                  <RotateCcw className="w-3 h-3 xl:mr-1" /> <span className="hidden xl:inline">Undo</span>
                 </Button>
                 <Button size="sm" variant="ghost" aria-label="Copy the file's contents" title="Copy the file's contents" onClick={() => {
                   // "Copied" only once the clipboard has taken it: it can refuse
@@ -1209,7 +1253,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   aria-pressed={wordWrap}
                 >
                   <WrapText className="w-3 h-3" />
-                  Wrap {wordWrap ? 'On' : 'Off'}
+                  <span className="hidden xl:inline">Wrap {wordWrap ? 'On' : 'Off'}</span>
                 </Button>
                 <Button size="sm" onClick={saveFile} disabled={saving || !isModified}>
                   <Save className="w-3 h-3 mr-1" /> Save
@@ -1217,7 +1261,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               </div>
             </div>
             {searchVisible && currentFile && (
-              <div className="px-3 py-1.5 border-b bg-muted/30 flex items-center gap-2">
+              <div className="px-3 py-1.5 border-b bg-muted/30 flex flex-shrink-0 items-center gap-2">
                 <Search className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
                 <input
                   autoFocus
@@ -1234,7 +1278,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 </button>
               </div>
             )}
-            <div className="flex-1 overflow-hidden relative">
+            <div className="flex-1 min-h-0 overflow-hidden relative">
               <div className="absolute inset-0 flex">
                 <div
                   ref={lineNumbersRef}
@@ -1285,12 +1329,14 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 />
               </div>
             </div>
-            <div className="px-4 py-1.5 border-t text-xs text-muted-foreground flex justify-between">
+            {!compact && (
+            <div className="px-4 py-1.5 border-t text-xs text-muted-foreground flex flex-shrink-0 justify-between">
               <span>{fileContent.split('\n').length} lines | {fileContent.length} characters</span>
               <span className={isModified ? 'text-amber-500' : 'text-green-500'}>
                 {isModified ? 'Not saved' : 'Saved'}
               </span>
             </div>
+            )}
           </>
         ) : multiSelectMode ? (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -1312,11 +1358,15 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       </Card>
       </div>
 
-      <CasePreflightPanel
-        caseName={caseName}
-        unsavedFile={isModified ? currentFile : null}
-        onOpenFile={(filePath) => { void loadFile(filePath); }}
-      />
+      {/* Results always open in their own section below, never in place of
+          the trigger; they scroll inside the height left to them. */}
+      {preflight.open && (
+        <CasePreflightResults
+          preflight={preflight}
+          className="min-h-[8rem] flex-1"
+          onOpenFile={(filePath) => { void loadFile(filePath); }}
+        />
+      )}
 
       {/* ═══ Rename / move ═══ */}
       <Dialog open={renameTarget !== null} onOpenChange={(open) => { if (!open) closeRename(); }}>
