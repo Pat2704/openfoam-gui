@@ -6,6 +6,18 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-12 — larger initial workspaces and wizard-marker exclusion
+
+- The desktop window now opens at up to 1600×1000, bounded by the monitor's
+  usable work area, with 1200×900 minimums where the display permits. This
+  exposes the complete File Editor surface in the normal initial view.
+- Commands gives the terminal all space left above Quick Commands by default;
+  dragging the existing handle still sets a manual height and double-clicking
+  it restores automatic fitting.
+- Case preflight prunes `system/studioWizard.json` from both its bounded file
+  inventory and the reported total. It remains wizard metadata, not an
+  OpenFOAM dictionary to validate.
+
 ## 2026-09-12 — installation-aware case preflight in File Editor
 
 - File Editor now has a full-width Case preflight panel below its tree and
@@ -436,42 +448,16 @@ The detailed evidence is in commit `89211cb` and the v5.3.0 release history.
 
 ## 2026-09-08 – 09-09 in brief
 
-Details are in `docs/releases/v5.0.0.md` through `v5.2.2.md` and in Git.
+Details are in `docs/releases/v5.0.0.md` through `v5.2.2.md` and in Git. This
+period introduced Post-Process; installation-aware agent/command/help data;
+the persistent theme; ParaView discovery, startup phases and recovery; honest
+residual and Post-Process charts; and synchronized case-switcher chips.
 
-- Releases: `v5.0.0` (Post-Process tab), `v5.1.0` (one installation-aware
-  vocabulary, command, help and tutorial corpus for FOAMy, Claude and Codex,
-  invalidated together on any distro, version or path change), `v5.2.0` (theme
-  kept as `ui-theme` through the preload's synchronous config channel, because
-  the changing port empties localStorage), `v5.2.1` (ParaView detection and
-  startup) and `v5.2.2` (switcher, agent case changes, honest charts). GitHub
-  keeps only the two most recent releases as downloads; tags, commits and
-  notes stay.
-- RULES changes made at the user's request in this period: every source change
-  ends with an Electron build replacing the pair in `Working/`, then the local
-  commit; only the current version's pair may remain; an explicit release
-  request uses the direct-publication flow on the existing pair; `test` and any
-  `*_test` case are disposable; post-build verification is discretionary.
-- Agent conversation: the app speaks inside `<openfoam-studio>` tags, which
-  `sanitizeUserMessage()` strips from user text; mode and open-case changes are
-  announced there (`buildCaseNotice`), and the prompts say the instructions
-  describe only the current setting. Left alone: `buildSystemPrompt`'s
-  `.filter(Boolean)` also drops the paragraph breaks.
-- Detached runs: a command with a trailing `&` is `nohup setsid`-detached and
-  survives quitting the app; a foreground one dies with its `wsl.exe` relay.
-  The detach button added around this was reverted at the user's request — do
-  not add it back.
-- ParaView: detection reads the installation layout instead of executing
-  `pvpython --version` (107 s on a cold first run), searching sources in cost
-  order with the custom path first; the workbench reports real start phases,
-  can be cancelled and heals when its tab becomes visible again. Verified
-  against ParaView 6.2.0.
-- Charts: residual and Post-Process axes are read from the data
-  (`residualLogDomain()`), zero residuals become gaps, and the Post-Process
-  chart gained pan, zoom, resize and a preview-accurate export. The case
-  switcher reconciles its chips on `case-list-changed` and
-  `foam-version-changed`.
-- Noticed, not changed: the packaged standalone carries the whole `tests/`
-  directory, which nothing in the app reads.
+The same history records the app's `<openfoam-studio>` control notices, guarded
+detached-run semantics, and the project rules governing build artifacts and
+direct release publication. The temporary detach button was reverted and must
+not be restored. The packaged standalone still carries the unused `tests/`
+directory; that observation was intentionally left unchanged.
 
 ## Earlier history
 

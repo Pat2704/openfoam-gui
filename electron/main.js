@@ -10,7 +10,7 @@
  * No Chrome, no visible localhost: the user just double-clicks the .exe.
  */
 
-const { app, BrowserWindow, dialog, shell, Menu, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, shell, Menu, ipcMain, safeStorage, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -775,11 +775,18 @@ function registerConfigIpc() {
 }
 
 function createWindow() {
+  // Open large enough for the complete File Editor (tree, editor and the
+  // full-width preflight bar) and for Commands to show its terminal plus quick
+  // actions without a compressed first view. Never extend past the display's
+  // usable work area: compact laptop screens still get the largest safe window.
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  const initialWidth = Math.min(workArea.width, 1600);
+  const initialHeight = Math.min(workArea.height, 1000);
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 700,
+    width: initialWidth,
+    height: initialHeight,
+    minWidth: Math.min(workArea.width, 1200),
+    minHeight: Math.min(workArea.height, 900),
     backgroundColor: '#0f0f0f',
     title: APP_TITLE,
     // Use the bundled icon.ico (lives in <resourcesPath>/icon.ico in prod,

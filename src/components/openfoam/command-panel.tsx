@@ -186,7 +186,10 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
   const [term, setTerm] = useState<TermState>({
     lines: [], input: '', history: [], historyIdx: -1, running: false,
   });
-  const [termHeight, setTermHeight] = useState(380);
+  // null means "fit the remaining Commands workspace". A drag turns it into
+  // an explicit user height; double-clicking the handle restores auto-fit.
+  const [termHeight, setTermHeight] = useState<number | null>(null);
+  const terminalCardRef = useRef<HTMLDivElement>(null);
   const resizing = useRef(false);
   const startY = useRef(0);
   const startH = useRef(0);
@@ -769,7 +772,11 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
       <div className="lg:col-span-2 flex flex-col gap-3 min-h-0">
 
         {/* ═══ Terminal ═══ */}
-        <Card className="flex flex-col relative" style={{ height: `${termHeight}px` }}>
+        <Card
+          ref={terminalCardRef}
+          className="flex flex-1 flex-col relative min-h-[20rem]"
+          style={termHeight === null ? undefined : { height: `${termHeight}px`, flex: '0 0 auto' }}
+        >
           {/* Drag handle */}
           <div
             className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize z-10 flex items-center justify-center group"
@@ -777,13 +784,13 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
               e.preventDefault();
               resizing.current = true;
               startY.current = e.clientY;
-              startH.current = termHeight;
+              startH.current = termHeight ?? terminalCardRef.current?.getBoundingClientRect().height ?? 380;
               document.body.style.cursor = 'ns-resize';
               document.body.style.userSelect = 'none';
               const onMove = (ev: MouseEvent) => {
                 if (!resizing.current) return;
                 const delta = ev.clientY - startY.current;
-                const newH = Math.max(160, Math.min(800, startH.current + delta));
+                const newH = Math.max(240, Math.min(1200, startH.current + delta));
                 setTermHeight(newH);
               };
               const onUp = () => {
@@ -796,6 +803,8 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
               document.addEventListener('mousemove', onMove);
               document.addEventListener('mouseup', onUp);
             }}
+            onDoubleClick={() => setTermHeight(null)}
+            title="Drag to resize; double-click to fit the window"
           >
             <div className="w-10 h-0.5 rounded-full bg-muted-foreground/30 group-hover:bg-muted-foreground/60 transition-colors" />
           </div>

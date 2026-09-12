@@ -1342,6 +1342,7 @@ echo "${marker}INITIAL|$INITIAL"
 ROOTS=("$CASE/system" "$CASE/constant")
 [ -n "$INITIAL" ] && ROOTS+=("$CASE/$INITIAL")
 TOTAL=$(find "\${ROOTS[@]}" \
+  -path "$CASE/${WIZARD_MARKER_PATH}" -prune -o \
   -path '*/polyMesh/*' -prune -o \
   -path '*/geometry/*' -prune -o \
   \\( -type f -o -type l \\) -printf '.' 2>/dev/null | wc -c)
@@ -1371,6 +1372,7 @@ while IFS= read -r -d '' f; do
   echo
   echo "${marker}END"
 done < <(find "\${ROOTS[@]}" \
+  -path "$CASE/${WIZARD_MARKER_PATH}" -prune -o \
   -path '*/polyMesh/*' -prune -o \
   -path '*/geometry/*' -prune -o \
   \\( -type f -o -type l \\) -print0 2>/dev/null | sort -z)
