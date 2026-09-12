@@ -14,15 +14,20 @@ audits.
   tree cap and the 32rem minimum that pushed the page are gone.
 - Case preflight is launched from a green box in the tree's toolbar, beside
   Clean TS (with a ✓ or error count after a run). Its results always open in a
-  section below; while open it takes the larger share of the height (tree and
-  file keep a 12rem floor, the results 8rem) and scrolls inside. An unsaved
-  buffer opens the section with the "save first" note instead of running.
+  compact section below, capped at min(34%, 17rem) and scrolling inside; tree
+  and file keep the rest (12rem floor). At the user's request the section has
+  Hide (folds to a one-line bar with the summary) and Close; the green box and
+  Show bring the same report back without re-running, and only "Run again"
+  checks again. An unsaved buffer opens the section with the "save first" note
+  instead of running.
 - The work row is measured: below 440 px the new-file/folder inputs fold behind
   a + button and the line-count footer hides; below `xl` the file header shows
   icon-only Rename, Undo and Wrap.
 - Checked in the dev server on `test` at 1024×768, 900×520 and 1600×1000, with
-  and without results: no page overflow; tree list and text scroll alone (at
-  900×520 with results: tree 132 px, text 145 px, results body 82 px).
+  and without results: no page overflow; tree list and text scroll alone. With
+  results at 1024×768 the section is 198 px and the text 324 px; hidden, a
+  38 px bar; at 1600×1000 the cap holds at 272 px. Hide, Show, Close and the
+  green box made no further preflight request.
 
 ## 2026-09-12 — larger initial workspaces and wizard-marker exclusion
 

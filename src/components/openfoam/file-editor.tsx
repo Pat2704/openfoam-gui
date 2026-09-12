@@ -908,11 +908,11 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      {/* With the preflight results open the two share the height: the results
-          take the larger part, the tree and the file keep a floor of their own. */}
+      {/* The tree and the file keep the space; the preflight results below are
+          capped to a modest share of it, and fold to one line when hidden. */}
       <div
         ref={workRowRef}
-        className={`flex min-h-0 gap-3 ${preflight.open ? 'min-h-[12rem] basis-[42%] flex-shrink' : 'flex-1'}`}
+        className={`flex flex-1 gap-3 ${preflight.open ? 'min-h-[12rem]' : 'min-h-0'}`}
       >
       {/* ═══ File Tree Sidebar ═══ */}
       <Card className="w-60 xl:w-72 flex-shrink-0 flex flex-col min-h-0 gap-0 py-0 overflow-hidden">
@@ -1359,11 +1359,10 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       </div>
 
       {/* Results always open in their own section below, never in place of
-          the trigger; they scroll inside the height left to them. */}
+          the trigger; they scroll inside their capped height. */}
       {preflight.open && (
         <CasePreflightResults
           preflight={preflight}
-          className="min-h-[8rem] flex-1"
           onOpenFile={(filePath) => { void loadFile(filePath); }}
         />
       )}
