@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiError } from '@/lib/api-response';
+import { createReadStream, promises as fs } from 'fs';
+import { Readable } from 'stream';
 import {
   abortParaViewStartup,
+  cancelParaViewVideoExport,
+  getParaViewVideoFile,
+  getParaViewVideoJob,
+  saveParaViewVideoInCase,
+  startParaViewVideoExport,
   findParaView,
   getParaViewSession,
   getParaViewStartup,
@@ -13,6 +20,7 @@ import {
   stopParaViewSession,
   warmParaView,
 } from '@/lib/paraview';
+import type { VideoRequest } from '@/lib/paraview-video';
 import { createParaFoamMarker } from '@/lib/wsl';
 import { boundedInteger, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 
@@ -71,10 +79,54 @@ export async function GET(req: NextRequest) {
       const quality = boundedInteger(url.searchParams.get('quality'), 92, 35, 95);
       return renderResponse(await readParaViewRender(width, height, quality));
     }
+    if (action === 'video_status') {
+      return NextResponse.json({ job: getParaViewVideoJob() }, { headers: { 'Cache-Control': 'no-store' } });
+    }
+    if (action === 'video_download') {
+      const video = getParaViewVideoFile();
+      if (!video) return NextResponse.json({ error: 'There is no finished video to download.' }, { status: 404 });
+      const stat = await fs.stat(video.file);
+      const stream = Readable.toWeb(createReadStream(video.file)) as ReadableStream;
+      return new NextResponse(stream, {
+        headers: {
+          'Content-Type': video.format === 'mp4' ? 'video/mp4' : 'video/ogg',
+          'Content-Length': String(stat.size),
+          'Content-Disposition': `attachment; filename="${video.fileName}"`,
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
     return NextResponse.json({ error: 'Unknown ParaView action.' }, { status: 400 });
   } catch (error) {
     return apiError(error);
   }
+}
+
+/** The shape of a video request; values are validated by buildVideoPlan and again by the worker. */
+function videoRequest(value: unknown): VideoRequest {
+  const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const timing = body.timing && typeof body.timing === 'object' ? body.timing as Record<string, unknown> : {};
+  const segments = Array.isArray(body.segments) ? body.segments.slice(0, 31) : [];
+  if (JSON.stringify(segments).length > 2_000_000) throw new Error('The video timeline is too large.');
+  return {
+    start: Number(body.start),
+    segments: segments.map(item => {
+      const segment = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      return {
+        until: Number(segment.until),
+        transition: String(segment.transition) as VideoRequest['segments'][number]['transition'],
+        view: segment.view && typeof segment.view === 'object' && !Array.isArray(segment.view) ? segment.view as Record<string, unknown> : {},
+      };
+    }),
+    timing: timing.mode === 'realTime'
+      ? { mode: 'realTime', videoSecondsPerSimSecond: Number(timing.videoSecondsPerSimSecond) }
+      : { mode: 'perStep', secondsPerStep: Number(timing.secondsPerStep) },
+    interpolate: body.interpolate === true,
+    fps: Number(body.fps),
+    resolution: String(body.resolution) as VideoRequest['resolution'],
+    format: String(body.format) as VideoRequest['format'],
+    colorRange: String(body.colorRange) as VideoRequest['colorRange'],
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -114,6 +166,7 @@ export async function POST(req: NextRequest) {
       const allowed = new Set([
         'state', 'select', 'set_visibility', 'add_filter', 'delete', 'update', 'update_reader',
         'update_view', 'set_manipulator', 'list_case_files', 'open_case_file', 'time', 'refresh',
+        'capture_view', 'apply_view',
       ]);
       if (!allowed.has(command)) {
         return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
@@ -126,6 +179,16 @@ export async function POST(req: NextRequest) {
       }
       const result = await sendParaViewCommand(command, data);
       return NextResponse.json(result);
+    }
+
+    if (action === 'video_export') {
+      return NextResponse.json({ job: await startParaViewVideoExport(videoRequest(body.request)) });
+    }
+    if (action === 'video_cancel') {
+      return NextResponse.json({ job: await cancelParaViewVideoExport() });
+    }
+    if (action === 'video_save_case') {
+      return NextResponse.json({ job: await saveParaViewVideoInCase() });
     }
 
     if (action === 'camera') {

@@ -12,12 +12,14 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
+import type { ParaViewViewSnapshot } from '@/lib/paraview-video';
+import ParaViewVideoPanel from './paraview-video-panel';
 import type {
   ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewStartupStage, ParaViewWorkbenchState,
 } from '@/lib/paraview';
 import {
   AlertTriangle, ArrowUpRight, Box, Calculator, ChevronLeft, ChevronRight, CircleDot,
-  Download, Eye, EyeOff, FileBox, Filter, FolderOpen, GitFork, Grid3X3, Info, Layers3, Loader2,
+  Download, Eye, EyeOff, FileBox, Film, Filter, FolderOpen, GitFork, Grid3X3, Info, Layers3, Loader2,
   Maximize2, MousePointer2, Move3D, Network, Pause, Play, Power, RefreshCw,
   Rotate3D, Scissors, Search, Settings, SlidersHorizontal, Sparkles,
   SquareDashedMousePointer, Trash2, Waves,
@@ -247,6 +249,8 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [fileSearch, setFileSearch] = useState('');
   const [selectedFile, setSelectedFile] = useState('');
   const [filesLoading, setFilesLoading] = useState(false);
+  /** A video export owns the ParaView process: the workbench is locked meanwhile. */
+  const [exporting, setExporting] = useState(false);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef('');
@@ -819,6 +823,21 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     return depth;
   };
 
+  const applyTimelineView = useCallback(async (view: ParaViewViewSnapshot) => {
+    await command('apply_view', { view });
+  }, [command]);
+
+  const exportingChange = useCallback((value: boolean) => {
+    setExporting(value);
+    setBusy(value);
+    if (value) setPlaying(false);
+  }, []);
+
+  // The worker restores the view it had before the export; show that.
+  const videoFinished = useCallback(() => {
+    void command('state', {}, { quiet: true });
+  }, [command]);
+
   const downloadScreenshot = () => {
     if (!imageUrl) return;
     const link = document.createElement('a');
@@ -1013,6 +1032,9 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             <div className="pointer-events-none absolute left-2 top-2 flex gap-1"><Badge className="bg-black/45 text-[9px] text-white hover:bg-black/45">{workbench.reader.caseType}</Badge>{!workbench.reader.hasTimeSteps && <Badge className="bg-amber-500/80 text-[9px] text-black hover:bg-amber-500/80">mesh only · time 0</Badge>}</div>
             {cameraBusy && <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/45 p-1.5"><Rotate3D className="h-4 w-4 animate-pulse text-white" /></div>}
           </div>
+          {exporting && <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 p-6 text-center text-xs text-white">
+            <div><Film className="mx-auto mb-2 h-8 w-8 animate-pulse text-cyan-300" /><p className="font-medium">Exporting video…</p><p className="mt-1 max-w-xs text-white/70">ParaView is rendering the frames, so the workbench is locked until the export ends. Follow or cancel it in the Video tab.</p></div>
+          </div>}
         </main>
 
         <aside className="min-h-0 border-l bg-muted/10">
@@ -1020,6 +1042,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             <TabsList className="h-9 w-full flex-shrink-0 rounded-none border-b bg-transparent p-0">
               <TabsTrigger value="properties" className="h-8 flex-1 rounded-none text-[10px]"><SlidersHorizontal className="h-3 w-3" /> Properties</TabsTrigger>
               <TabsTrigger value="information" className="h-8 flex-1 rounded-none text-[10px]"><Info className="h-3 w-3" /> Information</TabsTrigger>
+              <TabsTrigger value="video" className="h-8 flex-1 rounded-none text-[10px]"><Film className="h-3 w-3" /> Video</TabsTrigger>
             </TabsList>
 
             <TabsContent value="properties" className="mt-0 min-h-0 flex-1"><ScrollArea className="h-full">{selected && <div className="space-y-4 p-3 text-xs">
@@ -1128,6 +1151,19 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
               </section>
               <section className="space-y-2 border-t pt-3"><div className="flex items-center justify-between"><p className="font-semibold">Data arrays</p><Badge variant="outline" className="text-[9px]">{workbench.arrays.length}</Badge></div>{workbench.arrays.length === 0 ? <p className="text-[10px] text-muted-foreground">No result arrays at this pipeline output. Mesh-only representations remain available.</p> : workbench.arrays.map(array => <div key={`${array.association}:${array.name}`} className="rounded border bg-background/60 p-2"><div className="flex items-center justify-between gap-2"><span className="font-mono font-medium">{array.name}</span><Badge variant="secondary" className="text-[8px]">{array.association}</Badge></div><div className="mt-1 flex justify-between text-[9px] text-muted-foreground"><span>{array.components} component{array.components === 1 ? '' : 's'}</span><span className="font-mono">{array.range[0].toPrecision(4)} → {array.range[1].toPrecision(4)}</span></div></div>)}</section>
             </div></ScrollArea></TabsContent>
+
+            {/* forceMount keeps the timeline (and a running export's progress) when switching tabs. */}
+            <TabsContent value="video" forceMount className="mt-0 min-h-0 flex-1 data-[state=inactive]:hidden"><ScrollArea className="h-full">
+              <ParaViewVideoPanel
+                key={workbench.caseName}
+                workbench={workbench}
+                imageUrl={imageUrl}
+                locked={busy && !exporting}
+                onApplyView={applyTimelineView}
+                onExportingChange={exportingChange}
+                onFinished={videoFinished}
+              />
+            </ScrollArea></TabsContent>
           </Tabs>
         </aside>
       </div>

@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_proc
 import { promises as fs, type Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { buildVideoPlan, videoFileName, type VideoFormat, type VideoRequest } from './paraview-video';
 
 export interface ParaViewInstallation {
   found: boolean;
@@ -487,6 +488,8 @@ export interface ParaViewWorkbenchState {
   availableFilters: ParaViewNodeType[];
   reader: ParaViewReaderState;
   view: ParaViewViewState;
+  /** Movie writers this ParaView build has ('mp4' through Media Foundation on Windows). */
+  videoFormats?: VideoFormat[];
 }
 
 // A persistent pvpython process owns the ParaView pipeline. The browser can
@@ -751,6 +754,7 @@ def state():
         'bounds': bounds_for(active), 'presets': available_presets,
         'availableFilters': filter_capabilities(),
         'reader': reader_metadata(), 'view': view_metadata(),
+        'videoFormats': supported_video_formats,
     }
 
 def apply_display(node):
@@ -1500,6 +1504,303 @@ def standard_view(direction):
     cam.SetViewUp(*up)
     ResetCamera(view)
 
+# ── Video export ──
+# A view snapshot is what the timeline stores: the camera and, for every
+# pipeline item, what the Display section controls. Snapshots come back from the
+# browser, so they are validated again (prepare_snapshot) before use, against
+# the same allowlists the live commands use.
+
+VIDEO_SIZES = ((854, 480), (1280, 720), (1920, 1080), (3840, 2160))
+VIDEO_FPS = (12, 24, 25, 30, 60)
+VIDEO_MAX_FRAMES = 18000
+REPRESENTATIONS = ('Surface', 'Surface With Edges', 'Wireframe', 'Points', 'Outline')
+
+def video_formats():
+    formats = []
+    try:
+        from vtkmodules.vtkIOMovie import vtkMP4Writer
+        formats.append('mp4')
+    except Exception:
+        pass
+    try:
+        from vtkmodules.vtkIOOggTheora import vtkOggTheoraWriter
+        formats.append('ogv')
+    except Exception:
+        pass
+    return formats
+
+def lut_range(name):
+    try:
+        points = list(GetColorTransferFunction(name).RGBPoints)
+        if len(points) >= 8: return [clean_number(points[0]), clean_number(points[-4])]
+    except Exception:
+        pass
+    return None
+
+def capture_view():
+    cam = view.GetActiveCamera()
+    snapshot_nodes = {}
+    for identifier, node in nodes.items():
+        color = dict(node['color'])
+        color['range'] = lut_range(color['name']) if color['association'] in ('CELLS', 'POINTS') and color['name'] else None
+        snapshot_nodes[identifier] = {
+            'label': node['label'], 'visible': node['visible'], 'representation': node['representation'],
+            'opacity': node['opacity'], 'color': color,
+        }
+    return {
+        'time': current_time,
+        'camera': {
+            'position': list(cam.GetPosition()), 'focalPoint': list(cam.GetFocalPoint()),
+            'viewUp': list(cam.GetViewUp()), 'viewAngle': clean_number(cam.GetViewAngle(), 30.0),
+            'parallelScale': clean_number(cam.GetParallelScale(), 1.0),
+            'parallel': bool(property_value(view, 'CameraParallelProjection', False)),
+        },
+        'nodes': snapshot_nodes,
+        'view': {'background': background_name, 'orientationAxes': bool(property_value(view, 'OrientationAxesVisibility', True))},
+    }
+
+def prepare_snapshot(raw):
+    if not isinstance(raw, dict): raise RuntimeError('A timeline view is not a captured view.')
+    camera_raw = raw.get('camera') if isinstance(raw.get('camera'), dict) else {}
+    cam = view.GetActiveCamera()
+    camera = {
+        'position': vector(camera_raw.get('position'), list(cam.GetPosition())),
+        'focalPoint': vector(camera_raw.get('focalPoint'), list(cam.GetFocalPoint())),
+        'viewUp': vec_normalize(vector(camera_raw.get('viewUp'), list(cam.GetViewUp())), (0.0, 1.0, 0.0)),
+        'viewAngle': max(1.0, min(170.0, clean_number(camera_raw.get('viewAngle'), 30.0))),
+        'parallelScale': max(1e-12, clean_number(camera_raw.get('parallelScale'), 1.0)),
+        'parallel': bool(camera_raw.get('parallel')),
+    }
+    view_raw = raw.get('view') if isinstance(raw.get('view'), dict) else {}
+    background = str(view_raw.get('background', background_name))
+    prepared_nodes = {}
+    nodes_raw = raw.get('nodes') if isinstance(raw.get('nodes'), dict) else {}
+    for identifier, settings in nodes_raw.items():
+        if identifier not in nodes or not isinstance(settings, dict): continue
+        node = nodes[identifier]
+        representation = str(settings.get('representation', node['representation']))
+        if representation not in REPRESENTATIONS: raise RuntimeError('A timeline view uses an unsupported representation.')
+        color_raw = settings.get('color') if isinstance(settings.get('color'), dict) else {}
+        association = str(color_raw.get('association', 'SOLID'))
+        name = str(color_raw.get('name', ''))
+        if association not in ('SOLID', 'BLOCKS'):
+            if not any(a['association'] == association and a['name'] == name for a in arrays_for(node['proxy'])):
+                raise RuntimeError('A timeline view colours ' + node['label'] + ' by an array it no longer has.')
+        value_range = color_raw.get('range')
+        if isinstance(value_range, list) and len(value_range) == 2:
+            lo, hi = clean_number(value_range[0], 0.0), clean_number(value_range[1], 1.0)
+            value_range = [lo, hi] if hi > lo else None
+        else:
+            value_range = None
+        preset = str(color_raw.get('preset', node['color']['preset']))
+        prepared_nodes[identifier] = {
+            'visible': bool(settings.get('visible', node['visible'])),
+            'representation': representation,
+            'opacity': max(0.0, min(1.0, clean_number(settings.get('opacity'), node['opacity']))),
+            'color': {
+                'association': association, 'name': name if association not in ('SOLID', 'BLOCKS') else '',
+                'preset': preset if preset in available_presets else node['color']['preset'],
+                'legend': bool(color_raw.get('legend', False)), 'range': value_range,
+            },
+        }
+    return {
+        'camera': camera, 'nodes': prepared_nodes,
+        'background': background if background in BACKGROUNDS else background_name,
+        'orientationAxes': bool(view_raw.get('orientationAxes', True)),
+    }
+
+def set_camera(camera, previous=None, blend=1.0):
+    cam = view.GetActiveCamera()
+    if previous is not None and blend < 1.0:
+        mix = lambda a, b: [a[i] + (b[i] - a[i]) * blend for i in range(3)]
+        position = mix(previous['position'], camera['position'])
+        focal = mix(previous['focalPoint'], camera['focalPoint'])
+        up = vec_normalize(mix(previous['viewUp'], camera['viewUp']), camera['viewUp'])
+        angle = previous['viewAngle'] + (camera['viewAngle'] - previous['viewAngle']) * blend
+        scale = previous['parallelScale'] + (camera['parallelScale'] - previous['parallelScale']) * blend
+    else:
+        position, focal, up = camera['position'], camera['focalPoint'], camera['viewUp']
+        angle, scale = camera['viewAngle'], camera['parallelScale']
+    set_if_supported(view, 'CameraParallelProjection', 1 if camera['parallel'] else 0)
+    cam.SetPosition(*position); cam.SetFocalPoint(*focal); cam.SetViewUp(*up)
+    cam.SetViewAngle(angle); cam.SetParallelScale(scale)
+
+def apply_snapshot(snapshot, lock_ranges):
+    global background_name
+    # Legends belong to the colour maps being replaced: hide them first, or the
+    # previous view's bar stays on screen next to the new one.
+    for node in nodes.values():
+        try: node['display'].SetScalarBarVisibility(view, False)
+        except Exception: pass
+    background_name = snapshot['background']
+    set_if_supported(view, 'UseColorPaletteForBackground', 0)
+    view.Background = BACKGROUNDS[background_name]
+    set_if_supported(view, 'OrientationAxesVisibility', 1 if snapshot['orientationAxes'] else 0)
+    for identifier, settings in snapshot['nodes'].items():
+        node = nodes[identifier]
+        node['visible'] = settings['visible']
+        node['representation'] = settings['representation']
+        node['opacity'] = settings['opacity']
+        node['color'] = {key: settings['color'][key] for key in ('association', 'name', 'preset', 'legend')}
+        apply_display(node)
+        value_range = settings['color']['range']
+        if lock_ranges and value_range and node['color']['name']:
+            try:
+                lut = GetColorTransferFunction(node['color']['name'])
+                set_if_supported(lut, 'AutomaticRescaleRangeMode', 'Never')
+                lut.RescaleTransferFunction(value_range[0], value_range[1])
+            except Exception:
+                pass
+    set_camera(snapshot['camera'])
+
+def rescale_to_frame():
+    for node in nodes.values():
+        if node['visible'] and node['color']['association'] in ('CELLS', 'POINTS') and node['color']['name']:
+            try: node['display'].RescaleTransferFunctionToDataRange(False, True)
+            except Exception: pass
+
+def make_video_writer(fmt, filename, fps, width, height):
+    if fmt == 'mp4':
+        from vtkmodules.vtkIOMovie import vtkMP4Writer
+        writer = vtkMP4Writer()
+        # Roughly 0.1 bit per pixel per frame: sharp edges on CFD colour maps
+        # without multi-gigabyte files.
+        try: writer.SetBitRate(int(max(2000000, min(60000000, width * height * fps * 0.1))))
+        except Exception: pass
+    else:
+        from vtkmodules.vtkIOOggTheora import vtkOggTheoraWriter
+        writer = vtkOggTheoraWriter()
+        try: writer.SetQuality(2)
+        except Exception: pass
+    writer.SetFileName(filename)
+    writer.SetRate(int(fps))
+    return writer
+
+def emit_progress(frame, total):
+    sys.stdout.write(PREFIX + json.dumps({'id': -2, 'progress': {'frame': frame, 'total': total}}) + '\n')
+    sys.stdout.flush()
+
+def export_video(identifier, data):
+    global selected_id
+    fmt = str(data.get('format', 'mp4'))
+    if fmt not in video_formats(): raise RuntimeError('This ParaView build cannot write ' + fmt.upper() + ' videos.')
+    width, height, fps = int(clean_number(data.get('width'))), int(clean_number(data.get('height'))), int(clean_number(data.get('fps')))
+    if (width, height) not in VIDEO_SIZES: raise RuntimeError('Unsupported video resolution.')
+    if fps not in VIDEO_FPS: raise RuntimeError('Unsupported frame rate.')
+    raw_segments = data.get('segments') if isinstance(data.get('segments'), list) else []
+    if not raw_segments or len(raw_segments) > 30: raise RuntimeError('The timeline needs between 1 and 30 views.')
+    segments = [prepare_snapshot(item) for item in raw_segments]
+    raw_frames = data.get('frames') if isinstance(data.get('frames'), list) else []
+    if not raw_frames or len(raw_frames) > VIDEO_MAX_FRAMES: raise RuntimeError('The video has no frames or too many.')
+    lo, hi = min(times), max(times)
+    frames = []
+    for item in raw_frames:
+        if not isinstance(item, list) or len(item) != 3: raise RuntimeError('Malformed video frame.')
+        segment = int(clean_number(item[1], -1))
+        if segment < 0 or segment >= len(segments): raise RuntimeError('A video frame refers to a view that does not exist.')
+        frames.append((max(lo, min(hi, clean_number(item[0], lo))), segment, max(0.0, min(1.0, clean_number(item[2], 1.0)))))
+    lock_ranges = data.get('colorRange') != 'perFrame'
+    interpolate = bool(data.get('interpolate'))
+
+    filename = os.path.join(output_dir, 'video_' + str(identifier) + '.' + fmt)
+    cancel_path = os.path.join(output_dir, 'cancel-video')
+    try: os.remove(cancel_path)
+    except Exception: pass
+
+    original = prepare_snapshot(capture_view())
+    original_time = current_time
+    original_size = list(view.ViewSize)
+    original_selected = selected_id
+    reader_node = nodes['reader']
+    reader_display = reader_node['display']
+    interpolator = None
+    interpolator_display = None
+    reparented = []
+    writer = None
+    written = 0
+    cancelled = False
+    hide_guides()
+    try:
+        if interpolate:
+            # Fields between saved steps come from ParaView's temporal
+            # interpolation, inserted under the reader for the export only.
+            interpolator = TemporalInterpolator(registrationName='Video temporal interpolation', Input=reader)
+            for node in nodes.values():
+                if node['parent'] == 'reader':
+                    node['proxy'].Input = interpolator
+                    reparented.append(node)
+            interpolator_display = Show(interpolator, view)
+            reader_display.Visibility = 0
+            reader_node['display'] = interpolator_display
+        view.ViewSize = [width, height]
+        # The frame is read back from the (offscreen) render window after each
+        # Render; the view proxy itself exposes no image capture in ParaView 6.
+        from vtkmodules.vtkRenderingCore import vtkWindowToImageFilter
+        grabber = vtkWindowToImageFilter()
+        grabber.SetInput(view.GetRenderWindow())
+        grabber.ReadFrontBufferOff()
+        grabber.ShouldRerenderOff()
+        current_segment = -1
+        last_emit = 0.0
+        import time as _time
+        for index, (frame_time, segment, blend) in enumerate(frames):
+            if index % 4 == 0 and os.path.exists(cancel_path):
+                cancelled = True
+                break
+            if segment != current_segment:
+                apply_snapshot(segments[segment], lock_ranges)
+                current_segment = segment
+            previous = segments[segment - 1]['camera'] if segment > 0 else None
+            set_camera(segments[segment]['camera'], previous, blend)
+            scene.AnimationTime = frame_time
+            view.ViewTime = frame_time
+            if not lock_ranges:
+                for node in nodes.values(): node['proxy'].UpdatePipeline(time=frame_time)
+                rescale_to_frame()
+            Render(view)
+            grabber.Modified()
+            grabber.Update()
+            if writer is None:
+                writer = make_video_writer(fmt, filename, fps, width, height)
+                writer.SetInputConnection(grabber.GetOutputPort())
+                writer.Start()
+            writer.Write()
+            written += 1
+            now = _time.time()
+            if now - last_emit > 0.4 or written == len(frames):
+                emit_progress(written, len(frames))
+                last_emit = now
+    finally:
+        if writer is not None:
+            try: writer.End()
+            except Exception: pass
+        if interpolator is not None:
+            for node in reparented:
+                try: node['proxy'].Input = reader
+                except Exception: pass
+            reader_node['display'] = reader_display
+            try: Delete(interpolator_display)
+            except Exception: pass
+            try: Delete(interpolator)
+            except Exception: pass
+        for node in nodes.values():
+            try:
+                lut = GetColorTransferFunction(node['color']['name']) if node['color']['name'] else None
+                if lut is not None: set_if_supported(lut, 'AutomaticRescaleRangeMode', 'Grow and update on Apply')
+            except Exception:
+                pass
+        view.ViewSize = original_size
+        apply_snapshot(original, False)
+        selected_id = original_selected if original_selected in nodes else 'reader'
+        set_time(original_time)
+        try: os.remove(cancel_path)
+        except Exception: pass
+    if cancelled or written == 0:
+        try: os.remove(filename)
+        except Exception: pass
+        return {'cancelled': True, 'frames': written}
+    return {'video': filename, 'frames': written, 'format': fmt}
+
 stage('reading')
 reader = OpenFOAMReader(registrationName=os.path.basename(marker), FileName=marker)
 try: reader.SkipZeroTime = 0
@@ -1529,6 +1830,7 @@ view.ViewTime = current_time
 display = Show(reader, view)
 display.Representation = 'Surface'
 available_presets = [name for name in PRESETS if name in ListColorPresetNames()]
+supported_video_formats = video_formats()
 nodes['reader'] = {
     'proxy': reader, 'display': display, 'label': os.path.basename(marker),
     'type': 'OpenFOAMReader', 'parent': None, 'visible': True,
@@ -1591,6 +1893,12 @@ for line in sys.__stdin__:
             manipulate(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'render':
             emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
+        elif action == 'capture_view':
+            emit(identifier, True, {'view': capture_view()})
+        elif action == 'apply_view':
+            apply_snapshot(prepare_snapshot(data.get('view')), True); emit(identifier, True, {'state': state()})
+        elif action == 'export_video':
+            emit(identifier, True, {'video': export_video(identifier, data)})
         elif action == 'quit':
             emit(identifier, True, {}); break
         else: raise RuntimeError('Unsupported ParaView action.')
@@ -1605,7 +1913,13 @@ export interface ParaViewCaseFile {
   size: number;
 }
 
-type WorkerResult = { state?: ParaViewWorkbenchState; image?: string; files?: ParaViewCaseFile[] };
+type WorkerResult = {
+  state?: ParaViewWorkbenchState;
+  image?: string;
+  files?: ParaViewCaseFile[];
+  view?: Record<string, unknown>;
+  video?: { video?: string; frames?: number; format?: string; cancelled?: boolean };
+};
 type Pending = {
   resolve: (value: WorkerResult) => void;
   reject: (error: Error) => void;
@@ -1666,7 +1980,11 @@ class ParaViewWorker {
   readonly tempDir: string;
   readonly caseName: string;
   readonly pvpythonPath: string;
+  /** The case's .OpenFOAM marker, as a Windows path: its folder is the case. */
+  readonly markerPath: string;
   version: string;
+  /** Frames written so far by a running video export. */
+  onVideoProgress: (frame: number, total: number) => void = () => undefined;
   private buffer = '';
   private stderr = '';
   private nextId = 1;
@@ -1675,8 +1993,9 @@ class ParaViewWorker {
   private readyPromise: Promise<WorkerResult>;
   private onStage: (stage: ParaViewStartupStage) => void = () => undefined;
 
-  constructor(child: ChildProcessWithoutNullStreams, tempDir: string, caseName: string, pvpythonPath: string, version: string) {
+  constructor(child: ChildProcessWithoutNullStreams, tempDir: string, caseName: string, pvpythonPath: string, version: string, markerPath: string) {
     this.child = child;
+    this.markerPath = markerPath;
     this.tempDir = tempDir;
     this.caseName = caseName;
     this.pvpythonPath = pvpythonPath;
@@ -1738,7 +2057,12 @@ class ParaViewWorker {
       try {
         const message = JSON.parse(line.slice(marker + '__OFSTUDIO_JSON__'.length)) as {
           id: number; ok?: boolean; stage?: string; result?: WorkerResult; error?: string;
+          progress?: { frame?: number; total?: number };
         };
+        if (message.progress) {
+          this.onVideoProgress(Number(message.progress.frame) || 0, Number(message.progress.total) || 0);
+          continue;
+        }
         if (message.stage) {
           const stage = message.stage as ParaViewStartupStage;
           if (STARTUP_STAGES.includes(stage)) this.onStage(stage);
@@ -1833,7 +2157,7 @@ async function beginSession(
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
     });
     worker = new ParaViewWorker(
-      child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown'
+      child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown', markerPath,
     );
     pending.worker = worker;
     const ready = await worker.waitUntilReady(setStage);
@@ -1913,10 +2237,161 @@ export async function abortParaViewStartup(): Promise<boolean> {
 
 export async function sendParaViewCommand(action: string, data: Record<string, unknown> = {}): Promise<WorkerResult> {
   if (!activeWorker) throw new Error('Start a ParaView session first.');
+  assertNoVideoExport();
   return activeWorker.request(action, data);
 }
 
+// ── Video export ──
+//
+// The export runs inside the session's own pvpython, so the video shows exactly
+// the pipeline on screen. That process answers one request at a time, so while
+// it renders frames the workbench is locked (assertNoVideoExport) and follows
+// the job through getParaViewVideoJob; cancelling drops a file the worker
+// checks between frames, because its stdin is not read until the export ends.
+
+export type ParaViewVideoStatus = 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface ParaViewVideoJob {
+  id: number;
+  caseName: string;
+  status: ParaViewVideoStatus;
+  frame: number;
+  total: number;
+  /** Video duration in seconds. */
+  seconds: number;
+  format: VideoFormat;
+  fileName: string;
+  startedAt: number;
+  finishedAt: number | null;
+  bytes: number | null;
+  error: string | null;
+  /** Where "Save in the case" put it, relative to the case. */
+  savedInCase: string | null;
+}
+
+type InternalVideoJob = ParaViewVideoJob & { file: string | null; worker: ParaViewWorker };
+
+let videoJob: InternalVideoJob | null = null;
+let nextVideoJobId = 1;
+
+function publicJob(job: InternalVideoJob | null): ParaViewVideoJob | null {
+  if (!job) return null;
+  const { file: _file, worker: _worker, ...rest } = job;
+  return rest;
+}
+
+function assertNoVideoExport(): void {
+  if (videoJob?.status === 'running' && videoJob.worker === activeWorker) {
+    throw new Error('A video export is running. Wait for it to finish or cancel it.');
+  }
+}
+
+export function getParaViewVideoJob(): ParaViewVideoJob | null {
+  return publicJob(videoJob);
+}
+
+export async function startParaViewVideoExport(request: VideoRequest): Promise<ParaViewVideoJob> {
+  const worker = activeWorker;
+  if (!worker) throw new Error('Start a ParaView session first.');
+  assertNoVideoExport();
+  const current = await worker.request('state');
+  const plan = buildVideoPlan(current.state?.times || [], request);
+  if (!(current.state?.videoFormats || []).includes(request.format)) {
+    throw new Error(`This ParaView build cannot write ${request.format.toUpperCase()} videos.`);
+  }
+  // Only the latest video is kept; it lives in the session's temporary folder.
+  if (videoJob?.file) await fs.rm(videoJob.file, { force: true }).catch(() => undefined);
+
+  const job: InternalVideoJob = {
+    id: nextVideoJobId++,
+    caseName: worker.caseName,
+    status: 'running',
+    frame: 0,
+    total: plan.frames.length,
+    seconds: plan.seconds,
+    format: request.format,
+    fileName: videoFileName(worker.caseName, request.format),
+    startedAt: Date.now(),
+    finishedAt: null,
+    bytes: null,
+    error: null,
+    savedInCase: null,
+    file: null,
+    worker,
+  };
+  videoJob = job;
+  worker.onVideoProgress = (frame, total) => {
+    if (videoJob === job) { job.frame = frame; job.total = total || job.total; }
+  };
+  // A frame of a large case can take seconds; the ceiling only catches a hang.
+  const timeout = Math.min(12 * 3_600_000, COMMAND_TIMEOUT_MS + plan.frames.length * 20_000);
+  void worker.request('export_video', {
+    format: request.format,
+    width: plan.width,
+    height: plan.height,
+    fps: request.fps,
+    interpolate: request.interpolate,
+    colorRange: request.colorRange,
+    segments: request.segments.map(segment => segment.view),
+    frames: plan.frames.map(frame => [frame.time, frame.segment, frame.blend]),
+  }, timeout).then(async result => {
+    if (videoJob !== job) return;
+    const video = result.video || {};
+    job.finishedAt = Date.now();
+    job.frame = Number(video.frames) || job.frame;
+    if (video.cancelled || !video.video) {
+      job.status = 'cancelled';
+      return;
+    }
+    job.file = video.video;
+    job.bytes = (await fs.stat(video.video).catch(() => null))?.size ?? null;
+    job.status = 'done';
+  }, error => {
+    if (videoJob !== job) return;
+    job.finishedAt = Date.now();
+    job.status = 'failed';
+    job.error = error instanceof Error ? error.message : String(error);
+  }).finally(() => {
+    worker.onVideoProgress = () => undefined;
+  });
+  return publicJob(job)!;
+}
+
+export async function cancelParaViewVideoExport(): Promise<ParaViewVideoJob | null> {
+  if (videoJob?.status === 'running') {
+    await fs.writeFile(path.join(videoJob.worker.tempDir, 'cancel-video'), '').catch(() => undefined);
+  }
+  return publicJob(videoJob);
+}
+
+/** The finished video file, for download. */
+export function getParaViewVideoFile(): { file: string; fileName: string; format: VideoFormat } | null {
+  if (videoJob?.status !== 'done' || !videoJob.file) return null;
+  return { file: videoJob.file, fileName: videoJob.fileName, format: videoJob.format };
+}
+
+/**
+ * Copy the finished video into <case>/postProcessing/videos. The case folder
+ * is the marker's folder: the same WSL path the session reads.
+ */
+export async function saveParaViewVideoInCase(): Promise<ParaViewVideoJob> {
+  const job = videoJob;
+  if (!job || job.status !== 'done' || !job.file) throw new Error('There is no finished video to save.');
+  const targetDir = path.join(path.dirname(job.worker.markerPath), 'postProcessing', 'videos');
+  await fs.mkdir(targetDir, { recursive: true });
+  const extension = path.extname(job.fileName);
+  const stem = job.fileName.slice(0, -extension.length);
+  let name = job.fileName;
+  for (let n = 2; await fs.stat(path.join(targetDir, name)).then(() => true, () => false); n += 1) {
+    name = `${stem}-${n}${extension}`;
+  }
+  await fs.copyFile(job.file, path.join(targetDir, name));
+  job.savedInCase = `postProcessing/videos/${name}`;
+  return publicJob(job)!;
+}
+
 export async function readParaViewRender(width: number, height: number, quality = 92): Promise<Buffer> {
+  assertNoVideoExport();
   const result = await sendParaViewCommand('render', { width, height, quality });
   if (!result.image) throw new Error('ParaView did not return a rendered image.');
   try {
@@ -1928,6 +2403,7 @@ export async function readParaViewRender(width: number, height: number, quality 
 
 export async function sendParaViewCameraCommand(data: Record<string, unknown>): Promise<Buffer> {
   if (!activeWorker) throw new Error('Start a ParaView session first.');
+  assertNoVideoExport();
   const result = await activeWorker.request(
     String(data.action || 'camera'),
     Object.fromEntries(Object.entries(data).filter(([key]) => key !== 'action')),

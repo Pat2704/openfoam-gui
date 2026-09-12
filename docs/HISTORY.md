@@ -6,6 +6,41 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-12 — ParaView: video export with a timeline of views
+
+- At the user's request the ParaView workbench has a **Video** tab. The user
+  sets a view in the viewport and adds it "until" a saved time step, changes
+  the view and adds the next, as often as wanted; each entry keeps a thumbnail
+  and can be shown again, replaced with the current view or removed, with a cut
+  or a smooth one-second camera move into it. Pace: every saved step lasts N s
+  (slow motion whatever the spacing) or 1 simulated second = N s of video;
+  optionally fields are interpolated between steps (ParaView's
+  TemporalInterpolator, inserted under the reader for the export only).
+  Output 480p–4K, 12–60 fps, colour range fixed as captured or rescaled per
+  frame; a live estimate of frames and duration, capped at 18,000 frames.
+- The frame plan is pure and tested (`src/lib/paraview-video.ts`); the session's
+  own pvpython renders it (`capture_view`, `apply_view`, `export_video` in the
+  worker; snapshots are re-validated there). MP4 uses VTK's Media Foundation
+  writer that the Windows ParaView ships (no FFMPEG); OGV (Theora) is the
+  fallback; `videoFormats` in the state reports what the build has. The
+  process answers one request at a time, so while exporting the API refuses
+  other workbench commands ("A video export is running…"), the viewport shows
+  a lock overlay, progress arrives as protocol lines and Cancel drops a file
+  the worker checks between frames. Afterwards the original view, time and
+  size are restored. The latest video stays in the session's temp folder and
+  can be downloaded (Save as…) or copied to `postProcessing/videos` in the case.
+- Verified on a disposable cavity run (v14, ParaView 6.2.0), in the dev server:
+  two views (U until 5 s, then p zoomed and rotated with a smooth move) at
+  0.8 s per simulated second with interpolation gave 183 frames, 7.6 s, 876 KB
+  in 5.4 s; frames decoded in the page show one legend per view and the camera
+  mid-move. A 1,200-frame 1080p export ran at about 39 frames/s, blocked
+  commands with the message above and cancelled at 716 frames with the view
+  restored; a 160-frame export was saved into the case (valid ISO MP4); OGV
+  with per-frame colour and no interpolation gave 58 frames. 342 tests (11 new
+  for the plan), typecheck and lint pass. The case was removed.
+- Found, not changed: after recolouring, the live workbench keeps the previous
+  array's legend on screen beside the new one (the export hides it).
+
 ## 2026-09-12 — v5.5.0: File Editor fits the window; preflight beside Clean TS
 
 - Released `v5.5.0` at the user's request with notes in
@@ -182,60 +217,16 @@ audits.
 
 ## 2026-09-10 — New Case wizard: "Update case" and guided snappyHexMesh
 
-- **Update case.** A case the wizard creates carries `system/studioWizard.json`
-  with the settings and the SHA-256 of every file written. The user decided:
-  a file in the case (it follows rename and clone, and a clone stays
-  updatable), and an update only *proposes* re-meshing. The case reopens from
-  the Dashboard's wand button (shown only on cases with the record), from the
-  wizard's first step, or straight after Create, where the wizard now stays.
-  "Review the update" compares recorded, on-disk and new hashes
-  (`planUpdate`/`resolvePlan`, `src/lib/wizard-state.ts`). Untouched files are
-  rewritten and obsolete ones removed. A file edited, deleted or already
-  present outside the wizard is listed with Compare and "keep" preselected. A
-  kept file keeps its old recorded hash, so the next update asks again. A
-  changed mesh input marks the mesh stale and offers the mesh steps.
-- **Guided snappyHexMesh, 13 and 14 only.** An explicit Mesh-step option (the
-  default stays blockMesh only), offered when `foamEtcFile` finds the
-  snappyHexMeshDict, surfaceFeaturesDict and meshQualityDict .cfg files
-  (`/api/wsl?action=snappySupport`); otherwise it is disabled with "Available
-  on OpenFOAM 13 and 14 only; …". STL (ASCII or binary) or OBJ, optionally .gz,
-  is read in the browser (`src/lib/geometry.ts`: bounding box, regions, a
-  three-ray parity test for insidePoint) and uploaded unchanged to
-  `constant/geometry` by a new binary route (`/api/cases/[name]/geometry`:
-  100 MB, shared validators, realpath check against symlink escape, SHA-256
-  compared). The dictionaries (`src/lib/snappy-templates.ts`) `#includeEtc`
-  the .cfg and write only the user's choices: levels, feature level,
-  refinement box, `insidePoint`, layers on/off. `system/meshQualityDict` is
-  written because the snappy .cfg includes it from the case. Each surface's
-  patches get `inGroups (<name>Group)`, and 0/ carries one wall entry for the
-  group. Box, insidePoint and refinement box are proposed from the bounding
-  box. On request the wizard runs blockMesh → surfaceFeatures → snappyHexMesh →
-  checkMesh (streamed, `log.<app>` kept) and opens the Mesh tab, which then
-  loads without a click.
-- `proxyClientMaxBodySize` is 101 MB: proxy.ts buffers every /api body and
-  silently truncates it past 10 MB. The upload route also checks
-  Content-Length.
-- Fixed in passing: `listCasesBatch` ran its variable-bearing script inline
-  through `wsl.exe` and printed no case line, so the Dashboard always showed the
-  bare fallback (no file counts, time steps or logs). It now uses the base64
-  runner. The wizard also re-reads version, BC list and snappy support on
-  `foam-version-changed`.
-- Verified: 266 tests (45 new; one pre-existing skip), typecheck, lint. On v14,
-  `snappy_test` was created in the dev server with motorBike.obj.gz (331,653
-  triangles, 67 regions). Its mesh run gave 64,792 cells; checkMesh reported
-  "Failed 1 mesh checks" (3 faces, skewness 10.3), shown as a warning. BC
-  validation resolved the 66 body patches through motorBikeGroup, the Mesh tab
-  loaded 33,590 triangles and 69 patches, and foamRun ran 3 iterations.
-  Updates were checked in the same case. endTime rewrote only controlDict. A
-  hand edit to controlDict was a conflict: "keep" left it alone and the next
-  review asked again, and "use the wizard's" replaced it. kEpsilon plus level 4
-  created epsilon, removed omega, rewrote momentumTransport and
-  snappyHexMeshDict, and marked the mesh stale. A clone carried the record. The
-  same dictionaries meshed on v13 (64,792 cells; 6 faces with skewness 4.6).
-  The "not available" message was checked by answering snappySupport as v12
-  in the page. All disposable cases were removed.
-- Pre-existing, left alone: switching kOmegaSST to kEpsilon keeps 0/omega in
-  the wizard's field list; the clone route answers `caseName: "OK: cloned"`.
+- **Update case**: a wizard case carries `system/studioWizard.json` (settings
+  plus the SHA-256 of every file written); "Review the update" compares
+  recorded, on-disk and new hashes (`src/lib/wizard-state.ts`), never rewrites
+  a file edited outside the wizard without asking, and only proposes
+  re-meshing.
+- **Guided snappyHexMesh** (13/14, when the .cfg files exist): STL/OBJ read in
+  the browser, uploaded by `/api/cases/[name]/geometry` (100 MB, realpath
+  checked), dictionaries that `#includeEtc` the .cfg. `proxyClientMaxBodySize`
+  is 101 MB because proxy.ts truncated bodies past 10 MB. `listCasesBatch` now
+  uses the base64 runner. Verified on motorBike (v14 and v13); details in Git.
 
 ## 2026-09-10 — v5.3.1: safer case workflows, Post-Process and ParaView
 
