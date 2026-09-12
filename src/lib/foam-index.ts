@@ -35,8 +35,9 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   foamSource, getOpenFOAMVersion, findBashrc, getOpenFOAMInstallationIdentity,
-  runInWslScriptAsync,
+  runInWslScriptAsync, runInWslScriptInputAsync,
 } from './wsl';
+import { shellQuote, validateRelativePath } from './wsl-input';
 
 const CACHE_PATH = path.join(os.homedir(), '.wslgui-foam-index.json');
 
@@ -710,7 +711,7 @@ echo "${MARK}end"
   let out = '';
   try {
     // 60 s for the batch: foamDictionary is ~0.2 s per file once WSL is warm.
-    out = await runInWslScriptAsync(Buffer.from(script).toString('base64'), 60000);
+    out = await runInWslScriptInputAsync(Buffer.from(script).toString('base64'), 60000);
   } catch {
     return [];   // the check could not run; never block the user on that
   }
@@ -741,6 +742,93 @@ echo "${MARK}end"
     problems.push({
       path: file.path,
       message: (quoted?.[1] || sentence || 'OpenFOAM could not parse this file').trim(),
+      line: atLine ? Number(atLine[1]) : null,
+    });
+  }
+  return problems;
+}
+
+/**
+ * Parse an existing case's dictionaries in a temporary tree that preserves
+ * their relative layout.
+ *
+ * `checkDictSyntax` intentionally treats proposed files independently. A real
+ * case is different: `system/controlDict` can include `system/functions`, and
+ * moving only the first file to /tmp would turn a valid include into a false
+ * syntax error. This variant writes the bounded text inventory below one
+ * random `mktemp` directory, points FOAM_CASE at it, checks only the requested
+ * files and removes the tree through a trap. It never copies mesh/results,
+ * creates a case in $FOAM_RUN or starts a solver.
+ */
+export async function checkCaseDictSyntax(
+  files: { path: string; content: string }[],
+  checkedPaths: string[],
+): Promise<SyntaxProblem[]> {
+  if (!files.length || !checkedPaths.length) return [];
+  if (files.length > 200) throw new Error('Too many files for one syntax check');
+  const safeFiles = files.map(file => ({
+    path: validateRelativePath(file.path, 'File path'),
+    content: file.content,
+  }));
+  const available = new Set(safeFiles.map(file => file.path));
+  const safeChecks = [...new Set(checkedPaths.map(file => validateRelativePath(file, 'File path')))]
+    .filter(file => available.has(file));
+  if (!safeChecks.length) return [];
+
+  const totalBytes = safeFiles.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0);
+  if (totalBytes > 24 * 1024 * 1024) throw new Error('The dictionary set is too large for one syntax check');
+
+  const writes = safeFiles.map(file => {
+    const encoded = Buffer.from(file.content).toString('base64');
+    const parent = path.posix.dirname(file.path);
+    return `mkdir -p "$D"/${shellQuote(parent)}\necho "${encoded}" | base64 -d > "$D"/${shellQuote(file.path)}`;
+  }).join(NEWLINE);
+  const checks = safeChecks.map((file, index) => {
+    return [
+      `echo "${MARK}file ${index}"`,
+      `timeout 3s foamDictionary "$D"/${shellQuote(file)} > /dev/null 2> "$D/error-${index}"; status=$?; echo "exit=$status"; [ "$status" -eq 124 ] && echo "OpenFOAM parser timed out for this file"`,
+      `sed "s|$D/||g" "$D/error-${index}"`,
+    ].join(NEWLINE);
+  }).join(NEWLINE);
+
+  const script = `#!/bin/bash
+${foamSource()}
+umask 077
+D=$(mktemp -d /tmp/.openfoam-studio-preflight.XXXXXX)
+trap 'cd /; rm -rf "$D"' EXIT
+${writes}
+export FOAM_CASE="$D"
+cd "$D" || exit 1
+${checks}
+echo "${MARK}end"
+`;
+
+  let out = '';
+  try {
+    out = await runInWslScriptInputAsync(Buffer.from(script).toString('base64'), 30000);
+  } catch (error) {
+    throw new Error(`OpenFOAM syntax check could not run: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const problems: SyntaxProblem[] = [];
+  const blocks = out.split(MARK + 'file ');
+  for (const block of blocks.slice(1)) {
+    const nl = block.indexOf(NEWLINE);
+    if (nl < 0) continue;
+    const index = Number(block.slice(0, nl).trim());
+    const body = block.slice(nl + 1);
+    const code = body.match(/exit=(\d+)/);
+    if (!code || code[1] === '0') continue;
+    const checked = safeChecks[index];
+    if (!checked) continue;
+    const lines = body.split(NEWLINE).map(line => line.trim()).filter(Boolean);
+    const headerAt = lines.findIndex(line => line.includes('FOAM FATAL'));
+    const sentence = headerAt >= 0 ? (lines[headerAt + 1] || '') : '';
+    const fallback = lines.find(line => !/^exit=/.test(line) && !line.startsWith(MARK));
+    const atLine = body.match(/at line (\d+)/);
+    problems.push({
+      path: checked,
+      message: sentence || `Unclassified parser failure: ${fallback || 'foamDictionary returned no diagnostic'}`,
       line: atLine ? Number(atLine[1]) : null,
     });
   }

@@ -19,6 +19,7 @@ import { Label } from '@/components/ui/label';
 import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { isProcessForCase } from '@/lib/case-processes';
+import CasePreflightPanel from './case-preflight-panel';
 
 interface FileItem {
   name: string;
@@ -884,7 +885,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   };
 
   return (
-    <div className="flex gap-3 h-full min-h-0">
+    <div className="flex min-h-full flex-col gap-3">
+      <div className="flex min-h-[32rem] flex-1 gap-3">
       {/* ═══ File Tree Sidebar ═══ */}
       <Card className="w-72 flex-shrink-0 flex flex-col">
         <div className="px-2 pt-2 pb-0 flex items-center gap-1">
@@ -1308,6 +1310,13 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
           </div>
         )}
       </Card>
+      </div>
+
+      <CasePreflightPanel
+        caseName={caseName}
+        unsavedFile={isModified ? currentFile : null}
+        onOpenFile={(filePath) => { void loadFile(filePath); }}
+      />
 
       {/* ═══ Rename / move ═══ */}
       <Dialog open={renameTarget !== null} onOpenChange={(open) => { if (!open) closeRename(); }}>

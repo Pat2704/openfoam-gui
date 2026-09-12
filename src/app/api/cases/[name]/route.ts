@@ -22,6 +22,7 @@ import {
 import { apiError } from '@/lib/api-response';
 import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 import { WIZARD_MARKER_PATH } from '@/lib/wizard-state';
+import { runCasePreflight } from '@/lib/case-preflight';
 
 // GET /api/cases/[name]
 //   ?action=read&path=…          → { content }
@@ -35,6 +36,7 @@ import { WIZARD_MARKER_PATH } from '@/lib/wizard-state';
 //   ?action=validateBC           → BCValidationResult
 //   ?action=caseSummary          → CaseSummaryInfo
 //   ?action=wizardState          → { text: string | null } (the wizard's record)
+//   ?action=preflight            → CasePreflightReport
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ name: string }> }
@@ -99,9 +101,12 @@ export async function GET(
         // null is the ordinary answer for a case the wizard did not make.
         return NextResponse.json({ text: readCaseFileIfExists(caseName, WIZARD_MARKER_PATH) });
       }
+      case 'preflight': {
+        return NextResponse.json(await runCasePreflight(caseName));
+      }
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: read, info, ls, logs, listLogs, residuals, checkMesh, validateBC, caseSummary, wizardState' },
+          { error: 'Invalid action. Use: read, info, ls, logs, listLogs, residuals, checkMesh, validateBC, caseSummary, wizardState, preflight' },
           { status: 400 }
         );
     }

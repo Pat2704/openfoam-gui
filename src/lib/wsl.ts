@@ -229,6 +229,51 @@ export function runInWslScriptAsync(b64: string, timeout = 120000): Promise<stri
   });
 }
 
+/**
+ * The same base64 script runner, with the payload on stdin instead of the
+ * Windows process command line. A complete case's dictionary tree can exceed
+ * CreateProcess' command-line ceiling even though every individual file is
+ * small; stdin has no such limit. Used by the read-only File Editor preflight.
+ */
+export function runInWslScriptInputAsync(b64: string, timeout = 120000): Promise<string> {
+  const distro = getDistro();
+  const wrappedCmd = 'export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; base64 -d | bash';
+  return new Promise((resolve, reject) => {
+    const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+      windowsHide: true,
+      env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      child.kill();
+      reject(new Error(`WSL script timed out after ${timeout} ms`));
+    }, timeout);
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', error => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', code => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error((stderr || stdout || `WSL script exited ${code}`).trim()));
+    });
+    child.stdin.end(b64);
+  });
+}
+
 // ── Caches (in-memory + persistent disk) ──
 let cachedBashrc: string | null = null;
 let cachedInstallationIdentity: OpenFOAMInstallationIdentity | null = null;
@@ -1248,6 +1293,132 @@ export interface CaseFileSlice {
   bytes: number;
   /** True when `content` is only the first CASE_CONTEXT_FILE_LIMIT bytes. */
   truncated: boolean;
+}
+
+/** A file the preflight could not safely or completely inspect. */
+export interface CasePreflightSkippedFile {
+  path: string;
+  reason: 'binary' | 'large' | 'symlink';
+  bytes: number;
+}
+
+export interface CasePreflightFiles {
+  /** Earliest numeric directory, including negative initial times. */
+  initialTime: string | null;
+  files: CaseFileSlice[];
+  skipped: CasePreflightSkippedFile[];
+  /** Number of files found before the bounded inventory was applied. */
+  totalFiles: number;
+  inventoryTruncated: boolean;
+}
+
+const PREFLIGHT_FILE_LIMIT = 128_000;
+const PREFLIGHT_FILE_COUNT_LIMIT = 200;
+
+/**
+ * Read the configuration surface of a case for the File Editor preflight.
+ *
+ * This deliberately does not clone the case and never enters $FOAM_RUN with a
+ * second case name. One bounded call reads system/, constant/ (without mesh or
+ * geometry payloads) and the earliest numeric time. Binary, symlinked and very
+ * large inputs are reported instead of guessed at. The later syntax pass makes
+ * a tiny, invisible dictionary tree below /tmp and removes it before returning.
+ */
+export function readCasePreflightFiles(caseName: string): CasePreflightFiles {
+  const safeName = validateCaseName(caseName);
+  const casePath = getCasePath(safeName);
+  const marker = `@@PREFLIGHT_${randomBytes(8).toString('hex')}@@`;
+  const script = `#!/bin/bash
+CASE=${shellQuote(casePath)}
+[ -d "$CASE" ] || { echo "${marker}NOCASE"; exit 0; }
+INITIAL=$(
+  for d in "$CASE"/*/; do
+    [ -d "$d" ] || continue
+    bn=$(basename "$d")
+    printf '%s' "$bn" | grep -qE '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$' && printf '%s\\n' "$bn"
+  done | sort -g | head -1
+)
+echo "${marker}INITIAL|$INITIAL"
+ROOTS=("$CASE/system" "$CASE/constant")
+[ -n "$INITIAL" ] && ROOTS+=("$CASE/$INITIAL")
+TOTAL=$(find "\${ROOTS[@]}" \
+  -path '*/polyMesh/*' -prune -o \
+  -path '*/geometry/*' -prune -o \
+  \\( -type f -o -type l \\) -printf '.' 2>/dev/null | wc -c)
+echo "${marker}TOTAL|$TOTAL"
+count=0
+while IFS= read -r -d '' f; do
+  count=$((count + 1))
+  [ "$count" -le ${PREFLIGHT_FILE_COUNT_LIMIT} ] || continue
+  rel=\${f#"$CASE"/}
+  if [ -L "$f" ]; then
+    echo "${marker}SKIP|symlink|0|$rel"
+    continue
+  fi
+  sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+  if [ "$sz" -gt ${PREFLIGHT_FILE_LIMIT} ]; then
+    echo "${marker}SKIP|large|$sz|$rel"
+    continue
+  fi
+  ft=$(file -b "$f" 2>/dev/null | head -c 80)
+  case "$ft" in
+    *ELF*|*executable*|*data*|*compressed*)
+      echo "${marker}SKIP|binary|$sz|$rel"
+      continue ;;
+  esac
+  echo "${marker}FILE|$sz|$rel"
+  cat -- "$f" 2>/dev/null
+  echo
+  echo "${marker}END"
+done < <(find "\${ROOTS[@]}" \
+  -path '*/polyMesh/*' -prune -o \
+  -path '*/geometry/*' -prune -o \
+  \\( -type f -o -type l \\) -print0 2>/dev/null | sort -z)
+echo "${marker}DONE"
+`;
+
+  const empty: CasePreflightFiles = {
+    initialTime: null, files: [], skipped: [], totalFiles: 0, inventoryTruncated: false,
+  };
+  const out = runInWslScript(Buffer.from(script).toString('base64'), 45000);
+  if (out.includes(`${marker}NOCASE`)) return empty;
+
+  const initial = out.match(new RegExp(`${marker}INITIAL\\|([^\\r\\n]*)`));
+  const total = out.match(new RegExp(`${marker}TOTAL\\|(\\d+)`));
+  const files: CaseFileSlice[] = [];
+  const skipped: CasePreflightSkippedFile[] = [];
+  const blocks = out.split(`${marker}FILE|`);
+  for (const block of blocks.slice(1)) {
+    const nl = block.indexOf('\n');
+    const end = block.indexOf(`\n${marker}END`, nl + 1);
+    if (nl < 0 || end < 0) continue;
+    const header = block.slice(0, nl).replace(/\r/g, '');
+    const bar = header.indexOf('|');
+    if (bar < 0) continue;
+    const bytes = Number(header.slice(0, bar)) || 0;
+    const filePath = header.slice(bar + 1).trim();
+    if (!filePath) continue;
+    files.push({ path: filePath, content: block.slice(nl + 1, end).replace(/\r/g, ''), bytes, truncated: false });
+  }
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.startsWith(`${marker}SKIP|`)) continue;
+    const rest = line.slice(`${marker}SKIP|`.length);
+    const first = rest.indexOf('|');
+    const second = rest.indexOf('|', first + 1);
+    if (first < 0 || second < 0) continue;
+    const reason = rest.slice(0, first) as CasePreflightSkippedFile['reason'];
+    const bytes = Number(rest.slice(first + 1, second)) || 0;
+    const filePath = rest.slice(second + 1).trim();
+    if (filePath && ['binary', 'large', 'symlink'].includes(reason)) skipped.push({ path: filePath, reason, bytes });
+  }
+  const totalFiles = Number(total?.[1]) || files.length + skipped.length;
+  return {
+    initialTime: initial?.[1]?.trim() || null,
+    files,
+    skipped,
+    totalFiles,
+    inventoryTruncated: totalFiles > PREFLIGHT_FILE_COUNT_LIMIT,
+  };
 }
 
 /**

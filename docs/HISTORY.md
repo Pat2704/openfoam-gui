@@ -6,6 +6,24 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-12 — installation-aware case preflight in File Editor
+
+- File Editor now has a full-width Case preflight panel below its tree and
+  editor. It expands after a run into category summaries and separate errors,
+  warnings and explicitly unverified findings, with explanations, suggested
+  actions and direct links to existing files.
+- The preflight reads bounded case configuration and initial fields, checks
+  core structure, run controls, decomposition and field/mesh patch agreement,
+  and uses the selected Foundation OpenFOAM 9–14 installation's own
+  `foamDictionary`, executable catalogue and runtime-selection index.
+- It never clones a case, starts a solver/mesher/`checkMesh`, loads case code or
+  runs `#codeStream`/`#calc`. Parser inputs use a private hidden `/tmp` tree,
+  removed on exit, with per-file and whole-pass time bounds; uncertainty is
+  reported as unverified instead of being promoted to a blocking error.
+- Unsaved editor content blocks the run so the displayed report always matches
+  disk. Six focused tests cover direct contradictions and conservative
+  downgrades; the full suite, typecheck and lint pass.
+
 ## 2026-09-11 — v5.4.1: decomposed cleanup and cumulative agent replies
 
 - Released `v5.4.1` at the user's request with notes in
