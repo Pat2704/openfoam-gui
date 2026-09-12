@@ -6,8 +6,14 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-09-12 — File Editor fits the window; preflight beside Clean TS
+## 2026-09-12 — v5.5.0: File Editor fits the window; preflight beside Clean TS
 
+- Released `v5.5.0` at the user's request with notes in
+  `docs/releases/v5.5.0.md`. Direct publication reused the paired artifacts
+  built from commit `f956e95`, renaming them without a second build, so their
+  embedded version resource still reads 5.4.1; source-to-artifact equivalence
+  belongs to that pre-version build. GitHub keeps v5.5.0 and v5.4.1; the
+  v5.4.0 release entry was removed, its tag kept.
 - The File Editor fills its tab exactly at any window size and follows resizes:
   the tree and the open file each scroll inside their own card, so both stay
   on screen and the page itself never scrolls. The fixed `calc(100vh - 300px)`
