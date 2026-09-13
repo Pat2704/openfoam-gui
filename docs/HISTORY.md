@@ -6,6 +6,17 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-13 — Agent lists no longer repeat during live replies
+
+- The shared Claude/Codex transcript used to append every event labelled as a
+  delta. A provider's growing live snapshots (`A`, `A+B`, `A+B+C`) therefore
+  rendered as `A`, `A`, `B`, `A`, `B`, `C`, which was especially conspicuous
+  in final Markdown lists.
+- A live update that strictly contains the whole block already on screen now
+  replaces it; genuine incremental and intentionally repeated text still
+  appends. Regression tests reproduce the reported list pattern and protect
+  real repeated fragments.
+
 ## 2026-09-13 — v5.6.0: long videos confirmed with a measured time; Feature Edges
 
 - Released `v5.6.0` at the user's request with notes in

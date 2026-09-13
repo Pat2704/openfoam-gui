@@ -15,6 +15,29 @@ test('an authoritative agent snapshot replaces its streamed deltas', () => {
   assert.deepEqual(blocks, [{ kind: 'text', id: 'answer-1', text: 'Complete answer', live: false }]);
 });
 
+test('growing live snapshots do not duplicate Markdown list items', () => {
+  const one = '- mesh fully 3D';
+  const two = `${one}\n- resolution to dissipative scales`;
+  const three = `${two}\n- smaller timestep`;
+  const blocks = fold([
+    { t: 'block_start', channel: 'text', id: 'answer-1' },
+    { t: 'delta', channel: 'text', id: 'answer-1', text: one },
+    { t: 'delta', channel: 'text', id: 'answer-1', text: two },
+    { t: 'delta', channel: 'text', id: 'answer-1', text: three },
+    { t: 'block_end', channel: 'text', id: 'answer-1', text: three },
+  ]);
+  assert.deepEqual(blocks, [{ kind: 'text', id: 'answer-1', text: three, live: false }]);
+});
+
+test('equal incremental deltas remain intentional repeated text', () => {
+  const blocks = fold([
+    { t: 'block_start', channel: 'text', id: 'answer-1' },
+    { t: 'delta', channel: 'text', id: 'answer-1', text: 'ha' },
+    { t: 'delta', channel: 'text', id: 'answer-1', text: 'ha' },
+  ]);
+  assert.deepEqual(blocks, [{ kind: 'text', id: 'answer-1', text: 'haha', live: true }]);
+});
+
 test('replayed snapshots and tool calls do not duplicate the transcript', () => {
   const blocks = fold([
     { t: 'block_end', channel: 'text', id: 'answer-1', text: 'Complete answer' },

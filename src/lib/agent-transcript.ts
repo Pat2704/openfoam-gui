@@ -59,7 +59,16 @@ export function applyAgentTranscriptEvent(
       blocks.push({ kind: channel, id, text: String(event.text || ''), live: true });
     } else {
       const block = blocks[index] as Extract<AgentTranscriptBlock, { kind: 'text' | 'thinking' }>;
-      blocks[index] = { ...block, text: block.text + String(event.text || '') };
+      const delta = String(event.text || '');
+      // Both agent transports normally describe this as a delta, but provider
+      // versions have also emitted a growing live snapshot: A, then A+B, then
+      // A+B+C. Appending those produces A+A+B+A+B+C, most visibly as repeated
+      // Markdown list items. A strict prefix proves this update already carries
+      // the block on screen; ordinary repeated deltas ("ha", "ha") still append.
+      const text = block.text && delta.length > block.text.length && delta.startsWith(block.text)
+        ? delta
+        : block.text + delta;
+      blocks[index] = { ...block, text };
     }
   } else if (type === 'block_end') {
     const channel = event.channel as 'text' | 'thinking';
