@@ -6,8 +6,14 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-09-13 — ParaView: long videos confirmed with a measured time; Feature Edges
+## 2026-09-13 — v5.6.0: long videos confirmed with a measured time; Feature Edges
 
+- Released `v5.6.0` at the user's request with notes in
+  `docs/releases/v5.6.0.md`, covering this entry and the video export below.
+  Direct publication reused the pair built from commit `55aba4a`, renamed
+  without a second build, so its embedded version resource reads 5.5.0.
+  GitHub keeps v5.6.0 and v5.5.0; the v5.4.1 release entry was removed, its
+  tag kept.
 - At the user's request the 18,000-frame cap became a confirmation: only a
   video longer than one hour is refused (`MAX_VIDEO_SECONDS`, a guard against
   an obvious mistake such as a factor of 1000); above 10 minutes of video or
