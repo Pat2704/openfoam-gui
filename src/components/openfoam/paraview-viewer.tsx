@@ -87,6 +87,7 @@ interface DisplayDraft {
   pointSize: number;
 }
 
+/** Used only when the engine does not list an item's own representations. */
 const REPRESENTATIONS = ['Surface', 'Surface With Edges', 'Wireframe', 'Points', 'Outline'];
 const FILTER_GROUPS: { label: string; filters: FilterType[] }[] = [
   { label: 'Common', filters: ['Slice', 'Clip', 'Contour', 'Threshold', 'StreamTracer', 'Glyph'] },
@@ -1052,10 +1053,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
               <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Display</p>
                 <Label className="text-[10px]">Representation</Label>
-                <Select value={selected.representation} onValueChange={representation => void command('update', { representation })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{REPRESENTATIONS.map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
+                <Select value={selected.representation} onValueChange={representation => void command('update', { representation })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{(selected.representations?.length ? selected.representations : REPRESENTATIONS).map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
                 <div className="flex items-center justify-between"><Label className="text-[10px]">Opacity</Label><span className="font-mono text-[10px]">{displayDraft.opacity.toFixed(2)}</span></div>
                 <input aria-label="Opacity" className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={displayDraft.opacity} onChange={event => setDisplayDraft(current => ({ ...current, opacity: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} />
-                {(selected.representation === 'Surface With Edges' || selected.representation === 'Wireframe') && <><div className="flex items-center justify-between"><Label className="text-[10px]">Line width</Label><span className="font-mono text-[10px]">{displayDraft.lineWidth.toFixed(1)}</span></div><input aria-label="Line width" className="w-full accent-primary" type="range" min="1" max="10" step="0.5" value={displayDraft.lineWidth} onChange={event => setDisplayDraft(current => ({ ...current, lineWidth: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
+                {(selected.representation === 'Surface With Edges' || selected.representation === 'Wireframe' || selected.representation === 'Feature Edges') && <><div className="flex items-center justify-between"><Label className="text-[10px]">Line width</Label><span className="font-mono text-[10px]">{displayDraft.lineWidth.toFixed(1)}</span></div><input aria-label="Line width" className="w-full accent-primary" type="range" min="1" max="10" step="0.5" value={displayDraft.lineWidth} onChange={event => setDisplayDraft(current => ({ ...current, lineWidth: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
                 {selected.representation === 'Points' && <><div className="flex items-center justify-between"><Label className="text-[10px]">Point size</Label><span className="font-mono text-[10px]">{displayDraft.pointSize.toFixed(1)}</span></div><input aria-label="Point size" className="w-full accent-primary" type="range" min="1" max="20" step="1" value={displayDraft.pointSize} onChange={event => setDisplayDraft(current => ({ ...current, pointSize: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
               </section>
 

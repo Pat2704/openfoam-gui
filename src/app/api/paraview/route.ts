@@ -5,6 +5,7 @@ import { Readable } from 'stream';
 import {
   abortParaViewStartup,
   cancelParaViewVideoExport,
+  estimateParaViewVideo,
   getParaViewVideoFile,
   getParaViewVideoJob,
   saveParaViewVideoInCase,
@@ -181,6 +182,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result);
     }
 
+    if (action === 'video_estimate') {
+      return NextResponse.json({ estimate: await estimateParaViewVideo(videoRequest(body.request)) });
+    }
     if (action === 'video_export') {
       return NextResponse.json({ job: await startParaViewVideoExport(videoRequest(body.request)) });
     }

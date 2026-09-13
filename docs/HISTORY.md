@@ -6,6 +6,31 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-09-13 — ParaView: long videos confirmed with a measured time; Feature Edges
+
+- At the user's request the 18,000-frame cap became a confirmation: only a
+  video longer than one hour is refused (`MAX_VIDEO_SECONDS`, a guard against
+  an obvious mistake such as a factor of 1000); above 10 minutes of video or
+  30 minutes of estimated rendering the Video tab asks first, with the
+  duration, the frame count and the render time. Progress also shows the time
+  left.
+- The render time is measured on the case: the worker renders and encodes
+  (into a discarded file, flush included) three triples of frames — a far
+  frame, the same again, the next one — and `estimateRenderSeconds` combines
+  the three costs over the plan: every frame renders and encodes, every change
+  of time pays interpolation, every saved step is read once. A first model
+  that charged every new time as a full read over-estimated 8×. Measured on
+  cavity at 1080p/4K: estimates 21.5/23.1/18.5 s against 16.6/19.9/14.9 s
+  actual (held; interpolated; 4K interpolated); a 28,501-frame request showed
+  the confirmation instead of being refused.
+- **Feature Edges** is offered as a display representation, as in ParaView
+  (silhouette and sharp edges). Each pipeline item lists the representations
+  its own display offers (`representations_for` against the build's
+  available values); the menu, the line-width control and video timeline
+  snapshots use that list, and anything else is refused. Verified on v14 with
+  ParaView 6.2.0: listed, applied from the menu, captured in a timeline view;
+  "Volume" refused. 344 tests, typecheck and lint pass; the case was removed.
+
 ## 2026-09-12 — ParaView: video export with a timeline of views
 
 - At the user's request the ParaView workbench has a **Video** tab. The user
@@ -17,7 +42,7 @@ audits.
   optionally fields are interpolated between steps (ParaView's
   TemporalInterpolator, inserted under the reader for the export only).
   Output 480p–4K, 12–60 fps, colour range fixed as captured or rescaled per
-  frame; a live estimate of frames and duration, capped at 18,000 frames.
+  frame; a live estimate of frames and duration (limit revised below).
 - The frame plan is pure and tested (`src/lib/paraview-video.ts`); the session's
   own pvpython renders it (`capture_view`, `apply_view`, `export_video` in the
   worker; snapshots are re-validated there). MP4 uses VTK's Media Foundation
@@ -145,75 +170,16 @@ audits.
 
 ## 2026-09-11 — New Case wizard: the complete guide for OpenFOAM 13 and 14
 
-- **The installation picks the guide; the user does not.** `guideForVersion`
-  (`src/lib/wizard/modules.ts`): 13 and 14 get the complete guide, 11–12 the
-  shorter modular one (incompressibleFluid), 9–10 the shorter legacy one
-  (simpleFoam, pimpleFoam, pisoFoam, icoFoam), an unknown version none (Next
-  disabled). The layout toggle is gone; `foam-version-changed` switches the
-  guide, and Update case refuses a record made under another guide.
-- **Every solver module of the installation**, as the user chose (forms per
-  module plus tutorials). Guided forms: incompressibleFluid, isothermalFluid,
-  fluid, shockFluid, multicomponentFluid, incompressibleVoF, compressibleVoF,
-  incompressibleDriftFlux, solid, solidDisplacement. The rest (multiphaseEuler,
-  XiFluid, the two multiphase VoF modules, incompressibleDenseParticleFluid,
-  isothermalFilm, film, movingMesh, functions) start from one of the
-  installation's tutorials of that module (`src/lib/wizard/seed.ts`): physics
-  dictionaries kept and editable, mesh dictionaries dropped, every 0/ field
-  re-targeted onto the wizard's patches by role; a physics file still naming a
-  tutorial patch is flagged until edited. Modules, RAS/LES models, thermo
-  combinations per table and function objects come from foamToC
-  (`/api/foam-index?action=wizardCatalog`).
-- Physics: steady or transient (adjustTimeStep, maxCo, maxAlphaCo),
-  laminar/RAS/LES, thermophysics with presets, species, phases, drift, gravity
-  and p_rgh, solid and elastic properties, initial regions by setFields (box,
-  sphere, cylinder). Per-patch values (velocity, pressure, temperature, heat
-  flux, convection, traction) sit in the Fields step and drive the conditions
-  (`src/lib/wizard/boundary.ts`). Also system/functions (#includeFunc),
-  decomposeParDict (scotch) and fvConstraints limitPressure. Files use forms
-  both 13 and 14 accept, taken from the subagent survey
-  (`docs/agent-log/module-spec.md`, ignored), and version-specific ones only
-  where they differ (LES `<x>Coeffs` vs `<x>`, driftFlux and plastic sub-dicts,
-  combustion vs reaction properties).
-- **The Mesh step follows a real workflow.** Box only: domain → cells and
-  grading → patches (each face given to a named patch with a role; presets) →
-  blockMeshDict. With geometry (13/14): geometry (units, flow inside or around
-  it, surface role) → surfaceFeatures → background box and its patches →
-  refinement (surface levels, regions as their own patches, box/sphere/cylinder
-  regions) → insidePoint → snapping → layers → mesh quality → review. Commands
-  run in that order: surfaceTransformPoints for non-metre units, surfaceFeatures
-  (only with a feature level), blockMesh, snappyHexMesh, checkMesh, then
-  setFields. A .cfg default is shown and written only when changed. Record
-  format 2; format-1 records migrate.
-- Fixed on the way: ASCII STL solids named `patchN` were lost as regions; a
-  symmetry patch over several faces was written as symmetryPlane ("is not
-  planar") — the role now writes `symmetry` and a multi-face symmetryPlane is
-  refused; an extra condition entry opening a sub-dictionary
-  (`contactAngleProperties`) got a stray `;`; the summary's installation check
-  called `heRhoThermo` missing (foamToC lists whole combinations; words inside
-  templated names now count) and re-ran on every render (177 requests in one
-  visit; the file lists are memoised, and tutorial files copied unchanged are
-  not checked).
-- Verified: typecheck, lint, 317 tests (the usual skip). In WSL, 16 guided
-  variants (every form module; laminar, RAS, LES; buoyant; heat-flux and
-  convective walls; setFields; 2D and 3D) ran foamRun on v14 and v13. Five
-  tutorial-seeded cases with renamed patches ran on v14 (bubbleColumnLaminar,
-  damBreak4phaseLaminar in both VoF modules, column after the flagged
-  cloudProperties edit, XiFluid 1Dlaminar) and four on v13, which has no
-  1Dlaminar. An internal snappy flange meshed (46,581 cells, its regions in
-  inlet and outlet groups) and ran on v14. In the dev server on v14 the wizard
-  showed the complete guide, the 19 modules and the fluid forms; `wizard_test`
-  was created, meshed from the wizard (checkMesh OK, 1200 cells) and foamRun
-  ended by itself at iteration 299; an unchanged review found nothing to
-  write, and the record is format 2. For multiphaseEuler the forms choice is
-  disabled and the tutorial list offers the module's 29 tutorials;
-  bubbleColumnLaminar on the wizard's box reached a clean summary (22 files).
-  Disposable cases were removed. The Electron build passed and the v5.3.1
-  portable executable and folder ZIP in `Working/` were replaced with the new
-  build (SHA-256 of each copy checked against `dist-electron/`).
-- Limits: isothermalFilm needs the `filmWall` patch type, which the box does
-  not write; engine, kivaTest and stored-phi tutorials cannot be re-targeted; a
-  tutorial's zones keep its coordinates; a hand-edited phaseProperties can
-  still raise a false alarm, because phase systems are in no foamToC table.
+- The detected installation picks the guide (`src/lib/wizard/modules.ts`):
+  every solver module on 13/14 (guided forms for ten modules, the others
+  seeded from the installation's tutorials and re-targeted onto the wizard's
+  patches, `src/lib/wizard/seed.ts`), a shorter guide on 9–12, none otherwise.
+  The Mesh step follows a real workflow (geometry, surfaceFeatures, background
+  blockMesh, snappyHexMesh) with named box patches and roles.
+- Verified in WSL on v13 and v14 (16 guided variants, tutorial-seeded cases, an
+  internal snappy mesh) and in the dev server; details in Git (`7ace17d`) and
+  `docs/releases/v5.4.0.md`. Limits: isothermalFilm's `filmWall` patch,
+  engine/kivaTest/stored-phi tutorials, tutorial zone coordinates.
 
 ## 2026-09-10 — New Case wizard: "Update case" and guided snappyHexMesh
 

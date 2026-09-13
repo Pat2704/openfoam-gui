@@ -161,8 +161,11 @@ the **OpenFOAM card in the Dashboard**.
   The **Video** tab exports the simulation as MP4 (or OGV): build a timeline of
   views, each lasting until a chosen time step, with a cut or a smooth camera
   move between them; let every saved step last a fixed time or follow
-  simulation time at any speed, optionally interpolating between steps. The
-  video can be saved anywhere or into the case's `postProcessing/videos`.
+  simulation time at any speed, optionally interpolating between steps. Long
+  exports show the video's length and a render time measured on the case and
+  ask before starting. The video can be saved anywhere or into the case's
+  `postProcessing/videos`. Displays also offer ParaView's **Feature Edges**
+  representation.
 
   ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.

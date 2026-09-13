@@ -23,7 +23,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { ParaViewVideoJob, ParaViewWorkbenchState } from '@/lib/paraview';
+import { confirmDialog } from '@/components/ui/confirm-host';
+import type { ParaViewVideoEstimate, ParaViewVideoJob, ParaViewWorkbenchState } from '@/lib/paraview';
 import {
   SECONDS_PER_STEP_RANGE, VIDEO_FPS, VIDEO_RESOLUTIONS, VIDEO_SECONDS_PER_SIM_SECOND_RANGE,
   buildVideoPlan, formatVideoDuration, sortedTimes,
@@ -85,6 +86,9 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
   const [format, setFormat] = useState<VideoFormat>(formats[0] ?? 'mp4');
   const [colorRange, setColorRange] = useState<VideoColorRange>('captured');
   const [capturing, setCapturing] = useState(false);
+  /** Rendering a few frames to estimate the export. */
+  const [estimating, setEstimating] = useState(false);
+  const [renderEstimate, setRenderEstimate] = useState<number | null>(null);
   const [job, setJob] = useState<ParaViewVideoJob | null>(null);
   const [now, setNow] = useState(Date.now());
   const nextKey = useRef(1);
@@ -223,7 +227,19 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
   const stale = (view: ParaViewViewSnapshot) => Object.keys((view.nodes || {}) as object).some(id => !pipelineIds.has(id));
 
   const exportVideo = async () => {
+    setEstimating(true);
     try {
+      // A few frames are rendered first: long or slow exports are confirmed
+      // with the measured time instead of being refused.
+      const measured = await fetch('/api/paraview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'video_estimate', request }),
+      });
+      if (!measured.ok) throw new Error(await errorText(measured));
+      const { estimate } = await measured.json() as { estimate: ParaViewVideoEstimate };
+      setRenderEstimate(estimate.renderSeconds);
+      setEstimating(false);
+      if (estimate.confirm && !(await confirmDialog(estimate.confirm, { title: 'Long video export', confirmLabel: 'Export' }))) return;
       const response = await fetch('/api/paraview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'video_export', request }),
@@ -233,6 +249,8 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
       showJob(data.job);
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : 'The video export could not start.');
+    } finally {
+      setEstimating(false);
     }
   };
 
@@ -275,9 +293,14 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
     );
   }
 
-  const disabled = running || locked || capturing;
+  const disabled = running || locked || capturing || estimating;
   const progress = job && job.total ? Math.min(100, Math.round((job.frame / job.total) * 100)) : 0;
   const elapsed = job ? Math.max(0, ((job.finishedAt ?? now) - job.startedAt) / 1000) : 0;
+  // Remaining time from the export's own pace once frames are coming, from the
+  // measurement before that.
+  const remaining = job && running
+    ? job.frame > 0 ? (elapsed / job.frame) * (job.total - job.frame) : renderEstimate
+    : null;
 
   return (
     <div className="space-y-4 p-3 text-xs">
@@ -433,12 +456,15 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
               <span className="flex items-center gap-1 font-medium"><Loader2 className="h-3 w-3 animate-spin" /> Frame {job.frame.toLocaleString()} of {job.total.toLocaleString()}</span>
               <span className="font-mono text-muted-foreground">{formatVideoDuration(elapsed)}</span>
             </div>
+            {remaining !== null && <p className="text-[10px] text-muted-foreground">About {formatVideoDuration(remaining)} left</p>}
             <div className="h-1.5 overflow-hidden rounded bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} /></div>
             <Button size="sm" variant="outline" className="h-7 w-full text-xs" onClick={() => void cancelExport()}><X className="h-3.5 w-3.5" /> Cancel export</Button>
           </div>
         ) : (
           <Button size="sm" className="h-8 w-full text-xs" disabled={disabled || !estimate} onClick={() => void exportVideo()}>
-            <Film className="h-3.5 w-3.5" /> Export video
+            {estimating
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Measuring a few frames…</>
+              : <><Film className="h-3.5 w-3.5" /> Export video</>}
           </Button>
         )}
 

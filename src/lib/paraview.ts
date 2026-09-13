@@ -2,7 +2,10 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_proc
 import { promises as fs, type Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { buildVideoPlan, videoFileName, type VideoFormat, type VideoRequest } from './paraview-video';
+import {
+  benchmarkFrames, buildVideoPlan, estimateRenderSeconds, videoConfirmation, videoFileName,
+  type VideoFormat, type VideoPlan, type VideoRequest,
+} from './paraview-video';
 
 export interface ParaViewInstallation {
   found: boolean;
@@ -432,6 +435,8 @@ export interface ParaViewPipelineNode {
   parent: string | null;
   visible: boolean;
   representation: string;
+  /** Representations this item's display offers (Feature Edges where the build has it). */
+  representations?: string[];
   opacity: number;
   lineWidth: number;
   pointSize: number;
@@ -533,6 +538,19 @@ SUPPORTED_CASE_FILE_EXTENSIONS = {
     '.pvd', '.vtm', '.vtmb', '.xmf', '.xdmf', '.case', '.csv', '.foam',
     '.openfoam', '.ex2', '.e',
 }
+
+# The display representations the workbench offers, in menu order. Each item
+# offers only those its own display lists as available (Feature Edges draws
+# the silhouette and sharp edges of a surface, as in ParaView's own menu).
+DISPLAY_REPRESENTATIONS = ('Surface', 'Surface With Edges', 'Wireframe', 'Feature Edges', 'Points', 'Outline')
+
+def representations_for(display):
+    try:
+        available = [str(value) for value in list(display.GetProperty('Representation').Available)]
+    except Exception:
+        available = []
+    offered = [name for name in DISPLAY_REPRESENTATIONS if name in available]
+    return offered or [name for name in DISPLAY_REPRESENTATIONS if name != 'Feature Edges']
 
 BACKGROUNDS = {
     'ParaView Dark': [0.18, 0.20, 0.24],
@@ -704,6 +722,7 @@ def node_state(identifier, node):
         'representation': node['representation'], 'opacity': node['opacity'],
         'lineWidth': node['lineWidth'], 'pointSize': node['pointSize'],
         'color': node['color'],
+        'representations': representations_for(node['display']),
         'manipulatorAvailable': node['type'] in ('Slice', 'Clip', 'StreamTracer', 'PlotOverLine'),
         'manipulatorVisible': manipulator_visible and identifier == selected_id,
     }
@@ -1320,8 +1339,7 @@ def update_selected(data):
     node = selected_node()
     display = node['display']
     if 'representation' in data:
-        allowed = ('Surface', 'Surface With Edges', 'Wireframe', 'Points', 'Outline')
-        if data['representation'] not in allowed: raise RuntimeError('Unsupported representation.')
+        if data['representation'] not in representations_for(display): raise RuntimeError('Unsupported representation.')
         node['representation'] = data['representation']
     if 'opacity' in data:
         node['opacity'] = max(0.0, min(1.0, clean_number(data['opacity'], node['opacity'])))
@@ -1512,8 +1530,7 @@ def standard_view(direction):
 
 VIDEO_SIZES = ((854, 480), (1280, 720), (1920, 1080), (3840, 2160))
 VIDEO_FPS = (12, 24, 25, 30, 60)
-VIDEO_MAX_FRAMES = 18000
-REPRESENTATIONS = ('Surface', 'Surface With Edges', 'Wireframe', 'Points', 'Outline')
+VIDEO_MAX_FRAMES = 216001
 
 def video_formats():
     formats = []
@@ -1579,7 +1596,7 @@ def prepare_snapshot(raw):
         if identifier not in nodes or not isinstance(settings, dict): continue
         node = nodes[identifier]
         representation = str(settings.get('representation', node['representation']))
-        if representation not in REPRESENTATIONS: raise RuntimeError('A timeline view uses an unsupported representation.')
+        if representation not in representations_for(node['display']): raise RuntimeError('A timeline view uses a representation ' + node['label'] + ' does not offer.')
         color_raw = settings.get('color') if isinstance(settings.get('color'), dict) else {}
         association = str(color_raw.get('association', 'SOLID'))
         name = str(color_raw.get('name', ''))
@@ -1680,7 +1697,10 @@ def emit_progress(frame, total):
     sys.stdout.write(PREFIX + json.dumps({'id': -2, 'progress': {'frame': frame, 'total': total}}) + '\n')
     sys.stdout.flush()
 
-def export_video(identifier, data):
+def export_video(identifier, data, dry=False):
+    # dry: render the given frames without writing them and report how long a
+    # frame at a new time step and a repeat at the same time take, so the
+    # workbench can estimate the whole export before starting it.
     global selected_id
     fmt = str(data.get('format', 'mp4'))
     if fmt not in video_formats(): raise RuntimeError('This ParaView build cannot write ' + fmt.upper() + ' videos.')
@@ -1717,6 +1737,7 @@ def export_video(identifier, data):
     interpolator_display = None
     reparented = []
     writer = None
+    flush_seconds = 0.0
     written = 0
     cancelled = False
     hide_guides()
@@ -1742,11 +1763,13 @@ def export_video(identifier, data):
         grabber.ShouldRerenderOff()
         current_segment = -1
         last_emit = 0.0
+        durations = []
         import time as _time
         for index, (frame_time, segment, blend) in enumerate(frames):
-            if index % 4 == 0 and os.path.exists(cancel_path):
+            if not dry and index % 4 == 0 and os.path.exists(cancel_path):
                 cancelled = True
                 break
+            frame_started = _time.time()
             if segment != current_segment:
                 apply_snapshot(segments[segment], lock_ranges)
                 current_segment = segment
@@ -1760,11 +1783,16 @@ def export_video(identifier, data):
             Render(view)
             grabber.Modified()
             grabber.Update()
+            # The measurement encodes too, into a file that is thrown away:
+            # at 1080p encoding costs as much as rendering a simple case.
             if writer is None:
                 writer = make_video_writer(fmt, filename, fps, width, height)
                 writer.SetInputConnection(grabber.GetOutputPort())
                 writer.Start()
             writer.Write()
+            if dry:
+                durations.append(_time.time() - frame_started)
+                continue
             written += 1
             now = _time.time()
             if now - last_emit > 0.4 or written == len(frames):
@@ -1772,8 +1800,10 @@ def export_video(identifier, data):
                 last_emit = now
     finally:
         if writer is not None:
+            flush_started = __import__('time').time()
             try: writer.End()
             except Exception: pass
+            flush_seconds = __import__('time').time() - flush_started
         if interpolator is not None:
             for node in reparented:
                 try: node['proxy'].Input = reader
@@ -1795,6 +1825,13 @@ def export_video(identifier, data):
         set_time(original_time)
         try: os.remove(cancel_path)
         except Exception: pass
+    if dry:
+        try: os.remove(filename)
+        except Exception: pass
+        # An encoder may hold frames back until End: its flush is shared out.
+        # How the durations turn into an estimate is estimateRenderSeconds.
+        if durations: durations = [value + flush_seconds / len(durations) for value in durations]
+        return {'durations': durations}
     if cancelled or written == 0:
         try: os.remove(filename)
         except Exception: pass
@@ -1897,6 +1934,8 @@ for line in sys.__stdin__:
             emit(identifier, True, {'view': capture_view()})
         elif action == 'apply_view':
             apply_snapshot(prepare_snapshot(data.get('view')), True); emit(identifier, True, {'state': state()})
+        elif action == 'video_benchmark':
+            emit(identifier, True, {'benchmark': export_video(identifier, data, True)})
         elif action == 'export_video':
             emit(identifier, True, {'video': export_video(identifier, data)})
         elif action == 'quit':
@@ -1919,6 +1958,7 @@ type WorkerResult = {
   files?: ParaViewCaseFile[];
   view?: Record<string, unknown>;
   video?: { video?: string; frames?: number; format?: string; cancelled?: boolean };
+  benchmark?: { durations?: number[] };
 };
 type Pending = {
   resolve: (value: WorkerResult) => void;
@@ -2290,15 +2330,64 @@ export function getParaViewVideoJob(): ParaViewVideoJob | null {
   return publicJob(videoJob);
 }
 
-export async function startParaViewVideoExport(request: VideoRequest): Promise<ParaViewVideoJob> {
-  const worker = activeWorker;
-  if (!worker) throw new Error('Start a ParaView session first.');
-  assertNoVideoExport();
+/** The worker's copy of a request: the plan's frames and the views, validated again there. */
+function workerVideoData(request: VideoRequest, plan: VideoPlan, frames = plan.frames): Record<string, unknown> {
+  return {
+    format: request.format,
+    width: plan.width,
+    height: plan.height,
+    fps: request.fps,
+    interpolate: request.interpolate,
+    colorRange: request.colorRange,
+    segments: request.segments.map(segment => segment.view),
+    frames: frames.map(frame => [frame.time, frame.segment, frame.blend]),
+  };
+}
+
+async function planForWorker(worker: ParaViewWorker, request: VideoRequest): Promise<VideoPlan> {
   const current = await worker.request('state');
   const plan = buildVideoPlan(current.state?.times || [], request);
   if (!(current.state?.videoFormats || []).includes(request.format)) {
     throw new Error(`This ParaView build cannot write ${request.format.toUpperCase()} videos.`);
   }
+  return plan;
+}
+
+export interface ParaViewVideoEstimate {
+  frames: number;
+  seconds: number;
+  /** Measured on a few frames of this case; null when there was nothing to measure. */
+  renderSeconds: number | null;
+  /** What to ask before exporting, or null when the export can simply start. */
+  confirm: string | null;
+}
+
+/**
+ * Render a few frames of the requested video without writing them, and turn
+ * their timing into an estimate of the whole export — long ones are confirmed
+ * rather than refused.
+ */
+export async function estimateParaViewVideo(request: VideoRequest): Promise<ParaViewVideoEstimate> {
+  const worker = activeWorker;
+  if (!worker) throw new Error('Start a ParaView session first.');
+  assertNoVideoExport();
+  const plan = await planForWorker(worker, request);
+  const result = await worker.request('video_benchmark', workerVideoData(request, plan, benchmarkFrames(plan)), 10 * 60_000);
+  const durations = result.benchmark?.durations;
+  const renderSeconds = Array.isArray(durations) ? estimateRenderSeconds(plan, durations) : null;
+  return {
+    frames: plan.frames.length,
+    seconds: plan.seconds,
+    renderSeconds,
+    confirm: videoConfirmation(plan.seconds, plan.frames.length, renderSeconds),
+  };
+}
+
+export async function startParaViewVideoExport(request: VideoRequest): Promise<ParaViewVideoJob> {
+  const worker = activeWorker;
+  if (!worker) throw new Error('Start a ParaView session first.');
+  assertNoVideoExport();
+  const plan = await planForWorker(worker, request);
   // Only the latest video is kept; it lives in the session's temporary folder.
   if (videoJob?.file) await fs.rm(videoJob.file, { force: true }).catch(() => undefined);
 
@@ -2324,17 +2413,8 @@ export async function startParaViewVideoExport(request: VideoRequest): Promise<P
     if (videoJob === job) { job.frame = frame; job.total = total || job.total; }
   };
   // A frame of a large case can take seconds; the ceiling only catches a hang.
-  const timeout = Math.min(12 * 3_600_000, COMMAND_TIMEOUT_MS + plan.frames.length * 20_000);
-  void worker.request('export_video', {
-    format: request.format,
-    width: plan.width,
-    height: plan.height,
-    fps: request.fps,
-    interpolate: request.interpolate,
-    colorRange: request.colorRange,
-    segments: request.segments.map(segment => segment.view),
-    frames: plan.frames.map(frame => [frame.time, frame.segment, frame.blend]),
-  }, timeout).then(async result => {
+  const timeout = Math.min(48 * 3_600_000, COMMAND_TIMEOUT_MS + plan.frames.length * 20_000);
+  void worker.request('export_video', workerVideoData(request, plan), timeout).then(async result => {
     if (videoJob !== job) return;
     const video = result.video || {};
     job.finishedAt = Date.now();

@@ -65,6 +65,10 @@ export interface VideoPlan {
   frames: VideoFrame[];
   /** Video duration in seconds. */
   seconds: number;
+  /** Whether frames between saved steps are interpolated. */
+  interpolate: boolean;
+  /** Saved time steps the video reads. */
+  steps: number;
   width: number;
   height: number;
 }
@@ -76,7 +80,18 @@ export const VIDEO_RESOLUTIONS: Record<VideoResolution, { width: number; height:
   '1080p': { width: 1920, height: 1080, label: '1920 × 1080 (Full HD)' },
   '2160p': { width: 3840, height: 2160, label: '3840 × 2160 (4K)' },
 };
-export const MAX_VIDEO_FRAMES = 18_000;
+/**
+ * The hard ceiling: an hour of video. It is only there against an obvious
+ * mistake (a factor of 1000 instead of 1 asks for hundreds of thousands of
+ * frames); long but intended exports are confirmed instead
+ * (videoConfirmation), with a render time measured on the case itself.
+ */
+export const MAX_VIDEO_SECONDS = 3_600;
+/** The most frames any request can carry: an hour at the highest frame rate. */
+export const MAX_VIDEO_FRAMES = MAX_VIDEO_SECONDS * 60 + 1;
+/** Above these the workbench asks before exporting. */
+export const CONFIRM_VIDEO_SECONDS = 600;
+export const CONFIRM_RENDER_SECONDS = 1_800;
 export const MAX_VIDEO_SEGMENTS = 30;
 export const SECONDS_PER_STEP_RANGE = [0.02, 10] as const;
 export const VIDEO_SECONDS_PER_SIM_SECOND_RANGE = [1e-6, 1e6] as const;
@@ -152,12 +167,13 @@ export function buildVideoPlan(rawTimes: number[], request: VideoRequest): Video
     untils.push(until);
   });
   const end = untils[untils.length - 1];
-  const steps = times.filter(time => time >= start && time <= end);
+  const stepTimes = times.filter(time => time >= start && time <= end);
   const fps = request.fps;
 
+  const limit = Math.round(MAX_VIDEO_SECONDS * fps) + 1;
   const frameTimes: number[] = [];
   const push = (time: number) => {
-    if (frameTimes.length >= MAX_VIDEO_FRAMES) return;
+    if (frameTimes.length >= limit) return;
     frameTimes.push(time);
   };
   const timing = request.timing;
@@ -168,11 +184,11 @@ export function buildVideoPlan(rawTimes: number[], request: VideoRequest): Video
       throw new Error(`Seconds per time step must be between ${describeRange(SECONDS_PER_STEP_RANGE)}.`);
     }
     const perStep = Math.max(1, Math.round(timing.secondsPerStep * fps));
-    expected = perStep * steps.length;
-    if (expected <= MAX_VIDEO_FRAMES) {
-      for (let i = 0; i < steps.length; i += 1) {
-        const from = steps[i];
-        const to = steps[i + 1];
+    expected = perStep * stepTimes.length;
+    if (expected <= limit) {
+      for (let i = 0; i < stepTimes.length; i += 1) {
+        const from = stepTimes[i];
+        const to = stepTimes[i + 1];
         for (let k = 0; k < perStep; k += 1) {
           // The last step has nothing to move towards: it is held.
           push(request.interpolate && to !== undefined ? from + (to - from) * (k / perStep) : from);
@@ -187,7 +203,7 @@ export function buildVideoPlan(rawTimes: number[], request: VideoRequest): Video
     }
     const duration = (end - start) * factor;
     expected = Math.max(2, Math.round(duration * fps) + 1);
-    if (expected <= MAX_VIDEO_FRAMES) {
+    if (expected <= limit) {
       for (let j = 0; j < expected; j += 1) {
         const time = j === expected - 1 ? end : start + (end - start) * (j / (expected - 1));
         push(request.interpolate ? time : heldTime(times, time));
@@ -196,8 +212,8 @@ export function buildVideoPlan(rawTimes: number[], request: VideoRequest): Video
   } else {
     throw new Error('Choose how fast the video runs.');
   }
-  if (expected > MAX_VIDEO_FRAMES) {
-    throw new Error(`This video would need ${expected.toLocaleString('en-US')} frames; the limit is ${MAX_VIDEO_FRAMES.toLocaleString('en-US')}. Lower the frame rate or make the video faster.`);
+  if (expected > limit) {
+    throw new Error(`This video would last ${formatVideoDuration(expected / fps)} (${expected.toLocaleString('en-US')} frames); the limit is one hour of video. Make it faster or shorten the timeline.`);
   }
 
   // Each frame belongs to the first view whose end it has not passed.
@@ -217,15 +233,20 @@ export function buildVideoPlan(rawTimes: number[], request: VideoRequest): Video
     for (let k = 0; k < count; k += 1) frames[indices[k]].blend = (k + 1) / count;
   }
 
-  return { frames, seconds: frames.length / fps, width: size.width, height: size.height };
+  // Held frames read only the steps they show; interpolation reads every step in range.
+  const steps = request.interpolate ? stepTimes.length : new Set(frames.map(frame => frame.time)).size;
+  return { frames, seconds: frames.length / fps, interpolate: request.interpolate, steps, width: size.width, height: size.height };
 }
 
 /** "2 min 05 s" or "8.4 s". */
 export function formatVideoDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '—';
   if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes} min ${String(Math.round(seconds - minutes * 60)).padStart(2, '0')} s`;
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = String(total % 60).padStart(2, '0');
+  return hours ? `${hours} h ${String(minutes).padStart(2, '0')} min` : `${minutes} min ${rest} s`;
 }
 
 /** A download name the browser and Windows both accept. */
@@ -234,4 +255,60 @@ export function videoFileName(caseName: string, format: VideoFormat, date = new 
   const pad = (value: number) => String(value).padStart(2, '0');
   const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
   return `${safe}-paraview-${stamp}.${format}`;
+}
+
+/**
+ * Frames worth rendering to measure how long the export will take, in threes
+ * spread over the video: a frame far from the last one (it has to read saved
+ * steps from the case), the same frame again (render and encode only), and the
+ * frame that follows it in the video (a new time within data already read —
+ * interpolation, or nothing new when steps are held).
+ *
+ * Timing each frame whole and estimating per frame over-counted badly: in the
+ * export a saved step is read once and every frame between it and the next
+ * reuses it, which is what the three costs separate.
+ */
+export function benchmarkFrames(plan: VideoPlan, samples = 3): VideoFrame[] {
+  const count = plan.frames.length;
+  if (count === 0) return [];
+  const indices = [...new Set(Array.from({ length: samples }, (_, k) => Math.round(((count - 1) * (k + 1)) / (samples + 1))))];
+  return indices.flatMap(index => [plan.frames[index], plan.frames[index], plan.frames[Math.min(index + 1, count - 1)]]);
+}
+
+/** Frames of the plan that show a time not shown by the frame before. */
+export function newTimeFrames(plan: VideoPlan): number {
+  return plan.frames.filter((frame, index) => index === 0 || frame.time !== plan.frames[index - 1].time).length;
+}
+
+const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+
+/**
+ * The whole export's render time from the benchmark's per-frame durations
+ * (in the order benchmarkFrames gave the frames): every frame renders and
+ * encodes, every change of time pays the step on top, every saved step read
+ * pays its reading once. Null when the durations are not usable.
+ */
+export function estimateRenderSeconds(plan: VideoPlan, durations: number[]): number | null {
+  const triples: [number, number, number][] = [];
+  for (let i = 0; i + 2 < durations.length; i += 3) triples.push([durations[i], durations[i + 1], durations[i + 2]]);
+  if (!triples.length || !triples.flat().every(value => Number.isFinite(value) && value >= 0)) return null;
+  // The first frame also pays one-off costs (applying the view, setting up
+  // interpolation): left out when there are other samples.
+  const used = triples.length > 1 ? triples.slice(1) : triples;
+  const frame = mean(used.map(([, repeat]) => repeat));
+  const step = Math.max(0, mean(used.map(([, repeat, next]) => next - repeat)));
+  // A far jump reads both steps around an interpolated time, one otherwise.
+  const read = Math.max(0, mean(used.map(([far, repeat]) => far - repeat)) / (plan.interpolate ? 2 : 1));
+  return plan.frames.length * frame + newTimeFrames(plan) * step + plan.steps * read;
+}
+
+/** Whether to ask before exporting, and what to say. */
+export function videoConfirmation(seconds: number, frames: number, renderSeconds: number | null): string | null {
+  const long = seconds > CONFIRM_VIDEO_SECONDS;
+  const slow = renderSeconds !== null && renderSeconds > CONFIRM_RENDER_SECONDS;
+  if (!long && !slow) return null;
+  const render = renderSeconds === null
+    ? 'The render time could not be measured.'
+    : `Rendering should take about ${formatVideoDuration(renderSeconds)} (measured on a few frames of this case).`;
+  return `This video lasts ${formatVideoDuration(seconds)} (${frames.toLocaleString('en-US')} frames). ${render} The ParaView workbench stays locked while it renders; the export can be cancelled at any time.`;
 }
