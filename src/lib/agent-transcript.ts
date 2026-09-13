@@ -150,7 +150,26 @@ export function applyAgentTranscriptEvent(
       blocks[index] = { ...block, status: event.ok === false ? 'error' : 'ok', result: String(event.text || '') };
     }
   } else if (type === 'done') {
-    closeLive();
+    const finalText = typeof event.text === 'string' ? event.text : '';
+    if (finalText) {
+      // Provider deltas and message snapshots are only a live preview. Claude's
+      // result and Codex's last completed agent message are the authoritative
+      // answer for the turn. Rebuild the text portion from that one value so a
+      // sequence such as A, A+B, A+B+C can never survive into the finished UI.
+      const nonText = blocks.filter(block => block.kind !== 'text');
+      blocks.splice(0, blocks.length, ...nonText, {
+        kind: 'text', text: finalText, live: false,
+      });
+    } else {
+      // A failed/interrupted turn may have no authoritative result. Do not
+      // discard its useful partial output, but ensure no typing cursor remains.
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if ((block.kind === 'text' || block.kind === 'thinking') && block.live) {
+          blocks[i] = { ...block, live: false };
+        }
+      }
+    }
   }
 
   return blocks;

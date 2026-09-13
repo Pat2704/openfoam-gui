@@ -112,3 +112,25 @@ test('a fresh live block hides the cumulative summary before its final snapshot 
   ]);
   assert.equal((blocks.at(-1) as Extract<AgentTranscriptBlock, { kind: 'text' }>).snapshot, second);
 });
+
+test('the authoritative done result replaces every cumulative preview', () => {
+  const one = '\\(U_\\infty=10\\)';
+  const two = `${one}\n\\(D=0.4\\)\n\\(\\nu=1.5e-5\\)`;
+  const final = `${two}\ntherefore \\(Re_D=2.7e5\\)`;
+  const blocks = fold([
+    { t: 'block_start', channel: 'text', id: 'preview-1' },
+    { t: 'delta', channel: 'text', id: 'preview-1', text: one },
+    // Deliberately omit block_end: this reproduces the worst provider preview.
+    { t: 'block_start', channel: 'text', id: 'preview-2' },
+    { t: 'delta', channel: 'text', id: 'preview-2', text: two },
+    { t: 'tool_use', id: 'call-1', name: 'foam_help', input: {} },
+    { t: 'tool_result', id: 'call-1', ok: true, text: 'result' },
+    { t: 'block_start', channel: 'text', id: 'preview-3' },
+    { t: 'delta', channel: 'text', id: 'preview-3', text: final },
+    { t: 'done', ok: true, text: final },
+  ]);
+  assert.deepEqual(blocks.map(block => block.kind === 'tool' ? block.name : block.text), [
+    'foam_help', final,
+  ]);
+  assert.equal(blocks.filter(block => block.kind === 'text').length, 1);
+});

@@ -6,18 +6,20 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-09-13 — Agent lists no longer repeat during live replies
+## 2026-09-13 — Finished agent answers use the provider's canonical result
 
-- A trace from the packaged Codex 0.153.4 found the real sequence: token deltas
-  are incremental, but each fresh message after a tool starts from the complete
-  prior summary under a new item ID. Until its final snapshot arrived, `A`,
-  `A+B`, `A+B+C` were all visible; a first fix aimed at cumulative deltas inside
-  one item and therefore did not address the reported failure.
-- The shared Claude/Codex transcript now keeps the fresh item's raw stream while
-  hiding the summary prefix already shown before the intervening tool. The final
-  snapshot applies the same rule, including an exact replay. Distinct equal
-  messages and genuinely repeated token deltas remain intact. Regression tests
-  reproduce the live multi-item list rather than only its final snapshots.
+- Two earlier fixes tried to infer cumulative provider previews from delta and
+  item IDs. A real finished answer still contained triangular repetitions such
+  as `A`, `A+B`, `A+B+C`: the UI never consumed Claude's canonical result event,
+  while the Codex adapter explicitly emitted an empty result at turn completion.
+- `done.text` is now the contract for a completed turn. Claude already supplies
+  that authoritative result; the Codex adapter retains its last completed public
+  agent message and supplies it too. The shared transcript replaces all preview
+  text with that single answer while preserving tool and reasoning cards. A
+  regression test includes incomplete, cumulative previews and proves that only
+  one canonical final text block survives.
+- A packaged-server check then observed the same non-empty canonical text in
+  both Claude's and Codex's final `done` event.
 
 ## 2026-09-13 — v5.6.0: long videos confirmed with a measured time; Feature Edges
 

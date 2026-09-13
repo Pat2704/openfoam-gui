@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Rpc } from '../src/lib/codex-rpc';
-import { modelChoices, panelEvents } from '../src/lib/codex-protocol';
+import { completedAgentText, modelChoices, panelEvents } from '../src/lib/codex-protocol';
 
 test('Codex models use account catalog ids and each model’s actual reasoning levels', () => {
   const result = modelChoices([{ model: 'available', displayName: 'Available', isDefault: true,
@@ -21,6 +21,12 @@ test('Codex streams public summaries and authoritative text without exposing raw
   assert.deepEqual(panelEvents('item/reasoning/summaryTextDelta', { itemId: 'reason-1', delta: 'Checking' }), [{ t: 'delta', channel: 'thinking', text: 'Checking', id: 'reason-1' }]);
   assert.deepEqual(panelEvents('item/completed', { item: { id: 'answer-1', type: 'agentMessage', text: 'Complete' } }), [{ t: 'block_end', channel: 'text', text: 'Complete', id: 'answer-1' }]);
   assert.deepEqual(panelEvents('error', { willRetry: true, error: { message: 'transient' } }), []);
+  assert.equal(completedAgentText('item/completed', {
+    item: { type: 'agentMessage', text: 'Canonical final answer' },
+  }), 'Canonical final answer');
+  assert.equal(completedAgentText('item/completed', {
+    item: { type: 'reasoning', text: 'private' },
+  }), undefined);
 });
 
 function fixture() {

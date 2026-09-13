@@ -11,7 +11,7 @@ import { Rpc } from './codex-rpc';
 import definitions from '../../electron/mcp/openfoam-tools.json';
 import { callTool } from './agent-policy';
 import { buildCaseNotice, buildModeNotice, sanitizeUserMessage } from './agent-prompt';
-import { CODEX_CONFIG, modelChoices, panelEvents, type PanelEvent, type CodexModel } from './codex-protocol';
+import { CODEX_CONFIG, completedAgentText, modelChoices, panelEvents, type PanelEvent, type CodexModel } from './codex-protocol';
 import { codexDynamicTools } from './codex-tools';
 
 const run = promisify(execFile);
@@ -20,6 +20,8 @@ interface Install { path: string; version: string; source: string }
 interface Session {
   threadId?: string; turnId?: string; busy: boolean; interrupted: boolean;
   unrestricted: boolean; started: number; listeners: Set<Listener>; context: string;
+  /** Last completed public answer in the active turn; authoritative at `done`. */
+  answer: string;
   /** The case that was open the last time this thread was told. */
   caseName: string;
 }
@@ -40,7 +42,8 @@ function finish(session: Session, error?: string) {
   session.busy = false;
   session.turnId = undefined;
   if (error) emit(session, { t: 'error', message: error });
-  emit(session, { t: 'done', ok: !error, text: '', turns: 1, durationMs: Date.now() - session.started });
+  emit(session, { t: 'done', ok: !error, text: session.answer, turns: 1, durationMs: Date.now() - session.started });
+  session.answer = '';
   session.listeners.clear();
 }
 
@@ -126,6 +129,8 @@ async function onMessage(rpc: Rpc, msg: any) {
   }
   if (!session?.busy) return;
   if (msg.method === 'turn/started') session.turnId = p.turn?.id;
+  const answer = completedAgentText(msg.method, p);
+  if (answer !== undefined) session.answer = answer;
   for (const event of panelEvents(msg.method, p)) emit(session, event);
   if (msg.method === 'turn/completed') finish(session, p.turn?.status === 'failed' ? p.turn.error?.message || 'Codex failed.' : undefined);
 }
@@ -199,7 +204,7 @@ export async function send(options: { sessionId: string; message: string; model:
   if (session?.busy) throw new Error('Codex is already working on this conversation.');
   if (!session) {
     if (sessions.size >= 32) throw new Error('Too many Codex conversations. Close an existing conversation first.');
-    session = { busy: false, interrupted: false, unrestricted: false, started: 0, context: '',
+    session = { busy: false, interrupted: false, unrestricted: false, started: 0, context: '', answer: '',
       caseName: options.caseName, listeners: new Set() };
     sessions.set(options.sessionId, session);
   }
@@ -212,7 +217,7 @@ export async function send(options: { sessionId: string; message: string; model:
   const caseChanged = session.started > 0 && session.caseName !== options.caseName;
   const caseNotice = caseChanged ? buildCaseNotice(options.caseName, session.caseName) : '';
   session.caseName = options.caseName;
-  session.busy = true; session.interrupted = false; session.started = Date.now();
+  session.busy = true; session.interrupted = false; session.started = Date.now(); session.answer = '';
   session.listeners.add(listener); session.unrestricted = options.unrestricted;
   try {
     const rpc = await connection();

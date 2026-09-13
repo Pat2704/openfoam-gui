@@ -51,6 +51,14 @@ export const CODEX_CONFIG: Record<string, unknown> = {
 
 export type PanelEvent = Record<string, unknown> & { t: string };
 
+/** The completed agent item is the canonical public answer for this turn. */
+export function completedAgentText(method: string, p: any): string | undefined {
+  return method === 'item/completed' && p.item?.type === 'agentMessage'
+    && typeof p.item.text === 'string'
+    ? p.item.text
+    : undefined;
+}
+
 /** Only completed text is authoritative; summaries are the public reasoning. */
 export function panelEvents(method: string, p: any): PanelEvent[] {
   const itemId = p.itemId || p.item?.id;
@@ -62,7 +70,8 @@ export function panelEvents(method: string, p: any): PanelEvent[] {
     if (item?.type === 'reasoning') return [{ t: 'block_start', channel: 'thinking', id: itemId }];
   }
   if (method === 'item/completed') {
-    if (item?.type === 'agentMessage') return [{ t: 'block_end', channel: 'text', text: item.text || '', id: itemId }];
+    const answer = completedAgentText(method, p);
+    if (answer !== undefined) return [{ t: 'block_end', channel: 'text', text: answer, id: itemId }];
     if (item?.type === 'reasoning') return [{ t: 'block_end', channel: 'thinking', text: (item.summary || []).join('\n'), id: itemId }];
   }
   if (method === 'error' && !p.willRetry) return [{ t: 'error', message: p.error?.message || 'Codex failed.' }];
