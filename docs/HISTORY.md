@@ -20,6 +20,11 @@ audits.
   one canonical final text block survives.
 - A packaged-server check then observed the same non-empty canonical text in
   both Claude's and Codex's final `done` event.
+- The remaining symptom was visual: closing and reopening a panel immediately
+  showed the same stored answer correctly. Both panels had keyed their changing
+  transcript blocks by array index while `done` removed and reordered previews.
+  They now use stable semantic keys, give the canonical final block its own ID,
+  and synchronously commit the terminal replacement before the SSE stream closes.
 
 ## 2026-09-13 — v5.6.0: long videos confirmed with a measured time; Feature Edges
 

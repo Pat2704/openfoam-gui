@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAgentTranscriptEvent, type AgentTranscriptBlock } from '../src/lib/agent-transcript';
+import {
+  agentTranscriptBlockKey, applyAgentTranscriptEvent, type AgentTranscriptBlock,
+} from '../src/lib/agent-transcript';
 
 function fold(events: Record<string, unknown>[]): AgentTranscriptBlock[] {
   return events.reduce(applyAgentTranscriptEvent, [] as AgentTranscriptBlock[]);
@@ -133,4 +135,20 @@ test('the authoritative done result replaces every cumulative preview', () => {
     'foam_help', final,
   ]);
   assert.equal(blocks.filter(block => block.kind === 'text').length, 1);
+  assert.equal(blocks.at(-1)?.kind === 'text' ? blocks.at(-1)?.id : undefined, 'turn-final');
+});
+
+test('render keys survive reordering and force a remount from live preview to final text', () => {
+  const tool: AgentTranscriptBlock = {
+    kind: 'tool', id: 'call-1', name: 'foam_help', input: {}, status: 'ok', result: '',
+  };
+  assert.equal(agentTranscriptBlockKey(tool, 4), agentTranscriptBlockKey(tool, 0));
+  assert.notEqual(
+    agentTranscriptBlockKey({ kind: 'text', id: 'answer-1', text: 'preview', live: true }, 0),
+    agentTranscriptBlockKey({ kind: 'text', id: 'answer-1', text: 'answer', live: false }, 0),
+  );
+  assert.equal(
+    agentTranscriptBlockKey({ kind: 'text', id: 'turn-final', text: 'answer', live: false }, 7),
+    'text:turn-final:final',
+  );
 });

@@ -20,6 +20,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   X, Send, Trash2, Loader2, GripHorizontal, Check, Copy, ChevronDown, ChevronRight,
   Square, AlertCircle, ExternalLink, LogOut, LogIn, UserRound, Sparkles, Wrench, FolderOpen,
@@ -31,7 +32,7 @@ import { toast } from 'sonner';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 import { LAUNCHER_Z, bringToFront, isFront } from '@/lib/floating-order';
 import { useAgentLauncher } from '@/components/agent-launcher-provider';
-import { applyAgentTranscriptEvent, type AgentTranscriptBlock as Block } from '@/lib/agent-transcript';
+import { agentTranscriptBlockKey, applyAgentTranscriptEvent, type AgentTranscriptBlock as Block } from '@/lib/agent-transcript';
 import { KnowledgeStatus } from '@/components/knowledge-status';
 
 // ── Claude's mark ───────────────────────────────────────────────────────────
@@ -380,7 +381,7 @@ export default function ClaudePanel() {
   // ── Applying one streamed event to the transcript ──
   const apply = useCallback((event: Record<string, unknown>) => {
     const t = event.t;
-    setTurns(prev => {
+    const update = () => setTurns(prev => {
       const next = [...prev];
       const last = next[next.length - 1];
       if (!last || last.role !== 'assistant') return next;
@@ -401,6 +402,11 @@ export default function ClaudePanel() {
       next[next.length - 1] = { ...last, blocks };
       return next;
     });
+    // React may batch a long SSE burst. The terminal replacement must reach the
+    // DOM before the stream closes; otherwise stale preview lists can remain
+    // painted until closing and reopening the panel triggers another render.
+    if (t === 'done') flushSync(update);
+    else update();
   }, []);
 
   // ── Send ──
@@ -1032,10 +1038,11 @@ function TurnView({ turn, running }: { turn: Turn; running: boolean }) {
   return (
     <div className="space-y-2">
       {blocks.map((block, i) => {
-        if (block.kind === 'tool') return <ToolCard key={i} block={block} />;
-        if (block.kind === 'thinking') return <ThinkingCard key={i} text={block.text} live={block.live} />;
+        const key = agentTranscriptBlockKey(block, i);
+        if (block.kind === 'tool') return <ToolCard key={key} block={block} />;
+        if (block.kind === 'thinking') return <ThinkingCard key={key} text={block.text} live={block.live} />;
         return (
-          <div key={i} className="text-sm leading-relaxed">
+          <div key={key} className="text-sm leading-relaxed">
             <Markdown text={block.text} />
             {block.live && <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-[#D97757] animate-pulse" />}
           </div>

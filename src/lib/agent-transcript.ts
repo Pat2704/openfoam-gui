@@ -3,6 +3,12 @@ export type AgentTranscriptBlock =
   | { kind: 'thinking'; id?: string; text: string; live: boolean; snapshot?: string }
   | { kind: 'tool'; id: string; name: string; input: Record<string, unknown>; status: 'running' | 'ok' | 'error'; result: string };
 
+/** Stable React identity even while transcript blocks are inserted or removed. */
+export function agentTranscriptBlockKey(block: AgentTranscriptBlock, index: number): string {
+  if (block.kind === 'tool') return `tool:${block.id || `legacy-${index}`}`;
+  return `${block.kind}:${block.id || `legacy-${index}`}:${block.live ? 'live' : 'final'}`;
+}
+
 /**
  * Fold one provider event into the blocks displayed for an assistant turn.
  *
@@ -158,7 +164,7 @@ export function applyAgentTranscriptEvent(
       // sequence such as A, A+B, A+B+C can never survive into the finished UI.
       const nonText = blocks.filter(block => block.kind !== 'text');
       blocks.splice(0, blocks.length, ...nonText, {
-        kind: 'text', text: finalText, live: false,
+        kind: 'text', id: 'turn-final', text: finalText, live: false,
       });
     } else {
       // A failed/interrupted turn may have no authoritative result. Do not
