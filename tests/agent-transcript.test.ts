@@ -90,3 +90,25 @@ test('growing snapshots around tools keep order and render only each new suffix'
     '1. blockMesh', 'run_openfoam', '2. decomposePar', 'run_openfoam', '3. foamRun',
   ]);
 });
+
+test('a fresh live block hides the cumulative summary before its final snapshot arrives', () => {
+  const first = '- Profile: 32 grooves\n- Radius: 0.2 m';
+  const second = `${first}\n- Depth: 0.015 m`;
+  const events = [
+    { t: 'block_start', channel: 'text', id: 'answer-1' },
+    { t: 'delta', channel: 'text', id: 'answer-1', text: first },
+    { t: 'block_end', channel: 'text', id: 'answer-1', text: first },
+    { t: 'tool_use', id: 'call-1', name: 'read_case_file', input: { case: 'test', path: 'system/blockMeshDict' } },
+    { t: 'tool_result', id: 'call-1', ok: true, text: 'file' },
+    { t: 'block_start', channel: 'text', id: 'answer-2' },
+    // Reproduce the real trace: ordinary token chunks reconstruct the complete
+    // earlier summary before the provider adds the new bullet.
+    ...['- Pro', 'file: 32 ', 'grooves\n', '- Radius:', ' 0.2 m', '\n- Dep', 'th: 0.015 m']
+      .map(text => ({ t: 'delta', channel: 'text', id: 'answer-2', text })),
+  ];
+  const blocks = fold(events);
+  assert.deepEqual(blocks.map(block => block.kind === 'tool' ? block.name : block.text), [
+    first, 'read_case_file', '- Depth: 0.015 m',
+  ]);
+  assert.equal((blocks.at(-1) as Extract<AgentTranscriptBlock, { kind: 'text' }>).snapshot, second);
+});

@@ -60,15 +60,35 @@ export function applyAgentTranscriptEvent(
     } else {
       const block = blocks[index] as Extract<AgentTranscriptBlock, { kind: 'text' | 'thinking' }>;
       const delta = String(event.text || '');
-      // Both agent transports normally describe this as a delta, but provider
-      // versions have also emitted a growing live snapshot: A, then A+B, then
-      // A+B+C. Appending those produces A+A+B+A+B+C, most visibly as repeated
-      // Markdown list items. A strict prefix proves this update already carries
-      // the block on screen; ordinary repeated deltas ("ha", "ha") still append.
-      const text = block.text && delta.length > block.text.length && delta.startsWith(block.text)
+      const source = block.snapshot ?? block.text;
+      // A few provider versions have sent a growing snapshot in one `delta`;
+      // the normal protocol sends the small incremental pieces seen below.
+      const raw = source && delta.length > source.length && delta.startsWith(source)
         ? delta
-        : block.text + delta;
-      blocks[index] = { ...block, text };
+        : source + delta;
+      const priorIndex = previousFinal(channel, index);
+      const prior = priorIndex >= 0
+        ? blocks[priorIndex] as Extract<AgentTranscriptBlock, { kind: 'text' | 'thinking' }>
+        : undefined;
+      const priorSource = prior?.snapshot ?? prior?.text ?? '';
+      const toolBetween = priorIndex >= 0 && blocks
+        .slice(priorIndex + 1, index)
+        .some(candidate => candidate.kind === 'tool');
+
+      // The real multi-tool stream starts each fresh message from the complete
+      // summary already rendered before the tool, then adds one fact. Hide that
+      // known prefix while it is reconstructed and retain `raw` separately so
+      // following token deltas still append to the provider's complete block.
+      if (toolBetween && priorSource && (priorSource.startsWith(raw) || raw.startsWith(priorSource))) {
+        const text = raw.length > priorSource.length
+          ? raw.slice(priorSource.length).replace(/^(?:\r?\n)+/, '')
+          : '';
+        blocks[index] = { ...block, text, snapshot: raw };
+      } else {
+        blocks[index] = block.snapshot === undefined
+          ? { ...block, text: raw }
+          : { ...block, text: raw, snapshot: raw };
+      }
     }
   } else if (type === 'block_end') {
     const channel = event.channel as 'text' | 'thinking';
@@ -86,11 +106,18 @@ export function applyAgentTranscriptEvent(
       ? blocks[priorIndex] as Extract<AgentTranscriptBlock, { kind: 'text' | 'thinking' }>
       : undefined;
     const priorSnapshot = prior?.snapshot ?? prior?.text ?? '';
+    const toolBetween = priorIndex >= 0 && blocks
+      .slice(priorIndex + 1, index >= 0 ? index : blocks.length)
+      .some(candidate => candidate.kind === 'tool');
 
     // Claude and Codex can publish A, then A+B, then A+B+C as separate
     // completed items around tool calls. Preserve the tool ordering, but show
     // only the new suffix instead of rendering the growing prefix each time.
-    if (priorSnapshot && text.length > priorSnapshot.length && text.startsWith(priorSnapshot)) {
+    if (toolBetween && priorSnapshot && text === priorSnapshot) {
+      // A fresh provider item can be only a replay of the previous cumulative
+      // summary. It contributes no visible text, but tools between the two stay.
+      if (index >= 0) blocks.splice(index, 1);
+    } else if (priorSnapshot && text.length > priorSnapshot.length && text.startsWith(priorSnapshot)) {
       if (index >= 0 && priorIndex === index - 1) {
         blocks.splice(priorIndex, 2, { kind: channel, id, text, live: false });
       } else if (index < 0 && priorIndex === blocks.length - 1) {

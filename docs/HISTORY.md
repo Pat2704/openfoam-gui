@@ -8,14 +8,16 @@ audits.
 
 ## 2026-09-13 — Agent lists no longer repeat during live replies
 
-- The shared Claude/Codex transcript used to append every event labelled as a
-  delta. A provider's growing live snapshots (`A`, `A+B`, `A+B+C`) therefore
-  rendered as `A`, `A`, `B`, `A`, `B`, `C`, which was especially conspicuous
-  in final Markdown lists.
-- A live update that strictly contains the whole block already on screen now
-  replaces it; genuine incremental and intentionally repeated text still
-  appends. Regression tests reproduce the reported list pattern and protect
-  real repeated fragments.
+- A trace from the packaged Codex 0.153.4 found the real sequence: token deltas
+  are incremental, but each fresh message after a tool starts from the complete
+  prior summary under a new item ID. Until its final snapshot arrived, `A`,
+  `A+B`, `A+B+C` were all visible; a first fix aimed at cumulative deltas inside
+  one item and therefore did not address the reported failure.
+- The shared Claude/Codex transcript now keeps the fresh item's raw stream while
+  hiding the summary prefix already shown before the intervening tool. The final
+  snapshot applies the same rule, including an exact replay. Distinct equal
+  messages and genuinely repeated token deltas remain intact. Regression tests
+  reproduce the live multi-item list rather than only its final snapshots.
 
 ## 2026-09-13 — v5.6.0: long videos confirmed with a measured time; Feature Edges
 
