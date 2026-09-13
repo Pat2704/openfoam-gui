@@ -6,8 +6,13 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-09-13 — Finished agent answers use the provider's canonical result
+## 2026-09-13 — v5.6.1: finished agent answers use the provider's canonical result
 
+- Released `v5.6.1` at the user's request with notes in
+  `docs/releases/v5.6.1.md`, covering this entry. Direct publication reused
+  the pair built for commit `03a4a83` (source at 5.6.0), renamed without
+  a second build, so its embedded version resource reads 5.6.0. GitHub keeps
+  v5.6.1 and v5.6.0; the v5.5.0 release entry was removed, its tag kept.
 - Two earlier fixes tried to infer cumulative provider previews from delta and
   item IDs. A real finished answer still contained triangular repetitions such
   as `A`, `A+B`, `A+B+C`: the UI never consumed Claude's canonical result event,
