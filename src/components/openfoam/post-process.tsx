@@ -1288,7 +1288,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               <Button size="sm" variant={view === 'table' ? 'default' : 'ghost'} className="h-7 px-2 text-[10px]" onClick={() => setView('table')}>
                 <Table2 className="mr-1 h-3 w-3" /> Table
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data || copyingCsv} onClick={() => void copyCsv()}>
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data?.rows.length || copyingCsv} onClick={() => void copyCsv()}>
                 {copyingCsv ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Copy className="mr-1 h-3 w-3" />} CSV
               </Button>
               <Button
@@ -1337,9 +1337,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   <p className="text-xs">Pick a result on the left, or compute one</p>
                 </div>
               </div>
-            ) : !data ? (
+            ) : !data?.rows.length ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : 'No readable data in this file'}
+                {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : selected.kind === 'log' ? 'No solver residuals found in this log' : 'No readable data in this file'}
               </div>
             ) : view === 'chart' ? (
               <div className="flex h-full min-h-0 w-full justify-center overflow-auto">
@@ -1489,7 +1489,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         <aside className="flex min-h-0 flex-col border-l bg-muted/15">
           <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-2 text-xs font-semibold">
             <Sigma className="h-3.5 w-3.5" /> Series
-            {data && <Badge variant="outline" className="ml-auto text-[9px]">{visibleSeries.length}/{data.columns.length - 1}</Badge>}
+            {data && <Badge variant="outline" className="ml-auto text-[9px]">{visibleSeries.length}/{Math.max(0, data.columns.length - 1)}</Badge>}
           </div>
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-1.5 p-2">

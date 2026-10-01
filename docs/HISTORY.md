@@ -6,6 +6,15 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-01 — Restore residual charts/tables; show File Editor indexing
+
+- Fixed a regression rejecting Foundation's `Time = 0.005s` output: numeric
+  time parsing accepts the seconds suffix while rejecting malformed tokens.
+  Real `myCavity` log verification recovered 2,000 samples and five fields.
+  Empty logs now show an explanation instead of an empty chart and negative count.
+- File Editor shows separate tree-indexing and file-reading indicators, including
+  lazy folders; background refresh preserves the open buffer and existing tree.
+
 ## 2026-10-01 — Post-Process data integrity and background Compute; ParaView legends
 
 - Post-Process exposes retained/plotted coverage, inventory/log limits, parser
@@ -452,20 +461,10 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
 
-Audited against the v14/v13 sources, every installed template and 127 real
-replays in `cavity_test` (61 failed before the change). The Compute panel now:
-
-- carries `-solver` when the case and installed utility support it, and refuses
-  its invalid combination with `-fields`;
-- reads template comments, commented options, nesting, placeholders, examples,
-  patch/field/direction arguments and sampled lines in OpenFOAM's own idiom;
-- searches every etc directory `findConfigFile` uses, including user entries;
-- shows class-header descriptions, examples and property tables from the
-  installed source, plus output location, times and libraries.
-
-Remaining replay failures are genuine physics/case mismatches or required
-placeholders the cavity cannot supply; the panel leaves those holes visible.
-The detailed evidence is in commit `89211cb` and the v5.3.0 release history.
+Audited v14/v13 templates and 127 `cavity_test` replays. Compute now resolves
+solver/field options, template arguments, etc search paths and class references
+from the installation. Remaining failures were physics/case mismatches or required
+placeholders. Details: commit `89211cb` and the v5.3.0 release history.
 
 ## 2026-09-08 – 09-09 in brief
 

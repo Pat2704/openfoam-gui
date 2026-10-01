@@ -63,6 +63,27 @@ test('negative simulation times are valid and malformed time markers do not cont
   assert.deepEqual(parsed.data.map(point => [point.time, point.p]), [[-2, 0.4], [-1, 0.2]]);
 });
 
+test('Foundation time values with a seconds suffix populate residual charts and tables', () => {
+  const log = `Time = 0.005s
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 1.1324e-06, No Iterations 5
+GAMG:  Solving for p, Initial residual = 1, Final residual = 0.0378382, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.0371368, Final residual = 6.05335e-07, No Iterations 10
+Time = 1e-2s
+smoothSolver:  Solving for Ux, Initial residual = 0.325089, Final residual = 3.0405e-06, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.25, Final residual = 1e-6, No Iterations 3
+`;
+  assert.deepEqual(residualsToTable(log), {
+    columns: ['Time', 'Ux', 'p'], rows: [[0.005, 1, 1], [0.01, 0.325089, 0.25]],
+  });
+  assert.equal(parseAllResiduals(log, { selection: 'last' }).data[0].p, 0.0371368);
+  assert.equal(parseResidualEvents(log).events[0].iterations, 5);
+});
+
+test('a seconds suffix does not permit malformed numeric prefixes to reuse a timestep', () => {
+  const log = 'Time = -2s\np: iter = 1 residual = 0.4\nTime = 1garbage\np: iter = 1 residual = 0.8\nTime = 1es\np: iter = 1 residual = 0.7\nTime = .5s\np: iter = 1 residual = 0.2\n';
+  assert.deepEqual(parseAllResiduals(log).data.map(point => [point.time, point.p]), [[-2, 0.4], [0.5, 0.2]]);
+});
+
 test('timesteps come back in time order however the log was assembled', () => {
   const outOfOrder = 'Time = 2\nsmoothSolver:  Solving for p, Initial residual = 0.2, Final residual = 1e-8, No Iterations 3\nTime = 1\nsmoothSolver:  Solving for p, Initial residual = 0.9, Final residual = 1e-8, No Iterations 3\n';
   const { data } = parseAllResiduals(outOfOrder);

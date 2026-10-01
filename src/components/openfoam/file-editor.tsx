@@ -54,10 +54,12 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   const [fileContent, setFileContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
   const [loading, setLoading] = useState(false);
+  const [treeIndexingRequests, setTreeIndexingRequests] = useState(0);
   const [saving, setSaving] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set(['0', 'system', 'constant']));
   const [loadedDirs, setLoadedDirs] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
+  const indexing = treeIndexingRequests > 0 || loadingDirs.size > 0;
   const [newFileName, setNewFileName] = useState('');
   const [newFileDir, setNewFileDir] = useState('0');
   const [newDirName, setNewDirName] = useState('');
@@ -176,10 +178,10 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // first level returned by getCaseInfo.
   const fetchCaseInfo = useCallback(async (manual = false) => {
     if (!caseName) return;
-    if (manual) setLoading(true);
     const pending = treeFetchRef.current;
+    if (pending && !manual) return;
+    setTreeIndexingRequests(count => count + 1);
     if (pending) {
-      if (!manual) return;
       await pending;
     }
 
@@ -239,7 +241,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       await request;
     } finally {
       if (treeFetchRef.current === request) treeFetchRef.current = null;
-      if (manual) setLoading(false);
+      setTreeIndexingRequests(count => count - 1);
     }
   }, [caseName]);
 
@@ -793,6 +795,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 className="w-full flex items-center gap-1 rounded hover:bg-accent text-left text-sm"
                 style={{ paddingLeft: `${8 + depth * 16}px`, paddingRight: '4px' }}
                 onClick={() => toggleDir(itemPath)}
+                aria-expanded={isExpanded}
+                aria-busy={isLoading}
               >
                 {isExpanded ? <ChevronDown className="w-3 h-3 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 flex-shrink-0" />}
                 {isStandardDir ? (
@@ -801,6 +805,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   <Folder className="w-3.5 h-3.5 text-yellow-600 flex-shrink-0" />
                 )}
                 <span className="font-medium truncate">{item.name}/</span>
+                {isLoading && <Loader2 className="w-3 h-3 animate-spin flex-shrink-0 text-primary" aria-hidden="true" />}
                 {subItems.length > 0 && (
                   <Badge variant="secondary" className="text-[10px] px-1 ml-auto flex-shrink-0">{subItems.length}</Badge>
                 )}
@@ -831,11 +836,11 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
             </div>
             {/* Expanded children */}
             {isExpanded && isLoading && subItems.length === 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground" style={{ paddingLeft: `${28 + depth * 16}px` }}>
-                <Loader2 className="w-3 h-3 animate-spin" /> Loading…
+              <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground" style={{ paddingLeft: `${28 + depth * 16}px` }}>
+                <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" /> Indexing folder…
               </div>
             )}
-            {isExpanded && !isLoading && subItems.length > 0 && (
+            {isExpanded && subItems.length > 0 && (
               <div className="space-y-0">
                 {renderTreeItems(itemPath, subItems, depth + 1)}
               </div>
@@ -965,10 +970,14 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               onClick={() => void fetchCaseInfo(true)}
               title="Refresh file tree"
               aria-label="Refresh file tree"
+              aria-busy={indexing}
             >
-              <RefreshCw className={`w-3.5 h-3.5 text-muted-foreground hover:text-foreground ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 text-muted-foreground hover:text-foreground ${indexing ? 'animate-spin' : ''}`} aria-hidden="true" />
             </button>
           </CardTitle>
+          <div role="status" aria-live="polite" aria-atomic="true" className="flex h-5 items-center gap-1.5 text-[10px] text-primary">
+            {indexing && <><Loader2 className="w-3 h-3 animate-spin flex-shrink-0" aria-hidden="true" /><span>Indexing files and folders…</span></>}
+          </div>
         </div>
 
         {/* Multi-select action bar */}
@@ -986,7 +995,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
           </div>
         )}
 
-        <CardContent className="p-0 flex-1 min-h-0 overflow-hidden">
+        <CardContent aria-busy={indexing} className="p-0 flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
             <div className="px-2 py-1 space-y-0">
               {/* Standard directories rendered first (0, system, constant) */}
@@ -1011,10 +1020,13 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                         <button
                           className="w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-sm"
                           onClick={() => toggleDir(d)}
+                          aria-expanded={expandedDirs.has(d)}
+                          aria-busy={loadingDirs.has(d)}
                         >
                           {expandedDirs.has(d) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                           <FolderPlus className="w-3.5 h-3.5 text-yellow-500" />
                           <span className="font-medium">{d}/</span>
+                          {loadingDirs.has(d) && <Loader2 className="w-3 h-3 animate-spin text-primary" aria-hidden="true" />}
                           <Badge variant="secondary" className="text-[10px] px-1 ml-auto">{items.length}</Badge>
                         </button>
                       </div>
@@ -1022,8 +1034,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                       {expandedDirs.has(d) && (
                         <>
                           {loadingDirs.has(d) && items.length === 0 && (
-                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
-                              <Loader2 className="w-3 h-3 animate-spin" /> Loading…
+                            <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
+                              <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" /> Indexing folder…
                             </div>
                           )}
                           {items.length > 0 && (
@@ -1064,10 +1076,13 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                         <button
                           className="w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-sm"
                           onClick={() => toggleDir(dir)}
+                          aria-expanded={expandedDirs.has(dir)}
+                          aria-busy={loadingDirs.has(dir)}
                         >
                           {expandedDirs.has(dir) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                           <Folder className="w-3.5 h-3.5 text-yellow-600" />
                           <span className="font-medium truncate">{dir}/</span>
+                          {loadingDirs.has(dir) && <Loader2 className="w-3 h-3 animate-spin text-primary" aria-hidden="true" />}
                           <Badge variant="secondary" className="text-[10px] px-1 ml-auto">{items.length}</Badge>
                         </button>
                         <button
@@ -1084,8 +1099,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                       {expandedDirs.has(dir) && (
                         <>
                           {loadingDirs.has(dir) && items.length === 0 && (
-                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
-                              <Loader2 className="w-3 h-3 animate-spin" /> Loading…
+                            <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
+                              <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" /> Indexing folder…
                             </div>
                           )}
                           {items.length > 0 && (
@@ -1188,6 +1203,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 <FileCode className="w-4 h-4 flex-shrink-0 text-primary" />
                 <span className="truncate font-mono text-sm font-medium" title={`${caseName}/${currentFile}`}>{caseName}/{currentFile}</span>
                 {isModified && <Badge variant="secondary" className="text-[10px] text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30">modified</Badge>}
+                {loading && <span role="status" className="flex flex-shrink-0 items-center gap-1 text-[10px] text-primary"><Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" /> Reading file…</span>}
               </div>
               {/* Only ever shown for a DIRTY buffer: a clean one is reloaded
                   silently, so there is nothing to ask about. */}
@@ -1349,9 +1365,11 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center">
-              <FileCode className="w-16 h-16 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">Select a file from the tree to edit its content</p>
-              <p className="text-xs mt-1">Or create a new file using the panel below</p>
+              {loading ? (
+                <div role="status"><Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin text-primary" aria-hidden="true" /><p className="text-sm">Reading file…</p></div>
+              ) : (
+                <><FileCode className="w-16 h-16 mx-auto mb-3 opacity-30" /><p className="text-sm">Select a file from the tree to edit its content</p><p className="text-xs mt-1">Or create a new file using the panel below</p></>
+              )}
             </div>
           </div>
         )}

@@ -59,7 +59,9 @@ export function parseResidualEvents(log: string): {
     const line = lines[i];
     const timeMatch = line.match(/^Time\s*=\s*(\S+)/);
     if (timeMatch) {
-      const nextTime = Number(timeMatch[1]);
+      // Foundation's unit-aware time output appends "s" directly to the value.
+      const numericTime = timeMatch[1].match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?:s)?$/);
+      const nextTime = numericTime ? Number(numericTime[1]) : NaN;
       if (!Number.isFinite(nextTime)) { currentTime = null; continue; }
       if (currentTime !== null && nextTime <= currentTime) run += 1;
       currentTime = nextTime;
