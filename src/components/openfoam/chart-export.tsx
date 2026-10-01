@@ -313,13 +313,13 @@ export default function ChartExportDialog({
       {source.series.map(series => (
         <Line
           key={series.index}
-          type="monotone"
+          type="linear"
           dataKey={`c${series.index}`}
           name={series.name}
           stroke={series.color}
           strokeWidth={options.lineWidth}
           dot={false}
-          connectNulls
+          connectNulls={false}
           isAnimationActive={false}
         />
       ))}

@@ -527,6 +527,7 @@ except Exception:
 case_root = os.path.realpath(os.path.dirname(marker))
 nodes = OrderedDict()
 guides = {}
+legend_bars = {}
 selected_id = 'reader'
 current_time = 0.0
 next_filter = 1
@@ -764,6 +765,7 @@ def node_state(identifier, node):
 def state():
     active = nodes[selected_id]['proxy']
     active.UpdatePipeline(time=current_time)
+    sync_legends()
     info = active.GetDataInformation()
     return {
         'caseName': case_name, 'version': pv_version, 'selectedId': selected_id,
@@ -775,6 +777,28 @@ def state():
         'reader': reader_metadata(), 'view': view_metadata(),
         'videoFormats': supported_video_formats,
     }
+
+def sync_legends():
+    # A colour map is shared by its displays. Keep its bar if any visible
+    # display requests it, and hide tracked bars whose arrays were replaced.
+    wanted = set()
+    for node in nodes.values():
+        color = node['color']
+        if not node['visible'] or not color['legend'] or color['association'] not in ('CELLS', 'POINTS') or not color['name']:
+            continue
+        if not any(a['association'] == color['association'] and a['name'] == color['name'] for a in arrays_for(node['proxy'])):
+            continue
+        try:
+            lut = node['display'].LookupTable
+            if lut is None: continue
+            wanted.add(lut)
+            if lut not in legend_bars:
+                node['display'].SetScalarBarVisibility(view, True)
+                legend_bars[lut] = GetScalarBar(lut, view)
+        except Exception:
+            continue
+    for lut, bar in legend_bars.items():
+        set_if_supported(bar, 'Visibility', 1 if lut in wanted else 0)
 
 def apply_display(node):
     display = node['display']
@@ -793,16 +817,12 @@ def apply_display(node):
         except Exception:
             try: ColorBy(display, None)
             except Exception: pass
-        try: display.SetScalarBarVisibility(view, False)
-        except Exception: pass
         return
     if color['association'] == 'BLOCKS':
         try: ColorBy(display, ('FIELD', 'vtkBlockColors'))
         except Exception:
             try: display.ColorArrayName = [None, '']
             except Exception: pass
-        try: display.SetScalarBarVisibility(view, False)
-        except Exception: pass
         return
     ColorBy(display, (color['association'], color['name']))
     try:
@@ -811,9 +831,9 @@ def apply_display(node):
         if color['preset'] in available_presets: lut.ApplyPreset(color['preset'], True)
     except Exception:
         pass
-    display.SetScalarBarVisibility(view, bool(color['legend']))
 
 def render(identifier, width, height, quality=92):
+    sync_legends()
     width = max(320, min(1920, int(width or 1000)))
     height = max(240, min(1200, int(height or 700)))
     quality = max(35, min(95, int(quality or 92)))
@@ -835,6 +855,7 @@ def set_time(value):
     for node in nodes.values():
         node['proxy'].UpdatePipeline(time=current_time)
     for node in nodes.values(): apply_display(node)
+    sync_legends()
 
 def refresh_reader(follow_latest=True):
     global times, current_time, raw_times
@@ -1644,11 +1665,6 @@ def set_camera(camera, previous=None, blend=1.0):
 
 def apply_snapshot(snapshot, lock_ranges):
     global background_name
-    # Legends belong to the colour maps being replaced: hide them first, or the
-    # previous view's bar stays on screen next to the new one.
-    for node in nodes.values():
-        try: node['display'].SetScalarBarVisibility(view, False)
-        except Exception: pass
     background_name = snapshot['background']
     set_if_supported(view, 'UseColorPaletteForBackground', 0)
     view.Background = BACKGROUNDS[background_name]
@@ -1668,6 +1684,7 @@ def apply_snapshot(snapshot, lock_ranges):
                 lut.RescaleTransferFunction(value_range[0], value_range[1])
             except Exception:
                 pass
+    sync_legends()
     set_camera(snapshot['camera'])
 
 def rescale_to_frame():

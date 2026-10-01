@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  listPostProcessing,
+  listPostProcessingInventory,
   readPostProcessDataset,
   listFunctionCatalog,
-  runPostProcessFunction,
+  startPostProcessFunction,
+  getOpenFOAMInstallationIdentity,
   postProcessUtility,
   readFunctionClassDoc,
   getPostProcessContext,
@@ -11,13 +12,14 @@ import {
 import {
   parseFoamTable,
   mergeRestarts,
-  downsampleRows,
+  sampleRowsForChart,
   summarizeColumn,
   validateTypedSpec,
   isTimeSeries,
 } from '@/lib/postprocess';
 import { apiError } from '@/lib/api-response';
 import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
+import { postProcessJobs } from '@/lib/postprocess-jobs';
 
 // GET /api/postprocess
 //   ?action=list&case=…                       → { datasets }
@@ -28,7 +30,8 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 //
 // POST /api/postprocess
 //   { action: 'run', case, spec, time, fields, region, solver,
-//     latestTime, noZero, constant }           → { exitCode, output, spec }
+//     latestTime, noZero, constant }           → { job } (202)
+//   { action: 'cancel', case, id }              → { job }
 
 export async function GET(req: NextRequest) {
   try {
@@ -38,7 +41,13 @@ export async function GET(req: NextRequest) {
     switch (action) {
       case 'list': {
         const caseName = validateCaseName(searchParams.get('case') || '');
-        return NextResponse.json({ datasets: listPostProcessing(caseName) });
+        return NextResponse.json(listPostProcessingInventory(caseName));
+      }
+
+      case 'job': {
+        const caseName = validateCaseName(searchParams.get('case') || '');
+        const installationId = getOpenFOAMInstallationIdentity().id;
+        return NextResponse.json({ job: postProcessJobs.get(caseName, installationId, searchParams.get('id') || undefined) });
       }
 
       case 'data': {
@@ -88,11 +97,20 @@ export async function GET(req: NextRequest) {
         const stats = table.columns.map((name, index) =>
           index === 0 ? null : { name, ...summarizeColumn(table.rows, index) },
         );
+        const sampled = sampleRowsForChart(table.rows, maxPoints);
+        const diagnosticSlices = seriesLike
+          ? readable.filter(slice => !incompatible.includes(slice.startTime))
+          : readable.filter(slice => slice.startTime === shownTime);
+        const diagnostics = diagnosticSlices.reduce((total, slice) => ({
+          skippedRows: total.skippedRows + (slice.table.diagnostics?.skippedRows ?? 0),
+          nonFiniteCells: total.nonFiniteCells,
+        }), { skippedRows: 0, nonFiniteCells: 0 });
+        diagnostics.nonFiniteCells = table.rows.reduce((total, row) => total + row.slice(1).filter(value => !Number.isFinite(value)).length, 0);
 
         return NextResponse.json({
           mode: seriesLike ? 'series' : 'profile',
           columns: table.columns,
-          rows: downsampleRows(table.rows, maxPoints),
+          rows: sampled.rows,
           totalRows: table.rows.length,
           stats: stats.filter(Boolean),
           notes: table.notes,
@@ -105,6 +123,8 @@ export async function GET(req: NextRequest) {
           truncated: table.truncated || slices.some(slice => slice.truncated),
           timesTruncated: datasetRead.timesTruncated,
           runsTruncated: seriesLike && datasetRead.slicesTruncated,
+          diagnostics,
+          omittedFeatures: sampled.omittedFeatures,
         });
       }
 
@@ -136,7 +156,7 @@ export async function GET(req: NextRequest) {
 
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: list, data, catalog, doc, context' },
+          { error: 'Invalid action. Use: list, data, catalog, doc, context, job' },
           { status: 400 },
         );
     }
@@ -149,11 +169,15 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    if (body?.action !== 'run') {
-      return NextResponse.json({ error: 'Invalid action. Use: run' }, { status: 400 });
+    if (body?.action !== 'run' && body?.action !== 'cancel') {
+      return NextResponse.json({ error: 'Invalid action. Use: run, cancel' }, { status: 400 });
     }
 
     const caseName = validateCaseName(body.case || '');
+    const installationId = getOpenFOAMInstallationIdentity().id;
+    if (body.action === 'cancel') {
+      return NextResponse.json({ job: await postProcessJobs.cancel(caseName, installationId, String(body.id || '')) });
+    }
 
     // The specification arrives as the text the user edited, so it is checked
     // rather than composed: a leading name this installation actually offers,
@@ -167,7 +191,7 @@ export async function POST(req: NextRequest) {
       ? body.fields.filter((field: unknown): field is string => typeof field === 'string')
       : undefined;
 
-    const result = runPostProcessFunction(caseName, spec, {
+    const options = {
       time: typeof body.time === 'string' && body.time.trim() ? body.time.trim() : undefined,
       fields: fields?.length ? fields : undefined,
       region: typeof body.region === 'string' && body.region.trim() ? body.region.trim() : undefined,
@@ -175,9 +199,10 @@ export async function POST(req: NextRequest) {
       latestTime: body.latestTime === true,
       noZero: body.noZero === true,
       constant: body.constant === true,
-    });
-
-    return NextResponse.json({ ...result, spec });
+    };
+    const job = postProcessJobs.start(caseName, installationId, spec,
+      output => startPostProcessFunction(caseName, spec, options, output));
+    return NextResponse.json({ job }, { status: 202 });
   } catch (error: unknown) {
     return apiError(error);
   }

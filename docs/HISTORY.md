@@ -6,6 +6,22 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-01 — Post-Process data integrity and background Compute; ParaView legends
+
+- Post-Process exposes retained/plotted coverage, inventory/log limits, parser
+  anomalies and non-finite gaps. Bounded sampling retains extrema and boundaries,
+  reporting omissions. Screen/export use straight segments without bridging gaps;
+  spatial profiles report sample means without drift.
+- Residual events offer first/last/maximum initial values per timestep; first is
+  the Post-Process/Monitor default. Restarts replace complete recomputed timesteps.
+- Compute uses session-local, installation/case-scoped background jobs, bounded
+  output, status recovery and cancellation of token-verified Linux process groups.
+  Failed cancellation is retryable; timeouts have a bounded cleanup attempt.
+- ParaView reconciles scalar bars across visible displays sharing a LUT, including
+  time/video snapshots, preserving shared legends and hiding obsolete ones.
+- Checks cover the full suite, job lifecycle, real Foundation v14 Compute/cancel,
+  spike/gap data, partial logs and native ParaView 6.2 with a solved test case.
+
 ## 2026-09-13 — v5.6.1: finished agent answers use the provider's canonical result
 
 - Released `v5.6.1` at the user's request with notes in

@@ -55,6 +55,7 @@ export interface FoamTable {
   synthesizedColumns: boolean;
   /** Set when the row limit stopped the read before the end of the file. */
   truncated: boolean;
+  diagnostics?: { skippedRows: number; nonFiniteCells: number };
 }
 
 /**
@@ -239,6 +240,8 @@ export function parseFoamTable(content: string, options: ParseTableOptions = {})
   const width = columns.length;
   const rows: number[][] = [];
   let truncated = false;
+  let skippedRows = 0;
+  let nonFiniteCells = 0;
   for (let index = firstDataIndex; index < lines.length; index += 1) {
     const line = lines[index];
     if (!line.trim() || line.startsWith('#')) continue;
@@ -249,7 +252,11 @@ export function parseFoamTable(content: string, options: ParseTableOptions = {})
     const values = tokenizeFoamRow(line).flatMap(flattenCell);
     // A short or long row means the file changed shape mid-stream, which a
     // crashed write can do. Keeping it would misalign every series after it.
-    if (values.length !== width) continue;
+    if (values.length !== width || !Number.isFinite(values[0])) {
+      skippedRows += 1;
+      continue;
+    }
+    nonFiniteCells += values.slice(1).filter(value => !Number.isFinite(value)).length;
     rows.push(values);
   }
 
@@ -259,6 +266,7 @@ export function parseFoamTable(content: string, options: ParseTableOptions = {})
     notes,
     synthesizedColumns: !usable,
     truncated,
+    diagnostics: { skippedRows, nonFiniteCells },
   };
 }
 
@@ -354,18 +362,71 @@ export function mergeRestarts(slices: RunSlice[]): MergedTable {
 /**
  * Thin a series to at most `limit` rows for plotting.
  *
- * Uniform stride rather than averaging, and the last row is always kept: on a
- * convergence plot the final value is the one being read off, and an averaged
- * or dropped endpoint would misreport it.
+ * Keep endpoints, column extrema and missing-data transitions before sampling
+ * local envelopes. Values are never averaged or invented. A very fragmented,
+ * wide table may have more important points than the budget can hold; the
+ * detailed result reports that limitation rather than claiming perfect fidelity.
  */
 export function downsampleRows(rows: number[][], limit: number): number[][] {
-  if (limit <= 0 || rows.length <= limit) return rows;
-  const stride = Math.ceil(rows.length / limit);
-  const thinned: number[][] = [];
-  for (let index = 0; index < rows.length; index += stride) thinned.push(rows[index]);
-  const last = rows[rows.length - 1];
-  if (thinned[thinned.length - 1] !== last) thinned.push(last);
-  return thinned;
+  return sampleRowsForChart(rows, limit).rows;
+}
+
+export function sampleRowsForChart(rows: number[][], limit: number): { rows: number[][]; omittedFeatures: number } {
+  if (!Number.isFinite(limit) || limit <= 0 || rows.length <= limit) return { rows, omittedFeatures: 0 };
+  const budget = Math.max(1, Math.floor(limit));
+  if (budget === 1) return { rows: [rows[rows.length - 1]], omittedFeatures: rows.length > 1 ? 1 : 0 };
+  const endpoints = new Set([0, rows.length - 1]);
+  const extrema = new Set<number>();
+  const gaps = new Set<number>();
+  const width = rows[0].length;
+  const state = (sample: number) => Number.isFinite(sample) ? (sample > 0 ? 1 : 0) : -1;
+  for (let column = 0; column < width; column += 1) {
+    let minIndex = -1, maxIndex = -1;
+    for (let index = 0; index < rows.length; index += 1) {
+      const value = rows[index][column];
+      const finite = Number.isFinite(value);
+      if (column > 0 && index > 0 && state(value) !== state(rows[index - 1][column])) {
+        gaps.add(index - 1);
+        gaps.add(index);
+      }
+      if (!finite) continue;
+      if (minIndex < 0 || value < rows[minIndex][column]) minIndex = index;
+      if (maxIndex < 0 || value > rows[maxIndex][column]) maxIndex = index;
+    }
+    if (minIndex >= 0) extrema.add(minIndex);
+    if (maxIndex >= 0) extrema.add(maxIndex);
+  }
+  const important = new Set([...endpoints, ...extrema, ...gaps]);
+  const kept = new Set(endpoints);
+  const add = (index: number) => { if (kept.size < budget) kept.add(index); };
+  for (const index of extrema) add(index);
+  const gapIndices = [...gaps].filter(index => !kept.has(index)).sort((a, b) => a - b);
+  const available = budget - kept.size;
+  if (gapIndices.length <= available) gapIndices.forEach(add);
+  else for (let slot = 0; slot < available; slot += 1) add(gapIndices[Math.floor(slot * gapIndices.length / available)]);
+
+  const buckets = Math.floor((budget - kept.size) / Math.max(2, 2 * (width - 1)));
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const start = Math.floor(bucket * rows.length / buckets);
+    const end = Math.floor((bucket + 1) * rows.length / buckets);
+    for (let column = 1; column < width; column += 1) {
+      let minIndex = -1, maxIndex = -1;
+      for (let index = start; index < end; index += 1) {
+        if (!Number.isFinite(rows[index][column])) continue;
+        if (minIndex < 0 || rows[index][column] < rows[minIndex][column]) minIndex = index;
+        if (maxIndex < 0 || rows[index][column] > rows[maxIndex][column]) maxIndex = index;
+      }
+      if (minIndex >= 0) add(minIndex);
+      if (maxIndex >= 0) add(maxIndex);
+    }
+  }
+  // Fill any spare slots evenly, including flat stretches whose extrema share
+  // the same row. This also keeps the requested budget a strict upper bound.
+  for (let slot = 1; slot < budget - 1 && kept.size < budget; slot += 1) add(Math.floor(slot * (rows.length - 1) / (budget - 1)));
+  return {
+    rows: [...kept].sort((a, b) => a - b).map(index => rows[index]),
+    omittedFeatures: [...important].filter(index => !kept.has(index)).length,
+  };
 }
 
 /**

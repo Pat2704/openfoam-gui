@@ -114,9 +114,22 @@ the **OpenFOAM card in the Dashboard**.
   give you a time selector instead. **Follow** re-reads every few seconds, so a
   drag coefficient can be watched while the solver is still running.
 
+  Coverage indicators distinguish retained rows from plotted points and flag
+  partial reads, skipped rows and non-finite values. Large charts retain extrema
+  and gap boundaries within a fixed point budget, reporting when that budget
+  cannot retain every feature. Screen and exported curves use straight segments
+  with gaps. Sampled profiles report a sample mean rather than temporal drift.
+
   The same panel also lists the case's **solver logs** and plots their initial
   residuals, so a convergence history is read, compared and exported the same
-  way as everything else.
+  way as everything else. Choose the first, last or maximum initial residual
+  per timestep; the first is the default, also used by Monitor.
+
+  Compute runs in the background with live output, elapsed time and cancellation.
+  Reopening the panel restores the latest job during the current app session.
+  Jobs belong to the case and OpenFOAM installation that started them; another
+  case stays available while they run. Output is bounded and clearly marked
+  when only its tail is retained.
 
   **Save chart** opens the picture before it is written: pick the output size,
   the background (white, dark, transparent or your own two colours), the title,
@@ -166,6 +179,11 @@ the **OpenFOAM card in the Dashboard**.
   ask before starting. The video can be saved anywhere or into the case's
   `postProcessing/videos`. Displays also offer ParaView's **Feature Edges**
   representation.
+
+  Colour legends follow the visible pipeline: shared colour maps keep one
+  legend while any visible display needs it, and obsolete legends disappear
+  after recolouring, hiding, deletion or a switch to Solid Color. Video view
+  changes use the same visibility rules.
 
   ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.
