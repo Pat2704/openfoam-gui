@@ -83,8 +83,8 @@ the **OpenFOAM card in the Dashboard**.
   you leave the wizard.
 
   ![The New Case wizard, on the step where the mesh and the patch list are defined](screenshots/new-case.png)
-- **File Editor** — view, edit, create and delete case files. A loading spinner
-  identifies file/folder indexing and directory expansion without hiding the tree.
+- **File Editor** — view, edit, create and delete case files. The tree spinner
+  appears on initial loading and manual refresh; automatic updates stay silent.
 - **Commands** — run `blockMesh`, `foamRun`, `snappyHexMesh`… with a command
   list filtered to the OpenFOAM version in use. One-click **Allrun** launches
   the case script in the background and takes you to the Monitor.

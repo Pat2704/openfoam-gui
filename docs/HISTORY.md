@@ -8,12 +8,13 @@ audits.
 
 ## 2026-10-01 — Restore residual charts/tables; show File Editor indexing
 
-- Fixed a regression rejecting Foundation's `Time = 0.005s` output: numeric
-  time parsing accepts the seconds suffix while rejecting malformed tokens.
-  Real `myCavity` log verification recovered 2,000 samples and five fields.
+- Fixed a regression rejecting Foundation's `Time = 0.005s` output; numeric
+  parsing accepts seconds, rejects malformed tokens and recovered 2,000 samples
+  across five fields from the real `myCavity` log.
   Empty logs now show an explanation instead of an empty chart and negative count.
-- File Editor shows separate tree-indexing and file-reading indicators, including
-  lazy folders; background refresh preserves the open buffer and existing tree.
+- File Editor separates tree indexing from file reading, preserving buffers/tree.
+  At the user's request, tree spinners now appear only before the initial listing
+  or during manual refresh; background updates and lazy folders stay silent.
 
 ## 2026-10-01 — Post-Process data integrity and background Compute; ParaView legends
 
