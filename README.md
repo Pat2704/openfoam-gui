@@ -341,14 +341,16 @@ the newest usable version. No fixed version or installation directory is assumed
 For a portable copy or custom directory, use the gear on the **ParaView card in
 the Dashboard**, enter the ParaView folder, `paraview.exe`, or `pvpython.exe`,
 and click **Save path**. The choice is stored locally. ParaView is not bundled;
-it runs as a separate background process when a case is opened in its
-workbench.
+it runs as a separate background process for the workbench.
 
 The first ParaView start after a reboot is slow because Windows reads several
 hundred of ParaView's libraries off the disk, scanning each one, before anything
 else can happen. So a few seconds after the app opens, it loads ParaView once in
-the background at low priority — the card shows **warming up** meanwhile — and
-the ParaView tab then starts in seconds. The switch is in the same settings.
+the background at low priority — the card shows **warming up** meanwhile. It
+keeps one engine ready, including its render context, and opening a case reuses
+that process at normal priority. Opening during warm-up continues in the same
+engine. The first case still needs to read its mesh and fields; large cases and
+the first WSL connection take longer. The switch is in the same settings.
 
 ---
 

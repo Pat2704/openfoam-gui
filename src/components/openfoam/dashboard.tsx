@@ -105,6 +105,7 @@ export default function Dashboard({
   const [paraViewWarmup, setParaViewWarmup] = useState<ParaViewWarmup | null>(null);
   /** On unless the user turned it off; the saved value is 'off' or absent. */
   const [warmupEnabled, setWarmupEnabled] = useState(true);
+  const warmupEnabledRef = useRef(true);
 
   // Tutorials state
   const [tutCategories, setTutCategories] = useState<TutorialCategory[]>([]);
@@ -234,6 +235,7 @@ export default function Dashboard({
    * is already done rather than repeating it.
    */
   const startParaViewWarmup = useCallback(async (pathOverride: string) => {
+    if (!warmupEnabledRef.current) return;
     try {
       const response = await fetch('/api/paraview', {
         method: 'POST',
@@ -247,10 +249,20 @@ export default function Dashboard({
   }, []);
 
   const toggleWarmup = async (enabled: boolean) => {
+    warmupEnabledRef.current = enabled;
     setWarmupEnabled(enabled);
     const saved = await patchFoamyConfig({ 'paraview-warmup': enabled ? 'on' : 'off' });
     if (!saved) toast.error('The setting could not be saved.');
     if (enabled && paraViewStatus?.found) void startParaViewWarmup(paraViewPath);
+    if (!enabled) {
+      try {
+        await fetch('/api/paraview', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'warmup', enabled: false }),
+        });
+        setParaViewWarmup(null);
+      } catch { /* the preference still applies at the next app start */ }
+    }
   };
 
   // Follow a warm-up while it runs, so the card and the settings can say when
@@ -337,6 +349,7 @@ export default function Dashboard({
       started = true;
       const savedPath = config['paraview-path'] || '';
       const warm = config['paraview-warmup'] !== 'off';
+      warmupEnabledRef.current = warm;
       setParaViewPath(savedPath);
       setWarmupEnabled(warm);
       return detectThenWarm(savedPath, warm);

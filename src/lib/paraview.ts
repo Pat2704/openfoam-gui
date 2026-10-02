@@ -2023,7 +2023,7 @@ current_time = times[-1]
 reader.UpdatePipeline(time=current_time)
 
 stage('rendering')
-view = CreateRenderView()
+view = globals().get('_ofstudio_warm_view') or CreateRenderView()
 view.ViewSize = [1000, 700]
 set_if_supported(view, 'UseColorPaletteForBackground', 0)
 view.Background = BACKGROUNDS[background_name]
@@ -2044,7 +2044,7 @@ nodes['reader'] = {
     'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
 }
 ResetCamera(view)
-emit(0, True, {'state': state()})
+emit(globals().get('_ofstudio_ready_id', 0), True, {'state': state()})
 
 # ParaView replaces sys.stdin with vtkPythonStdStreamCaptureHelper so its GUI
 # console can capture text. The original stream is the real process pipe and is
@@ -2192,10 +2192,10 @@ const lifecycleGuard = new ParaViewLifecycleGuard();
 class ParaViewWorker {
   readonly child: ChildProcessWithoutNullStreams;
   readonly tempDir: string;
-  readonly caseName: string;
+  caseName: string;
   readonly pvpythonPath: string;
   /** The case's .OpenFOAM marker, as a Windows path: its folder is the case. */
-  readonly markerPath: string;
+  markerPath: string;
   version: string;
   /** Frames written so far by a running video export. */
   onVideoProgress: (frame: number, total: number) => void = () => undefined;
@@ -2355,26 +2355,45 @@ async function beginSession(
     }
 
     setStage('launching');
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
-    lifecycleGuard.assertCurrent(ticket);
-    const scriptPath = path.join(tempDir, 'worker.py');
-    await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
-    lifecycleGuard.assertCurrent(ticket);
-    // The same render flags the background warm-up uses, so the libraries it
-    // left in the cache are the ones this engine loads.
-    const child = spawn(installation.pvpythonPath, [
-      ...PARAVIEW_RENDER_ARGS,
-      scriptPath, markerPath, tempDir, caseName, installation.version || 'unknown',
-    ], {
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    });
-    worker = new ParaViewWorker(
-      child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown', markerPath,
-    );
-    pending.worker = worker;
-    const ready = await worker.waitUntilReady(setStage);
+    const prepared = warmup?.pvpythonPath === installation.pvpythonPath && warmup.worker?.isRunning
+      ? warmup.worker : null;
+    let ready: WorkerResult;
+    if (prepared) {
+      // Transfer ownership before awaiting: cancellation now stops this engine,
+      // and another request cannot adopt the same idle process.
+      warmup!.worker = null;
+      worker = prepared;
+      worker.caseName = caseName;
+      worker.markerPath = markerPath;
+      pending.worker = worker;
+      if (worker.child.pid) {
+        try { os.setPriority(worker.child.pid, os.constants.priority.PRIORITY_NORMAL); } catch { /* best effort */ }
+      }
+      await worker.waitUntilReady(setStage);
+      lifecycleGuard.assertCurrent(ticket);
+      ready = await worker.request('activate', {
+        marker: markerPath, case: caseName, version: installation.version || 'unknown',
+      }, READY_TIMEOUT_MS);
+    } else {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
+      lifecycleGuard.assertCurrent(ticket);
+      const scriptPath = path.join(tempDir, 'worker.py');
+      await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
+      lifecycleGuard.assertCurrent(ticket);
+      const child = spawn(installation.pvpythonPath, [
+        ...PARAVIEW_RENDER_ARGS,
+        scriptPath, markerPath, tempDir, caseName, installation.version || 'unknown',
+      ], {
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      });
+      worker = new ParaViewWorker(
+        child, tempDir, caseName, installation.pvpythonPath, installation.version || 'unknown', markerPath,
+      );
+      pending.worker = worker;
+      ready = await worker.waitUntilReady(setStage);
+    }
     lifecycleGuard.assertCurrent(ticket);
     if (!ready.state) throw new Error('ParaView started without returning its pipeline state.');
     // The engine knows its own version exactly; the installation scan only
@@ -2687,7 +2706,8 @@ export async function stopParaViewSession(cancelStarts = true): Promise<void> {
 // and 1.4-1.9 s once Windows has the files. Nothing in the app makes the first
 // load faster; what it can do is pay for it while the user is on the
 // Dashboard, meshing or running, instead of while they stare at the ParaView
-// tab. After that the workbench starts on a warm cache.
+// tab. Keep that engine alive, so opening the tab reuses its libraries and GL
+// context instead of repeating the import and first render in a new process.
 
 /**
  * What the warm-up executes: the same flags the workbench engine is launched
@@ -2697,12 +2717,39 @@ export async function stopParaViewSession(cancelStarts = true): Promise<void> {
  * difference is exactly the part a bare import would have left cold.
  */
 export const PARAVIEW_RENDER_ARGS = ['--force-offscreen-rendering', '--opengl-window-backend', 'Win32'] as const;
-const WARMUP_SCRIPT = "from paraview.simple import *; view = CreateView('RenderView'); Render(view)";
+const WARMUP_SCRIPT = String.raw`
+import json, sys
+sys.stdout.write('__OFSTUDIO_JSON__' + json.dumps({'id': -1, 'stage': 'interpreter'}) + '\n')
+sys.stdout.flush()
+from paraview.simple import *
+sys.stdout.write('__OFSTUDIO_JSON__' + json.dumps({'id': -1, 'stage': 'engine'}) + '\n')
+sys.stdout.flush()
+_ofstudio_warm_view = CreateRenderView()
+Render(_ofstudio_warm_view)
+sys.stdout.write('__OFSTUDIO_JSON__' + json.dumps({'id': 0, 'ok': True, 'result': {}}) + '\n')
+sys.stdout.flush()
+if len(sys.argv) >= 3:
+    worker_file, output_dir = sys.argv[1:3]
+    for line in sys.__stdin__:
+        request = json.loads(line)
+        if request.get('action') == 'quit':
+            sys.stdout.write('__OFSTUDIO_JSON__' + json.dumps({'id': request['id'], 'ok': True, 'result': {}}) + '\n')
+            sys.stdout.flush()
+            break
+        if request.get('action') != 'activate':
+            raise RuntimeError('This prepared engine has no active case.')
+        data = request['data']
+        _ofstudio_ready_id = request['id']
+        sys.argv = [worker_file, data['marker'], output_dir, data['case'], data['version']]
+        with open(worker_file, encoding='utf-8') as source:
+            exec(compile(source.read(), worker_file, 'exec'), globals())
+        break
+`;
 /** Longer than any cold start measured; only a real hang reaches it. */
 const WARMUP_TIMEOUT_MS = 10 * 60_000;
 
-export function paraViewWarmupArgs(): string[] {
-  return [...PARAVIEW_RENDER_ARGS, '-c', WARMUP_SCRIPT];
+export function paraViewWarmupArgs(workerFile?: string, outputDir?: string): string[] {
+  return [...PARAVIEW_RENDER_ARGS, '-c', WARMUP_SCRIPT, ...(workerFile && outputDir ? [workerFile, outputDir] : [])];
 }
 
 export type ParaViewWarmupState = 'warming' | 'warm' | 'failed';
@@ -2720,7 +2767,7 @@ let warmup: {
   startedAt: number;
   finishedAt: number | null;
   error?: string;
-  child: ReturnType<typeof spawn> | null;
+  worker: ParaViewWorker | null;
 } | null = null;
 
 export function getParaViewWarmup(): ParaViewWarmupStatus | null {
@@ -2733,6 +2780,16 @@ export function getParaViewWarmup(): ParaViewWarmupStatus | null {
   };
 }
 
+let warmupGeneration = 0;
+
+/** Release only the idle engine; an adopted case belongs to its session. */
+export async function stopParaViewWarmup(): Promise<void> {
+  warmupGeneration += 1;
+  const worker = warmup?.worker;
+  warmup = null;
+  if (worker) await worker.stop(false);
+}
+
 /**
  * Load ParaView once in the background so the workbench later starts warm.
  *
@@ -2740,13 +2797,16 @@ export function getParaViewWarmup(): ParaViewWarmupStatus | null {
  * asks twice, joins the warm-up already done or running rather than paying
  * for another. A session already running or starting has warmed the cache
  * itself, so there is nothing to do. The process runs below normal priority,
- * writes nothing, and exits by itself; a failure only means the workbench
+ * waits on its pipe with no case loaded. A failure only means the workbench
  * will start cold, as it did before, so it is reported and never retried in a
  * loop.
  */
 export async function warmParaView(customPath = ''): Promise<ParaViewWarmupStatus | null> {
+  const generation = warmupGeneration;
   if (activeWorker?.isRunning || startup) return getParaViewWarmup();
   const installation = await findParaView(customPath);
+  if (generation !== warmupGeneration) return getParaViewWarmup();
+  if (activeWorker?.isRunning || startup) return getParaViewWarmup();
   if (!installation.found || !installation.pvpythonPath) return null;
   const pvpythonPath = installation.pvpythonPath;
 
@@ -2755,10 +2815,12 @@ export async function warmParaView(customPath = ''): Promise<ParaViewWarmupStatu
   }
   // A different installation was chosen while the previous one was warming:
   // that cache is the wrong one to fill.
-  if (warmup?.child && warmup.state === 'warming') warmup.child.kill();
+  if (warmup?.worker) await warmup.worker.stop(false);
+  if (generation !== warmupGeneration) return getParaViewWarmup();
+  if (activeWorker?.isRunning || startup) return getParaViewWarmup();
 
   const entry: NonNullable<typeof warmup> = {
-    pvpythonPath, state: 'warming', startedAt: Date.now(), finishedAt: null, child: null,
+    pvpythonPath, state: 'warming', startedAt: Date.now(), finishedAt: null, worker: null,
   };
   warmup = entry;
 
@@ -2766,17 +2828,26 @@ export async function warmParaView(customPath = ''): Promise<ParaViewWarmupStatu
     if (entry.state !== 'warming') return;
     entry.state = state;
     entry.finishedAt = Date.now();
-    entry.child = null;
     if (error) entry.error = error;
   };
 
+  let tempDir = '';
   try {
-    const child = spawn(pvpythonPath, paraViewWarmupArgs(), {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openfoam-studio-paraview-session-'));
+    const scriptPath = path.join(tempDir, 'worker.py');
+    await fs.writeFile(scriptPath, WORKER_SCRIPT, { encoding: 'utf-8', mode: 0o600 });
+    if (warmup !== entry || startup || activeWorker?.isRunning) {
+      await fs.rm(tempDir, { recursive: true, force: true });
+      finish('failed', 'A case started before the prepared engine was launched.');
+      return getParaViewWarmup();
+    }
+    const child = spawn(pvpythonPath, paraViewWarmupArgs(scriptPath, tempDir), {
       windowsHide: true,
-      stdio: 'ignore',
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
     });
-    entry.child = child;
+    const worker = new ParaViewWorker(child, tempDir, '', pvpythonPath, installation.version || 'unknown', '');
+    entry.worker = worker;
     // Below normal, so the warm-up yields to whatever the user is actually
     // doing — a solve in WSL, the mesh view, another application.
     if (child.pid) {
@@ -2784,16 +2855,26 @@ export async function warmParaView(customPath = ''): Promise<ParaViewWarmupStatu
     }
     const timer = setTimeout(() => {
       if (entry.state === 'warming') {
-        child.kill();
+        void worker.stop(false);
         finish('failed', 'ParaView did not finish loading within ten minutes.');
       }
     }, WARMUP_TIMEOUT_MS);
-    child.once('error', error => { clearTimeout(timer); finish('failed', error.message); });
-    child.once('exit', code => {
+    void worker.waitUntilReady(() => undefined).then(() => {
       clearTimeout(timer);
-      finish(code === 0 ? 'warm' : 'failed', code === 0 ? undefined : `pvpython exited with code ${code}.`);
+      finish('warm');
+    }, error => {
+      clearTimeout(timer);
+      finish('failed', error.message);
+      void worker.stop(false);
+    });
+    child.once('exit', () => {
+      if (entry.worker !== worker) return;
+      entry.worker = null;
+      entry.state = 'failed';
+      entry.error = 'The prepared ParaView engine stopped.';
     });
   } catch (error) {
+    if (tempDir && !entry.worker) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     finish('failed', error instanceof Error ? error.message : 'ParaView could not be launched.');
   }
   return getParaViewWarmup();

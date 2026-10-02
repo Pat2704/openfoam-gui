@@ -57,18 +57,16 @@ test('The installation version is read from the folders ParaView creates', () =>
   assert.equal(paraViewVersionFromNames('Tools', ['bin', 'doc']), '');
 });
 
-test('The background warm-up loads what the workbench engine will load', () => {
-  // Its whole point is to leave the right libraries in the Windows cache: the
-  // same render flags the engine is spawned with, the same paraview.simple
-  // import, and an offscreen render so the rendering stack is loaded too.
+test('The background warm-up prepares the render engine and waits for case activation', () => {
   const args = paraViewWarmupArgs();
   assert.deepEqual(args.slice(0, PARAVIEW_RENDER_ARGS.length), [...PARAVIEW_RENDER_ARGS]);
   assert.equal(args[PARAVIEW_RENDER_ARGS.length], '-c');
   const script = args[PARAVIEW_RENDER_ARGS.length + 1];
   assert.ok(script.includes('from paraview.simple import *'));
   assert.ok(script.includes('Render('));
-  // A one-liner: nothing is written to disk and nothing is left running.
   assert.equal(args.length, PARAVIEW_RENDER_ARGS.length + 2);
+  assert.deepEqual(paraViewWarmupArgs('worker.py', 'temporary').slice(-2), ['worker.py', 'temporary']);
+  assert.ok(script.includes("request.get('action') != 'activate'"));
 });
 
 test('cancelling ParaView invalidates running and queued startup tickets', () => {

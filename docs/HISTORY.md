@@ -6,6 +6,15 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-02 — Reuse the prepared ParaView engine
+
+- Background warm-up keeps one case-free pvpython/render context for the next
+  startup, including starts during warm-up, rather than launching a second engine.
+  Activation restores normal priority and retains cancellable lifecycle tickets.
+- Native disposable-case first-render comparison: 3.79 s with a new process,
+  0.70 s with the prepared engine; first WSL access and cold library loads vary.
+  Native activation/cancellation/recovery, rendering, table and legend tests pass.
+
 ## 2026-10-02 — Phase 2: curve comparisons and ParaView numerical views
 
 - Post-Process adds a separate comparison of up to six dataset/log curves from
@@ -443,23 +452,14 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
 
-- Released `v5.3.0` at the user's request; notes in `docs/releases/v5.3.0.md`.
-  It carries the two entries below: the Post-Process catalogue grounded in the
-  installed OpenFOAM, and ParaView loaded in the background at startup.
-- Direct publication flow: the `v5.2.2` pair built from commit `9d7719f` and
-  verified in the packaged server was renamed to the `v5.3.0` names, not
-  rebuilt, so the files' embedded version resource still reads 5.2.2; the app
-  shows no version of its own. Retention kept `v5.3.0` and `v5.2.2` as GitHub
-  downloads and removed the `v5.2.1` release entry; its tag stays.
+- Released `v5.3.0`; notes in `docs/releases/v5.3.0.md`. Direct publication
+  renamed the packaged-verified `v5.2.2` pair from `9d7719f`, so embedded version
+  resources still read 5.2.2. Retention kept v5.3.0/v5.2.2 and the older tags.
 
 ## 2026-09-10 — ParaView loads in the background before its tab is opened
 
-- A cold Windows ParaView import/render is dominated by loading its libraries;
-  repeated starts are much faster. `warmParaView()` imports and renders once per
-  installation/app process, below normal priority with a ten-minute ceiling.
-- Dashboard starts it after detection, reports progress and offers the persisted
-  `paraview-warmup` switch. Workbench startup acknowledges an overlapping warm-up.
-  Defender settings were left to the user. Details are in Git history.
+- Added low-priority import/render warm-up after detection, with progress,
+  a ten-minute ceiling and persisted `paraview-warmup` switch. See Git history.
 
 ## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
 

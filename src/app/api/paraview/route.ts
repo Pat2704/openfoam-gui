@@ -19,6 +19,7 @@ import {
   sendParaViewCommand,
   startParaViewSession,
   stopParaViewSession,
+  stopParaViewWarmup,
   warmParaView,
 } from '@/lib/paraview';
 import type { VideoRequest } from '@/lib/paraview-video';
@@ -148,6 +149,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'warmup') {
+      if (body.enabled === false) {
+        await stopParaViewWarmup();
+        return NextResponse.json({ warmup: null });
+      }
       // Loads ParaView once in the background so the workbench later starts on
       // a warm cache. Returns at once: the answer is the warm-up's state, which
       // the Dashboard then follows through `action=session`.
