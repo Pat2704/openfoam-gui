@@ -399,6 +399,7 @@ async function startServer() {
   // A separate Codex home keeps this panel's login and tools independent of
   // the user's desktop Codex tasks. Resolve Windows folders here, as for Claude.
   env.OFSTUDIO_CODEX_HOME = path.join(app.getPath('userData'), 'codex');
+  env.OFSTUDIO_USER_DATA = app.getPath('userData');
   env.APPDATA = app.getPath('appData');
   env.LOCALAPPDATA = path.join(app.getPath('home'), 'AppData', 'Local');
   // Avoid the Node worker being affected by the parent's color/CI settings.

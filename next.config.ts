@@ -56,6 +56,7 @@ const nextConfig: NextConfig = {
       // deliberately stay: LICENSE and THIRD-PARTY-NOTICES.md belong with the
       // binary.
       'docs/**',
+      '.analysis-documents/**',
       'AGENTS.md',
       'eslint.config.mjs',
       'postcss.config.mjs',

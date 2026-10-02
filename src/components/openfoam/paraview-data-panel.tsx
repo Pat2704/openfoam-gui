@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Download, Image as ImageIcon, Loader2, RefreshCw } from 'lucide-react';
+import { Download, Image as ImageIcon, Loader2, RefreshCw, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -13,6 +13,7 @@ import { defaultParaViewColumns, isolatedParaViewSample, paraViewChartRows, para
 import type { ParaViewDataAssociation, ParaViewDataRequest, ParaViewDataTable } from '@/lib/pvplots';
 import ChartExportDialog from './chart-export';
 import type { ChartExportSource } from './chart-export';
+import { createParaViewAnalysisTransfer, publishAnalysisTransfer } from '@/lib/analysis-transfer';
 
 const COLORS = ['#38bdf8', '#f472b6', '#facc15', '#4ade80', '#a78bfa', '#fb923c', '#2dd4bf', '#f87171'];
 
@@ -144,12 +145,21 @@ export default function ParaViewDataPanel({ workbench, mode, locked, active }: {
     setOffset(0);
   }
 
+  function sendToPostProcess() {
+    if (!data || locked || loading) return;
+    try {
+      publishAnalysisTransfer(createParaViewAnalysisTransfer(workbench, data, selected?.label || 'Output', crypto.randomUUID(), new Date().toISOString()));
+      toast.success('Captured curves sent to Post-Process.');
+    } catch (cause) { toast.error(cause instanceof Error ? cause.message : String(cause)); }
+  }
+
   return <div className="absolute inset-0 top-9 flex min-h-0 flex-col bg-background text-foreground">
     <div className="flex flex-wrap items-center gap-2 border-b p-2 text-xs">
       <span className="min-w-0 flex-1 truncate font-semibold">{selected?.label} · time {workbench.time}</span>
       <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={locked || loading || saving} onClick={() => setRetry(value => value + 1)}><RefreshCw className="h-3 w-3" /> Refresh data</Button>
       <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={!data || saving} onClick={() => void exportCsv()}>{saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />} CSV</Button>
       {mode === 'chart' && <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={!source || !data?.rows.length} onClick={() => setSaveChart(true)}><ImageIcon className="h-3 w-3" /> Save chart</Button>}
+      {mode === 'chart' && <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={!data?.rows.length || locked || loading || columns.length < 2 || columns.length > 7} title="Send a captured snapshot of up to six series, with coverage and provenance" onClick={sendToPostProcess}><Send className="h-3 w-3" /> Send to Post-Process</Button>}
     </div>
     {metadata && currentChoices && <div className="space-y-2 border-b p-2 text-xs">
       <div className="flex flex-wrap items-center gap-2">

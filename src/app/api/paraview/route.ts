@@ -24,6 +24,7 @@ import {
 } from '@/lib/paraview';
 import type { VideoRequest } from '@/lib/paraview-video';
 import { paraViewDataRequest } from '@/lib/pvplots';
+import { parseParaViewWorkspace } from '@/lib/paraview-workspace';
 import { createParaFoamMarker } from '@/lib/wsl';
 import { boundedInteger, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 
@@ -173,7 +174,7 @@ export async function POST(req: NextRequest) {
       const allowed = new Set([
         'state', 'select', 'set_visibility', 'add_filter', 'delete', 'update', 'update_reader',
         'update_view', 'set_manipulator', 'list_case_files', 'open_case_file', 'time', 'refresh',
-        'capture_view', 'apply_view',
+        'capture_view', 'apply_view', 'workspace_capture', 'workspace_restore',
         'data_table',
       ]);
       if (!allowed.has(command)) {
@@ -186,6 +187,12 @@ export async function POST(req: NextRequest) {
         data = { path: validateRelativePath(typeof data.path === 'string' ? data.path : '', 'File path') };
       }
       if (command === 'data_table') data = { ...paraViewDataRequest(data) };
+      if (command === 'workspace_restore') {
+        const workspace = parseParaViewWorkspace(data.workspace);
+        validateCaseName(workspace.caseName);
+        for (const node of workspace.nodes) if (node.filePath) validateRelativePath(node.filePath, 'Workspace source file');
+        data = { workspace };
+      }
       const result = await sendParaViewCommand(command, data);
       return NextResponse.json(result);
     }

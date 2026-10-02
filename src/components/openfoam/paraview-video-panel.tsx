@@ -62,7 +62,7 @@ function megabytes(bytes: number | null): string {
   return bytes === null ? '' : `${(bytes / 1_048_576).toFixed(bytes < 10_485_760 ? 1 : 0)} MB`;
 }
 
-export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onApplyView, onExportingChange, onFinished }: {
+export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onApplyView, onExportingChange, onFinished, restoredTimeline, onTimelineChange }: {
   workbench: ParaViewWorkbenchState;
   /** The viewport's current picture, copied as the entry's thumbnail. */
   imageUrl: string;
@@ -72,6 +72,8 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
   onExportingChange: (exporting: boolean) => void;
   /** The export ended: the worker restored the view, so the workbench re-syncs. */
   onFinished: () => void;
+  restoredTimeline?: { revision: number; request: VideoRequest | null };
+  onTimelineChange?: (request: VideoRequest) => void;
 }) {
   const times = useMemo(() => sortedTimes(workbench.times), [workbench.times]);
   const formats = workbench.videoFormats ?? [];
@@ -93,8 +95,30 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
   const [now, setNow] = useState(Date.now());
   const nextKey = useRef(1);
   const thumbnails = useRef(new Set<string>());
+  const skipTimelinePublish = useRef(false);
 
   useEffect(() => () => { for (const url of thumbnails.current) URL.revokeObjectURL(url); }, []);
+  useEffect(() => {
+    if (!restoredTimeline) return;
+    skipTimelinePublish.current = true;
+    for (const url of thumbnails.current) URL.revokeObjectURL(url);
+    thumbnails.current.clear();
+    const request = restoredTimeline.request;
+    setEntries(request?.segments.map(segment => ({ ...segment, key: nextKey.current++, thumbnail: null })) ?? []);
+    setStart(request?.start ?? times[0] ?? 0);
+    if (request) {
+      setMode(request.timing.mode);
+      if (request.timing.mode === 'perStep') setSecondsPerStep(request.timing.secondsPerStep);
+      else setFactor(request.timing.videoSecondsPerSimSecond);
+      setInterpolate(request.interpolate); setFps(request.fps); setResolution(request.resolution);
+      setFormat(request.format); setColorRange(request.colorRange);
+    } else {
+      setMode('perStep'); setSecondsPerStep(0.25); setFactor(1); setInterpolate(false);
+      setFps(30); setResolution('1080p'); setFormat(formats[0] ?? 'mp4'); setColorRange('captured');
+    }
+    setRenderEstimate(null);
+    // Restoration is an explicit event; changing time or fields must not reset it.
+  }, [restoredTimeline?.revision]);
   useEffect(() => { if (formats.length && !formats.includes(format)) setFormat(formats[0]); }, [formats, format]);
   useEffect(() => { if (!times.some(time => time === start) && times.length) setStart(times[0]); }, [times, start]);
 
@@ -204,7 +228,7 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
     setEntries(current => current.map(entry => (entry.key === key ? { ...entry, ...changes } : entry)));
   };
 
-  const request: VideoRequest = {
+  const request = useMemo<VideoRequest>(() => ({
     start,
     segments: entries.map(entry => ({ until: entry.until, transition: entry.transition, view: entry.view })),
     timing: mode === 'perStep' ? { mode, secondsPerStep } : { mode, videoSecondsPerSimSecond: factor },
@@ -213,7 +237,13 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
     resolution,
     format,
     colorRange,
-  };
+  }), [start, entries, mode, secondsPerStep, factor, interpolate, fps, resolution, format, colorRange]);
+  useEffect(() => {
+    // The restore effect just queued new controls. Do not publish the previous
+    // render's timeline over the restored request in the parent in that commit.
+    if (skipTimelinePublish.current) { skipTimelinePublish.current = false; return; }
+    onTimelineChange?.(request);
+  }, [request, onTimelineChange]);
   let estimate: { frames: number; seconds: number } | null = null;
   let estimateError = '';
   try {

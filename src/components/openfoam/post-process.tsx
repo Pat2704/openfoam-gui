@@ -48,6 +48,7 @@ import { residualsToTable, type ResidualSelection } from '@/lib/residuals';
 import type { PostProcessJob } from '@/lib/postprocess-jobs';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
 import PostProcessComparison from '@/components/openfoam/post-process-comparison';
+import { ANALYSIS_TRANSFER_EVENT, peekAnalysisTransfer, type AnalysisTransfer } from '@/lib/analysis-transfer';
 
 interface FileRef { name: string; times: string[]; bytes: number }
 interface Dataset { name: string; files: FileRef[] }
@@ -365,6 +366,15 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [data, setData] = useState<TableData | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
+  useEffect(() => {
+    const receive = (event?: Event) => {
+      const transfer = event ? (event as CustomEvent<AnalysisTransfer>).detail : peekAnalysisTransfer(caseName);
+      if (transfer?.caseName === caseName) setComparisonOpen(true);
+    };
+    receive();
+    window.addEventListener(ANALYSIS_TRANSFER_EVENT, receive);
+    return () => window.removeEventListener(ANALYSIS_TRANSFER_EVENT, receive);
+  }, [caseName]);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [copyingCsv, setCopyingCsv] = useState(false);

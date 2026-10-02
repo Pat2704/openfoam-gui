@@ -3,6 +3,7 @@ import { promises as fs, type Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { ParaViewDataTable } from './pvplots';
+import { WORKSPACE_PARAMETER_SCHEMA, parseParaViewWorkspace, type ParaViewWorkspace } from './paraview-workspace';
 import {
   benchmarkFrames, buildVideoPlan, estimateRenderSeconds, videoConfirmation, videoFileName,
   type VideoFormat, type VideoPlan, type VideoRequest,
@@ -1705,6 +1706,149 @@ VIDEO_SIZES = ((854, 480), (1280, 720), (1920, 1080), (3840, 2160))
 VIDEO_FPS = (12, 24, 25, 30, 60)
 VIDEO_MAX_FRAMES = 216001
 
+WORKSPACE_PARAMETER_SCHEMA = ${JSON.stringify(WORKSPACE_PARAMETER_SCHEMA)}
+
+def capture_workspace():
+    metadata = reader_metadata()
+    pipeline = []
+    for identifier, node in nodes.items():
+        settings = node_state(identifier, node)
+        parameters = {key: settings[key] for key in WORKSPACE_PARAMETER_SCHEMA[node['type']]}
+        parameters.update({'lineWidth': node['lineWidth'], 'pointSize': node['pointSize']})
+        item = {'id': identifier, 'type': node['type'], 'parent': node['parent'], 'parameters': parameters}
+        if node['type'] == 'CaseFileReader': item['filePath'] = node['filePath']
+        pipeline.append(item)
+    return {
+        'format': 'openfoam-studio-paraview', 'version': 1, 'caseName': case_name,
+        'paraviewVersion': pv_version, 'selectedId': selected_id,
+        'reader': {'caseType': metadata['caseType'], 'regions': metadata['selectedRegions']},
+        'nodes': pipeline, 'view': capture_view(), 'centerAxes': view_metadata()['centerAxes'],
+    }
+
+def restore_workspace(workspace):
+    global nodes, reader, selected_id, next_filter, guides, times, raw_times, current_time, manipulator_visible
+    # Browser requests are validated by the shared TS parser before entering
+    # this fixed command. Recheck runtime dependencies before changing the graph.
+    if not isinstance(workspace, dict) or workspace.get('format') != 'openfoam-studio-paraview' or workspace.get('version') != 1:
+        raise RuntimeError('Unsupported workspace format or version.')
+    if workspace.get('caseName') != case_name: raise RuntimeError('Open the workspace in its original case.')
+    pipeline = workspace.get('nodes')
+    if not isinstance(pipeline, list) or not pipeline or len(pipeline) > 64: raise RuntimeError('Invalid workspace pipeline.')
+    available = filter_capabilities()
+    for item in pipeline:
+        if item['type'] == 'CaseFileReader': resolve_case_file(item['filePath'])
+        elif item['type'] != 'OpenFOAMReader' and item['type'] not in available:
+            raise RuntimeError('This ParaView build does not provide the workspace filter ' + item['type'] + '.')
+    for snapshot in [workspace['view']] + [segment['view'] for segment in workspace.get('video', {}).get('segments', [])]:
+        for settings in snapshot['nodes'].values():
+            preset = settings['color']['preset']
+            if preset and preset not in available_presets: raise RuntimeError('The workspace color preset is unavailable in this ParaView build: ' + preset)
+    previous = (nodes, reader, selected_id, next_filter, guides, times, raw_times, current_time, manipulator_visible)
+    old_sources = set(GetSources().values())
+    old_view = capture_view()
+    old_center = view_metadata()['centerAxes']
+    staged_reader = None
+    try:
+        # Keep the live proxies until every recreated source, filter and display
+        # has passed validation. On failure the same live graph is restored.
+        nodes = OrderedDict(); guides = {}; manipulator_visible = False
+        selected_id = 'reader'; next_filter = 100000000
+        staged_reader = OpenFOAMReader(registrationName='Workspace OpenFOAM', FileName=marker)
+        reader = staged_reader
+        set_if_supported(reader, 'SkipZeroTime', 0)
+        set_if_supported(reader, 'ReadAllFilesToDetermineStructure', 1)
+        reader.UpdatePipelineInformation()
+        mode = workspace['reader']['caseType']
+        if mode not in available_values(reader, 'CaseType'): raise RuntimeError('The saved case mode is unavailable.')
+        if mode == 'Decomposed Case' and not reader_metadata()['decomposedAvailable']: raise RuntimeError('The saved decomposed case no longer has processor directories.')
+        reader.CaseType = mode; reader.UpdatePipelineInformation()
+        regions = workspace['reader']['regions']
+        if any(region not in available_values(reader, 'MeshRegions') for region in regions): raise RuntimeError('A saved mesh region is no longer available.')
+        reader.MeshRegions = regions
+        for name in ('CellArrays', 'PointArrays'):
+            values = available_values(reader, name)
+            if values: set_if_supported(reader, name, values)
+        raw_times = [float(value) for value in list(reader.TimestepValues)]
+        times = raw_times if raw_times else [0.0]
+        requested_time = workspace['view']['time']
+        if not any(abs(value-requested_time) <= max(1.0, abs(requested_time))*1e-9 for value in times):
+            raise RuntimeError('The workspace timestep is no longer available. Import a workspace for the current results.')
+        current_time = min(times, key=lambda value: abs(value-requested_time))
+        reader.UpdatePipeline(time=current_time)
+        display = Show(reader, view)
+        nodes['reader'] = {
+            'proxy': reader, 'display': display, 'label': os.path.basename(marker), 'type': 'OpenFOAMReader',
+            'parent': None, 'visible': True, 'representation': 'Surface', 'opacity': 1.0,
+            'lineWidth': 1.0, 'pointSize': 3.0,
+            'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
+        }
+        scene.AnimationTime = current_time; view.ViewTime = current_time
+        for item in pipeline:
+            if item['type'] == 'OpenFOAMReader': selected_id = 'reader'
+            else:
+                before = set(nodes)
+                if item['type'] == 'CaseFileReader': open_case_file(item['filePath'])
+                else:
+                    selected_id = item['parent']; add_filter(item['type'])
+                created = set(nodes) - before
+                if len(created) != 1: raise RuntimeError('The saved filter input now requires additional conversion. Recreate that filter for the updated results.')
+                generated = selected_id
+                node = nodes.pop(generated)
+                delete_guide(generated)
+                nodes[item['id']] = node; selected_id = item['id']
+            update_selected(item['parameters'])
+            if item['type'] in ('Calculator', 'Gradient'):
+                settings = item['parameters']['calculator' if item['type'] == 'Calculator' else 'gradient']
+                if not any(array['name'] == settings['resultName'] for array in arrays_for(nodes[selected_id]['proxy'])):
+                    raise RuntimeError('The saved ' + item['type'] + ' could not produce its result array. Check the input fields and formula.')
+            nodes[selected_id]['label'] = workspace['view']['nodes'][selected_id]['label']
+            try: RenameSource(nodes[selected_id]['label'], nodes[selected_id]['proxy'])
+            except Exception: pass
+        selected_id = workspace['selectedId']
+        # Validate the entire saved display before applying any of its colors.
+        prepared = prepare_snapshot(workspace['view'])
+        apply_snapshot(prepared, True)
+        set_if_supported(view, 'CenterAxesVisibility', 1 if workspace['centerAxes'] else 0)
+        for segment in workspace.get('video', {}).get('segments', []):
+            if not any(abs(value-segment['until']) <= max(1.0, abs(segment['until']))*1e-9 for value in times):
+                raise RuntimeError('A saved video segment timestep is no longer available.')
+            prepare_snapshot(segment['view'])
+        if 'video' in workspace and not any(abs(value-workspace['video']['start']) <= max(1.0, abs(workspace['video']['start']))*1e-9 for value in times):
+            raise RuntimeError('The saved video start timestep is no longer available.')
+        # Force data information now; errors leave the old graph available.
+        state()
+    except Exception:
+        for identifier in list(guides): delete_guide(identifier)
+        for node in reversed(list(nodes.values())):
+            try: Delete(node['proxy'])
+            except Exception: pass
+        if staged_reader is not None and not any(node['proxy'] == staged_reader for node in nodes.values()):
+            try: Delete(staged_reader)
+            except Exception: pass
+        # A failed filter constructor can create conversion proxies before it
+        # registers its output. Clean those too, preserving all original sources.
+        for proxy in reversed(list(GetSources().values())):
+            if proxy not in old_sources:
+                try: Delete(proxy)
+                except Exception: pass
+        nodes, reader, selected_id, next_filter, guides, times, raw_times, current_time, manipulator_visible = previous
+        scene.AnimationTime = current_time; view.ViewTime = current_time
+        apply_snapshot(prepare_snapshot(old_view), True)
+        set_if_supported(view, 'CenterAxesVisibility', 1 if old_center else 0)
+        ensure_guide(selected_id)
+        raise
+    old_nodes, _, _, _, old_guides, _, _, _, _ = previous
+    for guide in old_guides.values():
+        try: Delete(guide['proxy'])
+        except Exception: pass
+    for node in reversed(list(old_nodes.values())):
+        try: Delete(node['proxy'])
+        except Exception: pass
+    next_filter = max([int(identifier.split('-')[-1]) for identifier in nodes if identifier != 'reader'] + [0]) + 1
+    scene.UpdateAnimationUsingDataTimeSteps()
+    scene.AnimationTime = current_time; view.ViewTime = current_time
+    sync_legends()
+
 def video_formats():
     formats = []
     try:
@@ -2105,6 +2249,10 @@ for line in sys.__stdin__:
             emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'capture_view':
             emit(identifier, True, {'view': capture_view()})
+        elif action == 'workspace_capture':
+            emit(identifier, True, {'workspace': capture_workspace()})
+        elif action == 'workspace_restore':
+            restore_workspace(data.get('workspace')); emit(identifier, True, {'state': changed_state()})
         elif action == 'apply_view':
             apply_snapshot(prepare_snapshot(data.get('view')), True); emit(identifier, True, {'state': state()})
         elif action == 'video_benchmark':
@@ -2130,6 +2278,7 @@ type WorkerResult = {
   image?: string;
   files?: ParaViewCaseFile[];
   view?: Record<string, unknown>;
+  workspace?: ParaViewWorkspace;
   table?: ParaViewDataTable;
   video?: { video?: string; frames?: number; format?: string; cancelled?: boolean };
   benchmark?: { durations?: number[] };
@@ -2471,6 +2620,7 @@ export async function abortParaViewStartup(): Promise<boolean> {
 export async function sendParaViewCommand(action: string, data: Record<string, unknown> = {}): Promise<WorkerResult> {
   if (!activeWorker) throw new Error('Start a ParaView session first.');
   assertNoVideoExport();
+  if (action === 'workspace_restore') data = { workspace: parseParaViewWorkspace(data.workspace) };
   return activeWorker.request(action, data);
 }
 

@@ -134,6 +134,15 @@ the **OpenFOAM card in the Dashboard**.
   one row per curve sample, with case, source, snapshot and read coverage. The
   curves are loaded snapshots, and **Save chart** exports the same comparison.
 
+  **Save analysis** remembers source references, fields, profile timesteps,
+  residual selection and display choices in **Compare…**. **Reopen** reads the
+  current results and reports missing fields or snapshots. Captured ParaView
+  curves keep their original values and capture time. Named analyses persist
+  across app restarts, scoped to the case and selected OpenFOAM installation.
+  **HTML report** exports a printable chart, retained-row sample statistics,
+  coverage and provenance, with an embedded CSV download. Read and chart limits
+  remain explicit; statistics are neither time-weighted nor spatial integrals.
+
   Compute runs in the background with live output, elapsed time and cancellation.
   Reopening the panel restores the latest job during the current app session.
   Jobs belong to the case and OpenFOAM installation that started them; another
@@ -201,6 +210,15 @@ the **OpenFOAM card in the Dashboard**.
   CSV opens as table data. Numerical views refresh after changing the selection,
   filter or simulation time. Tables are paged, charts have a visible point budget,
   and CSV/chart exports report their own limits and preserve missing-value gaps.
+
+  **Workspaces** saves named pipelines with case-local readers, filter parameters,
+  mesh regions, display/color settings, camera, timestep and video timeline.
+  Reopening rebuilds the pipeline from current case data; missing dependencies
+  leave the active pipeline intact. JSON import/export uses the app's versioned
+  workspace format. Workspaces load only when requested, preserving fast startup.
+  In **Chart**, **Send to Post-Process** captures up to six numerical curves
+  with original coordinates, gaps and coverage. Add them to a compatible comparison
+  or use them as a new analysis; captured values do not re-run the ParaView pipeline.
 
   ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.

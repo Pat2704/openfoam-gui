@@ -12,8 +12,10 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
-import type { ParaViewViewSnapshot } from '@/lib/paraview-video';
+import type { ParaViewViewSnapshot, VideoRequest } from '@/lib/paraview-video';
+import type { ParaViewWorkspace } from '@/lib/paraview-workspace';
 import ParaViewVideoPanel from './paraview-video-panel';
+import ParaViewWorkspaces from './paraview-workspaces';
 import ParaViewDataPanel from './paraview-data-panel';
 import type {
   ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewStartupStage, ParaViewWorkbenchState,
@@ -254,6 +256,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   /** A video export owns the ParaView process: the workbench is locked meanwhile. */
   const [exporting, setExporting] = useState(false);
   const [viewportMode, setViewportMode] = useState<'render' | 'chart' | 'table'>('render');
+  const [restoredTimeline, setRestoredTimeline] = useState<{ revision: number; request: VideoRequest | null }>({ revision: 0, request: null });
+  const videoTimelineRef = useRef<VideoRequest | null>(null);
+  const getVideoTimeline = useCallback(() => videoTimelineRef.current, []);
+  const timelineChanged = useCallback((request: VideoRequest) => { videoTimelineRef.current = request; }, []);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef('');
@@ -354,6 +360,15 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     } finally {
       if (!options.quiet) setBusy(false);
     }
+  }, [fetchRender]);
+
+  const workspaceRestored = useCallback(async (state: ParaViewWorkbenchState, workspace: ParaViewWorkspace) => {
+    setPlaying(false);
+    setWorkbench(state);
+    videoTimelineRef.current = workspace.video ?? null;
+    setRestoredTimeline(current => ({ revision: current.revision + 1, request: workspace.video ?? null }));
+    setViewportTool('camera');
+    await fetchRender();
   }, [fetchRender]);
 
   const loadCaseFiles = useCallback(async () => {
@@ -917,6 +932,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       <div className="flex min-h-11 flex-wrap items-center gap-1 border-b bg-muted/35 px-2 py-1.5">
         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={starting || busy} onClick={() => void start(true)} title="Reload the OpenFOAM case"><RefreshCw className={`h-3.5 w-3.5 ${starting ? 'animate-spin' : ''}`} /> Reload</Button>
         <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => void command('refresh')} title="Refresh fields and timesteps" aria-label="Refresh fields and timesteps"><RefreshCw className="h-3.5 w-3.5" /></Button>
+        <ParaViewWorkspaces caseName={caseName} locked={busy || cameraBusy || exporting || playing} getVideo={getVideoTimeline} onBusyChange={setBusy} onRestored={workspaceRestored} />
         <span className="mx-1 h-6 w-px bg-border" />
         <Select value={filterChoice} onValueChange={value => addFilter(value as FilterType)} disabled={busy}>
           <SelectTrigger size="sm" className="h-7 w-[178px] text-xs"><Search className="h-3.5 w-3.5" /><SelectValue placeholder="Add filter…" /></SelectTrigger>
@@ -1173,6 +1189,8 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 onApplyView={applyTimelineView}
                 onExportingChange={exportingChange}
                 onFinished={videoFinished}
+                restoredTimeline={restoredTimeline}
+                onTimelineChange={timelineChanged}
               />
             </ScrollArea></TabsContent>
           </Tabs>

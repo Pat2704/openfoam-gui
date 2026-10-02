@@ -1,10 +1,24 @@
 # HISTORY — rolling project context
 
-This file records recent project state, decisions already implemented and
-historical context. It is informative only: `docs/RULES.md` is the sole source
-of project rules. Keep this file at or below **500 lines**. Add new entries at
-the top, then compact older detail into links to Git history, release notes or
-audits.
+This informative file records project state and history; `docs/RULES.md` is the
+sole source of project rules. Keep at or below **500 lines**, adding entries at
+the top and compacting older detail into Git history, release notes or audits.
+
+## 2026-10-02 — Phase 3: reproducible analyses and ParaView workspaces
+
+- Compare saves named source recipes and display choices; reopening re-reads
+  current results and reports missing fields/snapshots. Frozen ParaView captures
+  retain coordinates, gaps, coverage and original capture time. Printable HTML
+  reports include gap-safe charts, retained-row sample statistics and embedded CSV.
+- ParaView saves/imports/exports versioned app JSON workspaces with reader regions,
+  case-local files, allowed filter graphs/parameters, display/colors, camera/time
+  and video timelines. Staged reconstruction preserves the live graph on failure.
+  Workspaces are loaded explicitly; prepared-engine startup remains unchanged.
+- Chart sends up to six captured curves to Post-Process without interpolation or
+  inferred units. Durable bounded atomic storage follows installation and case,
+  independently of the Electron server port; installation switches reject stale writes.
+- Checks: analysis/persistence/transfer tests, native ParaView 6.2 all-filter
+  roundtrips/rollback, browser QA and packaged persistence across port changes.
 
 ## 2026-10-02 — Reuse the prepared ParaView engine
 
@@ -421,26 +435,12 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards
 
-- Tutorials are listed at any depth (`listTutorialCases` in `wsl.ts`): a
-  folder with `system/` is a tutorial; one with its own `Allrun` and a case
-  below it is listed too, flagged "Allrun group", because its cases depend on
-  each other; anything else is walked through. On v14 this made the tutorials
-  under `mesh/`, `multiRegion/` and `legacy/` reachable (11 group folders → 59
-  tutorials) and `resources/` shows as empty. v9-v10 group every category by
-  solver, which this also covers; not checked locally (only 13 and 14 exist).
-- The Tutorial panel ignores out-of-order answers, clears the old list at
-  once, shows an error or an empty-folder message, reveals Copy on keyboard
-  focus and proposes the tutorial's own name for the copy. `copyTutorial`
-  creates the destination with `mkdir` (atomic) and removes a half-made copy.
-  WSL calls run synchronously in the server, so a real concurrent race was not
-  reproducible; two simultaneous copies gave one success and one "Case already
-  exists".
-- File Editor: "New file" on an existing name asks before replacing it with an
-  empty file (checked on the `test` case: confirmation shown, 0/U untouched);
-  a failed read no longer opens the file empty and marked "Saved" (nor caches
-  it); the 0/, system/ and constant/ checkboxes show their state in
-  multi-select. The wizard re-reads the case list when Create is pressed.
-  Per-process Kill confirmation was proposed and declined by the user.
+- Recursive tutorial listing recognizes cases and Allrun groups; v14 exposes
+  mesh, multiRegion and legacy cases. Copies use atomic destination creation
+  and cleanup; the panel rejects stale answers and exposes errors/empty folders.
+- File Editor confirms replacing existing files, preserves content after failed
+  reads and displays multi-select state. The wizard refreshes cases before Create.
+  Details and disposable-case verification are retained in Git history.
 
 ## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
 
