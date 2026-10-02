@@ -68,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix='ofstudio-paraview-legends-', suffix='_t
     namespace.update({
         'reader': reader, 'view': view, 'scene': GetAnimationScene(),
         'nodes': OrderedDict(), 'guides': {}, 'legend_bars': {},
+        'data_revision': 0,
         'selected_id': 'reader', 'next_filter': 1, 'current_time': raw_times[-1] if raw_times else 0,
         'times': raw_times or [0.0], 'raw_times': raw_times, 'case_name': marker.parent.name,
         'marker': str(marker), 'output_dir': temporary, 'pv_version': 'test',

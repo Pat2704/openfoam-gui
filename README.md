@@ -126,6 +126,14 @@ the **OpenFOAM card in the Dashboard**.
   way as everything else. Choose the first, last or maximum initial residual
   per timestep; the first is the default, also used by Monitor.
 
+  **Compare…** overlays up to six curves from datasets, solver logs, other cases
+  or different profile snapshots. Each keeps its original coordinates and gaps;
+  time series and spatial profiles cannot be mixed, and independent axis names
+  must agree. Check units and coordinate frames yourself: the files do not supply
+  reliable metadata for automatic conversion. The comparison table and CSV use
+  one row per curve sample, with case, source, snapshot and read coverage. The
+  curves are loaded snapshots, and **Save chart** exports the same comparison.
+
   Compute runs in the background with live output, elapsed time and cancellation.
   Reopening the panel restores the latest job during the current app session.
   Jobs belong to the case and OpenFOAM installation that started them; another
@@ -185,6 +193,14 @@ the **OpenFOAM card in the Dashboard**.
   legend while any visible display needs it, and obsolete legends disappear
   after recolouring, hiding, deletion or a switch to Solid Color. Video view
   changes use the same visibility rules.
+
+  Switch the viewport between **3D**, **Chart** and **Table** to inspect the
+  selected pipeline output numerically. Choose point, cell or table-row data,
+  a composite block, the independent coordinate and numeric array components.
+  **Plot Over Line** exposes sampled fields against arc length; a case-local
+  CSV opens as table data. Numerical views refresh after changing the selection,
+  filter or simulation time. Tables are paged, charts have a visible point budget,
+  and CSV/chart exports report their own limits and preserve missing-value gaps.
 
   ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.

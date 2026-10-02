@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_proc
 import { promises as fs, type Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { ParaViewDataTable } from './pvplots';
 import {
   benchmarkFrames, buildVideoPlan, estimateRenderSeconds, videoConfirmation, videoFileName,
   type VideoFormat, type VideoPlan, type VideoRequest,
@@ -434,6 +435,7 @@ export interface ParaViewPipelineNode {
   type: ParaViewNodeType;
   parent: string | null;
   visible: boolean;
+  renderable?: boolean;
   representation: string;
   /** Representations this item's display offers (Feature Edges where the build has it). */
   representations?: string[];
@@ -482,6 +484,7 @@ export interface ParaViewWorkbenchState {
   caseName: string;
   version: string;
   selectedId: string;
+  dataRevision: number;
   pipeline: ParaViewPipelineNode[];
   arrays: ParaViewArrayInfo[];
   times: number[];
@@ -528,6 +531,7 @@ case_root = os.path.realpath(os.path.dirname(marker))
 nodes = OrderedDict()
 guides = {}
 legend_bars = {}
+data_revision = 0
 selected_id = 'reader'
 current_time = 0.0
 next_filter = 1
@@ -716,14 +720,159 @@ def arrays_for(proxy):
         pass
     return result
 
+def local_data(proxy):
+    algorithm = proxy.GetClientSideObject()
+    output = algorithm.GetOutputDataObject(0) if algorithm is not None else None
+    if output is None: raise RuntimeError('This local ParaView source does not expose numerical data.')
+    return output
+
+def data_blocks(output):
+    if not output.IsA('vtkCompositeDataSet'):
+        return [(0, 'Output', output)], False
+    from vtkmodules.vtkCommonDataModel import vtkCompositeDataSet
+    iterator = output.NewIterator()
+    iterator.SkipEmptyNodesOn()
+    if hasattr(iterator, 'VisitOnlyLeavesOn'): iterator.VisitOnlyLeavesOn()
+    result = []
+    iterator.InitTraversal()
+    while not iterator.IsDoneWithTraversal():
+        block = iterator.GetCurrentDataObject()
+        if block is not None and not block.IsA('vtkCompositeDataSet'):
+            if len(result) >= 256: return result, True
+            index = int(iterator.GetCurrentFlatIndex())
+            metadata = iterator.GetCurrentMetaData()
+            name = metadata.Get(vtkCompositeDataSet.NAME()) if metadata and metadata.Has(vtkCompositeDataSet.NAME()) else None
+            result.append((index, str(name or ('Block ' + str(index)))[:120], block))
+        iterator.GoToNextItem()
+    return result, False
+
+def data_attributes(block, association):
+    if association == 'ROWS' and block.IsA('vtkTable'): return block.GetRowData(), int(block.GetNumberOfRows())
+    if association == 'POINTS' and block.IsA('vtkDataSet'): return block.GetPointData(), int(block.GetNumberOfPoints())
+    if association == 'CELLS' and block.IsA('vtkDataSet'): return block.GetCellData(), int(block.GetNumberOfCells())
+    raise RuntimeError('That data association is not available on this block.')
+
+def data_columns(block, association):
+    attributes, count = data_attributes(block, association)
+    columns = [{'index': 0, 'label': 'Row index', 'name': 'Row index', 'kind': 'index', 'component': 0}]
+    accessors = [(None, 0, 'index')]
+    if association == 'POINTS':
+        for component, axis in enumerate(('X', 'Y', 'Z')):
+            columns.append({'index': len(columns), 'label': 'Coordinate ' + axis, 'name': 'Coordinate ' + axis, 'kind': 'coordinate', 'component': component})
+            accessors.append((None, component, 'coordinate'))
+    skipped = 0
+    limited = False
+    for index in range(attributes.GetNumberOfArrays()):
+        if len(columns) >= 128:
+            limited = True
+            break
+        array = attributes.GetAbstractArray(index)
+        if array is None or not array.IsA('vtkDataArray'):
+            skipped += 1
+            continue
+        components = int(array.GetNumberOfComponents())
+        name = str(array.GetName() or ('Array ' + str(index)))[:160]
+        offered = list(range(min(components, 16))) + ([-1] if 1 < components <= 16 else [])
+        if components > 16: limited = True
+        for component in offered:
+            if len(columns) >= 128:
+                limited = True
+                break
+            label = name if components == 1 else name + (' (Magnitude)' if component == -1 else ' [' + str(component) + ']')
+            columns.append({'index': len(columns), 'label': label, 'name': name, 'kind': 'array', 'component': component})
+            accessors.append((array, component, 'array'))
+    return columns, accessors, count, limited, skipped
+
+def data_integer(value, name, maximum=2147483647):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+        raise RuntimeError('Invalid data ' + name + '.')
+    return value
+
+def data_table(data):
+    identifier = str(data.get('id', ''))
+    if identifier != selected_id or identifier not in nodes: raise RuntimeError('The selected pipeline output has changed. Refresh its data.')
+    if data_integer(data.get('revision'), 'revision') != data_revision or data.get('time') != current_time:
+        raise RuntimeError('The pipeline data has changed. Refresh its data.')
+    mode = data.get('mode')
+    if mode not in ('schema', 'page', 'chart', 'export'): raise RuntimeError('Unsupported data mode.')
+    proxy = nodes[identifier]['proxy']
+    proxy.UpdatePipeline(time=current_time)
+    blocks, blocks_limited = data_blocks(local_data(proxy))
+    if not blocks: raise RuntimeError('The selected output has no data blocks.')
+    requested_block = data_integer(data.get('block', blocks[0][0]), 'block')
+    chosen = next((item for item in blocks if item[0] == requested_block), None)
+    if chosen is None: raise RuntimeError('That data block is no longer available.')
+    block = chosen[2]
+    associations = ['ROWS'] if block.IsA('vtkTable') else ['POINTS', 'CELLS'] if block.IsA('vtkDataSet') else []
+    if not associations: raise RuntimeError('This block has no supported numeric table.')
+    default_association = associations[0]
+    if 'POINTS' in associations and 'CELLS' in associations:
+        point_arrays = block.GetPointData()
+        has_point_values = any(point_arrays.GetAbstractArray(i).IsA('vtkDataArray') and
+            point_arrays.GetAbstractArray(i).GetName() != 'vtkValidPointMask' for i in range(point_arrays.GetNumberOfArrays()))
+        cell_arrays = block.GetCellData()
+        has_cell_values = any(cell_arrays.GetAbstractArray(i).IsA('vtkDataArray') for i in range(cell_arrays.GetNumberOfArrays()))
+        if not has_point_values and has_cell_values: default_association = 'CELLS'
+    association = data.get('association', default_association)
+    if association not in associations: raise RuntimeError('Unsupported data association for this block.')
+    columns, accessors, total, columns_limited, skipped = data_columns(block, association)
+    requested = data.get('columns', list(range(min(12, len(columns)))))
+    if not isinstance(requested, list) or not 1 <= len(requested) <= 16: raise RuntimeError('Choose between 1 and 16 numeric columns.')
+    requested = list(dict.fromkeys(data_integer(value, 'column', len(columns)-1) for value in requested))
+    offset = data_integer(data.get('offset', 0), 'offset')
+    row_limit = 200 if mode == 'page' else 20000 if mode == 'chart' else 200000 if mode == 'export' else 0
+    row_limit = min(row_limit, 1000000 // len(requested))
+    attributes, _ = data_attributes(block, association)
+    mask = attributes.GetArray('vtkValidPointMask') if association == 'POINTS' else None
+    rows, invalid_rows, nonfinite = [], 0, 0
+    byte_count = 0
+    for index in range(min(offset, total), min(total, offset + row_limit)):
+        invalid = mask is not None and (index >= mask.GetNumberOfTuples() or mask.GetComponent(index, 0) != 1)
+        row_nonfinite = 0
+        row = []
+        for column in requested:
+            array, component, kind = accessors[column]
+            if kind == 'index': value = index
+            elif kind == 'coordinate': value = block.GetPoint(index)[component]
+            elif index >= array.GetNumberOfTuples() or (invalid and columns[column]['name'] not in ('arc_length', 'vtkValidPointMask')):
+                value = None
+            else:
+                if component == -1:
+                    value = math.hypot(*(array.GetComponent(index, i) for i in range(array.GetNumberOfComponents())))
+                else: value = array.GetComponent(index, component)
+            if value is not None and not math.isfinite(value):
+                row_nonfinite += 1
+                value = None
+            row.append(value)
+        byte_count += len(json.dumps(row, separators=(',', ':')))
+        if byte_count > 4000000: break
+        rows.append(row)
+        if invalid: invalid_rows += 1
+        nonfinite += row_nonfinite
+    return {
+        'id': identifier, 'revision': data_revision, 'time': current_time,
+        'block': chosen[0], 'blocks': [{'index': item[0], 'label': item[1]} for item in blocks], 'blocksLimited': blocks_limited,
+        'association': association, 'associations': associations, 'columns': columns,
+        'columnsLimited': columns_limited, 'nonNumericColumns': skipped, 'selectedColumns': requested,
+        'rows': rows, 'totalRows': total, 'offset': min(offset, total),
+        'limited': mode != 'schema' and (offset > 0 or len(rows) < total),
+        'invalidRows': invalid_rows, 'nonFiniteValues': nonfinite, 'rowLimit': row_limit,
+    }
+
+def changed_state():
+    global data_revision
+    data_revision += 1
+    return state()
+
 def node_state(identifier, node):
     state = {
         'id': identifier, 'label': node['label'], 'type': node['type'],
         'parent': node['parent'], 'visible': node['visible'],
+        'renderable': node['display'] is not None,
         'representation': node['representation'], 'opacity': node['opacity'],
         'lineWidth': node['lineWidth'], 'pointSize': node['pointSize'],
         'color': node['color'],
-        'representations': representations_for(node['display']),
+        'representations': representations_for(node['display']) if node['display'] is not None else [],
         'manipulatorAvailable': node['type'] in ('Slice', 'Clip', 'StreamTracer', 'PlotOverLine'),
         'manipulatorVisible': manipulator_visible and identifier == selected_id,
     }
@@ -769,6 +918,7 @@ def state():
     info = active.GetDataInformation()
     return {
         'caseName': case_name, 'version': pv_version, 'selectedId': selected_id,
+        'dataRevision': data_revision,
         'pipeline': [node_state(identifier, node) for identifier, node in nodes.items()],
         'arrays': arrays_for(active), 'times': times, 'time': current_time,
         'points': int(info.GetNumberOfPoints()), 'cells': int(info.GetNumberOfCells()),
@@ -802,6 +952,7 @@ def sync_legends():
 
 def apply_display(node):
     display = node['display']
+    if display is None: return
     display.Representation = node['representation']
     display.Opacity = node['opacity']
     display.Visibility = 1 if node['visible'] else 0
@@ -1078,7 +1229,7 @@ def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
     if hide_parent:
         Hide(parent['proxy'], view)
         parent['visible'] = False
-        parent['display'].Visibility = 0
+        if parent['display'] is not None: parent['display'].Visibility = 0
     display = Show(proxy, view)
     line_width = 3.0 if kind in ('StreamTracer', 'PlotOverLine', 'ExtractEdges') else 1.0
     representation = 'Points' if kind in ('CellCenters', 'IntegrateVariables') else 'Surface'
@@ -1116,20 +1267,21 @@ def open_case_file(relative_path):
     try:
         proxy.UpdatePipelineInformation()
         proxy.UpdatePipeline(time=current_time)
-        display = Show(proxy, view)
+        table_only = local_data(proxy).IsA('vtkTable')
+        display = None if table_only else Show(proxy, view)
         identifier = 'source-' + str(next_filter)
         next_filter += 1
         nodes[identifier] = {
             'proxy': proxy, 'display': display, 'label': label,
             'type': 'CaseFileReader', 'parent': None, 'filePath': safe_relative,
-            'visible': True, 'representation': 'Surface', 'opacity': 1.0,
+            'visible': not table_only, 'representation': 'Surface', 'opacity': 1.0,
             'lineWidth': 1.0, 'pointSize': 3.0,
             'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
         }
         selected_id = identifier
         set_manipulator(False)
         apply_display(nodes[identifier])
-        ResetCamera(view)
+        if display is not None: ResetCamera(view)
     except Exception:
         if identifier in nodes: del nodes[identifier]
         selected_id = previous_selected
@@ -1352,8 +1504,8 @@ def delete_selected():
     del nodes[identifier]
     selected_id = parent_id or 'reader'
     parent = nodes[selected_id]
-    parent['visible'] = True
-    parent['display'].Visibility = 1
+    parent['visible'] = parent['display'] is not None
+    if parent['display'] is not None: parent['display'].Visibility = 1
     ResetCamera(view)
 
 def update_selected(data):
@@ -1913,18 +2065,19 @@ for line in sys.__stdin__:
         elif action == 'set_visibility':
             candidate = str(data.get('id', ''))
             if candidate not in nodes: raise RuntimeError('Pipeline item not found.')
+            if nodes[candidate]['display'] is None: raise RuntimeError('This source exposes a table. Use its Chart or Table view.')
             nodes[candidate]['visible'] = bool(data.get('visible'))
             apply_display(nodes[candidate])
             emit(identifier, True, {'state': state()})
         elif action == 'add_filter':
             add_filter(str(data.get('filter', '')))
-            emit(identifier, True, {'state': state()})
+            emit(identifier, True, {'state': changed_state()})
         elif action == 'delete':
-            delete_selected(); emit(identifier, True, {'state': state()})
+            delete_selected(); emit(identifier, True, {'state': changed_state()})
         elif action == 'update':
-            update_selected(data); emit(identifier, True, {'state': state()})
+            update_selected(data); emit(identifier, True, {'state': changed_state()})
         elif action == 'update_reader':
-            update_reader(data); emit(identifier, True, {'state': state()})
+            update_reader(data); emit(identifier, True, {'state': changed_state()})
         elif action == 'update_view':
             update_view(data); emit(identifier, True, {'state': state()})
         elif action == 'set_manipulator':
@@ -1932,11 +2085,13 @@ for line in sys.__stdin__:
         elif action == 'list_case_files':
             emit(identifier, True, {'files': list_case_files()})
         elif action == 'open_case_file':
-            open_case_file(data.get('path')); emit(identifier, True, {'state': state()})
+            open_case_file(data.get('path')); emit(identifier, True, {'state': changed_state()})
         elif action == 'time':
-            set_time(data.get('time')); emit(identifier, True, {'state': state()})
+            set_time(data.get('time')); emit(identifier, True, {'state': changed_state()})
         elif action == 'refresh':
-            refresh_reader(); emit(identifier, True, {'state': state()})
+            refresh_reader(); emit(identifier, True, {'state': changed_state()})
+        elif action == 'data_table':
+            emit(identifier, True, {'table': data_table(data)})
         elif action == 'reset_camera':
             ResetCamera(view); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'standard_view':
@@ -1944,7 +2099,8 @@ for line in sys.__stdin__:
         elif action == 'camera':
             camera(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'manipulate':
-            manipulate(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
+            manipulate(data); data_revision += 1
+            emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'render':
             emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'capture_view':
@@ -1974,6 +2130,7 @@ type WorkerResult = {
   image?: string;
   files?: ParaViewCaseFile[];
   view?: Record<string, unknown>;
+  table?: ParaViewDataTable;
   video?: { video?: string; frames?: number; format?: string; cancelled?: boolean };
   benchmark?: { durations?: number[] };
 };

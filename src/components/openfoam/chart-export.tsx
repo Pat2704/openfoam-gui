@@ -42,6 +42,8 @@ export interface ExportSeries {
   index: number;
   name: string;
   color: string;
+  /** Optional independent coordinates, for comparisons of different grids. */
+  points?: { x: number; y: number | null }[];
 }
 
 export interface ChartExportSource {
@@ -240,25 +242,45 @@ export default function ChartExportDialog({
   // exactly as they do on the chart this dialog was opened from.
   const logUsable = useMemo(() => {
     if (!source) return false;
-    return source.rows.some(row => source.series.some(series => {
-      const value = row[series.index];
-      return typeof value === 'number' && Number.isFinite(value) && value > 0;
-    }));
+    return source.series.some(series => series.points
+      ? series.points.some(point => point.y !== null && Number.isFinite(point.y) && point.y > 0)
+      : source.rows.some(row => {
+        const value = row[series.index];
+        return typeof value === 'number' && Number.isFinite(value) && value > 0;
+      }));
   }, [source]);
   const logScale = options.logScale && logUsable;
 
+  const independentRows = useMemo(() => source?.series.map(series => series.points?.map((point, index, points) => ({
+    x: point.x,
+    [`c${series.index}`]: point.y !== null && Number.isFinite(point.y) && (!logScale || point.y > 0) ? point.y : undefined,
+    [`isolated${series.index}`]: point.y !== null && Number.isFinite(point.y) && (!logScale || point.y > 0)
+      && ![points[index - 1], points[index + 1]].some(neighbor => neighbor && neighbor.y !== null && Number.isFinite(neighbor.y) && (!logScale || neighbor.y > 0)) ? 1 : 0,
+  }))), [source, logScale]);
+
   const chartRows = useMemo(() => {
     if (!source) return [];
-    return source.rows.map(row => {
+    const rows = source.rows.map((row, rowIndex) => {
       const point: Record<string, number | undefined> = { x: row[0] ?? undefined };
       for (const series of source.series) {
         const value = row[series.index];
         const drawable = value !== null && Number.isFinite(value) && (!logScale || value > 0);
         point[`c${series.index}`] = drawable ? value : undefined;
+        const connected = [source.rows[rowIndex - 1], source.rows[rowIndex + 1]].some(neighbor => {
+          const next = neighbor?.[series.index];
+          return typeof next === 'number' && Number.isFinite(next) && (!logScale || next > 0);
+        });
+        point[`isolated${series.index}`] = drawable && !connected ? 1 : 0;
       }
       return point;
     });
-  }, [source, logScale]);
+    return rows.concat(independentRows?.flatMap(rows => rows ?? []) ?? []);
+  }, [source, logScale, independentRows]);
+
+  const isolatedSeries = useMemo(() => source?.series.map(series => (
+    (series.points ? independentRows?.[source.series.indexOf(series)] ?? [] : chartRows)
+      .some(row => row[`isolated${series.index}`] === 1)
+  )), [source, chartRows, independentRows]);
 
 
   // ── The space the drawn furniture needs, reserved before the chart is laid
@@ -310,15 +332,16 @@ export default function ChartExportDialog({
         tickFormatter={formatTick}
         width={options.fontSize * 5}
       />
-      {source.series.map(series => (
+      {source.series.map((series, seriesIndex) => (
         <Line
           key={series.index}
+          data={independentRows?.[seriesIndex]}
           type="linear"
           dataKey={`c${series.index}`}
           name={series.name}
           stroke={series.color}
           strokeWidth={options.lineWidth}
-          dot={false}
+          dot={isolatedSeries?.[seriesIndex] ? props => props.payload?.[`isolated${series.index}`] ? <circle key={props.index} cx={props.cx} cy={props.cy} r={2} fill={series.color} /> : <g key={props.index} /> : false}
           connectNulls={false}
           isAnimationActive={false}
         />
@@ -545,14 +568,15 @@ export default function ChartExportDialog({
     if (viewport) return viewport;
     if (!source) return null;
     let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
-    for (const row of source.rows) {
-      const x = row[0];
-      if (typeof x === 'number' && Number.isFinite(x)) {
-        if (x < xMin) xMin = x;
-        if (x > xMax) xMax = x;
-      }
-      for (const series of source.series) {
-        const value = row[series.index];
+    for (const series of source.series) {
+      const points = series.points ?? source.rows.map(row => ({ x: row[0], y: row[series.index] }));
+      for (const point of points) {
+        const x = point.x;
+        if (typeof x === 'number' && Number.isFinite(x)) {
+          if (x < xMin) xMin = x;
+          if (x > xMax) xMax = x;
+        }
+        const value = point.y;
         if (typeof value !== 'number' || !Number.isFinite(value)) continue;
         if (logScale && value <= 0) continue;
         if (value < yMin) yMin = value;

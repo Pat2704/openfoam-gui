@@ -47,6 +47,7 @@ import {
 import { residualsToTable, type ResidualSelection } from '@/lib/residuals';
 import type { PostProcessJob } from '@/lib/postprocess-jobs';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
+import PostProcessComparison from '@/components/openfoam/post-process-comparison';
 
 interface FileRef { name: string; times: string[]; bytes: number }
 interface Dataset { name: string; files: FileRef[] }
@@ -363,6 +364,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [selected, setSelected] = useState<Selection | null>(null);
   const [data, setData] = useState<TableData | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [copyingCsv, setCopyingCsv] = useState(false);
@@ -1096,6 +1098,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         <span className="text-sm font-semibold">Post-Process</span>
         <Badge variant="secondary" className="font-mono text-[10px]">{caseName}</Badge>
         <span className="mx-1 h-6 w-px bg-border" />
+        <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" onClick={() => setComparisonOpen(true)}>
+          <LineChartIcon className="h-3.5 w-3.5" /> Compare…
+        </Button>
         <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" onClick={() => void openCatalog()}>
           <Sigma className="h-3.5 w-3.5" /> Compute…
         </Button>
@@ -1952,6 +1957,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       </Dialog>
 
       <ChartExportDialog open={exportOpen} onOpenChange={setExportOpen} source={exportSource} />
+      <PostProcessComparison open={comparisonOpen} onOpenChange={setComparisonOpen} caseName={caseName} initialSelection={selected} initialTime={data?.shownTime ?? undefined} initialResidualSelection={residualSelection} readData={readSelectionData} />
     </div>
   );
 }

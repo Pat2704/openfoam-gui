@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
 import type { ParaViewViewSnapshot } from '@/lib/paraview-video';
 import ParaViewVideoPanel from './paraview-video-panel';
+import ParaViewDataPanel from './paraview-data-panel';
 import type {
   ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewStartupStage, ParaViewWorkbenchState,
 } from '@/lib/paraview';
@@ -252,6 +253,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [filesLoading, setFilesLoading] = useState(false);
   /** A video export owns the ParaView process: the workbench is locked meanwhile. */
   const [exporting, setExporting] = useState(false);
+  const [viewportMode, setViewportMode] = useState<'render' | 'chart' | 'table'>('render');
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef('');
@@ -282,6 +284,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     const query = fileSearch.trim().toLowerCase();
     return query ? caseFiles.filter(file => file.path.toLowerCase().includes(query)) : caseFiles;
   }, [caseFiles, fileSearch]);
+
+  useEffect(() => {
+    if (selected?.renderable === false) setViewportMode('table');
+  }, [selected?.id, selected?.renderable]);
 
   // A hidden pane measures 0x0, so the last real measurement is the honest
   // answer: rendering at the fallback size would change the image's aspect.
@@ -956,7 +962,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 }}
               >
                 {depthOf(node) > 0 && <span className="text-muted-foreground">└</span>}
-                <button className="rounded p-0.5 opacity-80 hover:bg-background/20" title={node.visible ? 'Hide' : 'Show'} aria-label={`${node.visible ? 'Hide' : 'Show'} ${node.label}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void command('set_visibility', { id: node.id, visible: !node.visible }); }}>{node.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
+                <button disabled={node.renderable === false} className="rounded p-0.5 opacity-80 hover:bg-background/20 disabled:opacity-30" title={node.visible ? 'Hide' : 'Show'} aria-label={`${node.visible ? 'Hide' : 'Show'} ${node.label}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void command('set_visibility', { id: node.id, visible: !node.visible }); }}>{node.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
                 {filterIcon(node.type)}<span className="truncate" title={node.label}>{node.label}</span>
               </div>
             ))}</div>
@@ -987,9 +993,12 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         </aside>
 
         <main className="relative min-h-[400px] overflow-hidden bg-[#252931]">
+          <div className="absolute inset-x-0 top-0 z-20 flex h-9 items-center gap-1 border-b bg-background px-2" role="toolbar" aria-label="ParaView output view">
+            {(['render', 'chart', 'table'] as const).map(mode => <Button key={mode} size="sm" variant={viewportMode === mode ? 'secondary' : 'ghost'} aria-pressed={viewportMode === mode} className="h-7 text-[10px]" disabled={exporting} onClick={() => setViewportMode(mode)}>{mode === 'render' ? '3D' : mode === 'chart' ? 'Chart' : 'Table'}</Button>)}
+          </div>
           <div
             ref={viewportRef}
-            className="absolute inset-0 cursor-grab select-none overflow-hidden active:cursor-grabbing"
+            className={`absolute inset-0 top-9 cursor-grab select-none overflow-hidden active:cursor-grabbing ${viewportMode === 'render' ? '' : 'invisible pointer-events-none'}`}
             onContextMenu={event => event.preventDefault()}
             onPointerDown={event => {
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -1033,6 +1042,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             <div className="pointer-events-none absolute left-2 top-2 flex gap-1"><Badge className="bg-black/45 text-[9px] text-white hover:bg-black/45">{workbench.reader.caseType}</Badge>{!workbench.reader.hasTimeSteps && <Badge className="bg-amber-500/80 text-[9px] text-black hover:bg-amber-500/80">mesh only · time 0</Badge>}</div>
             {cameraBusy && <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/45 p-1.5"><Rotate3D className="h-4 w-4 animate-pulse text-white" /></div>}
           </div>
+          {viewportMode !== 'render' && <ParaViewDataPanel workbench={workbench} mode={viewportMode} locked={busy || exporting || playing || cameraBusy} active={active} />}
           {exporting && <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 p-6 text-center text-xs text-white">
             <div><Film className="mx-auto mb-2 h-8 w-8 animate-pulse text-cyan-300" /><p className="font-medium">Exporting video…</p><p className="mt-1 max-w-xs text-white/70">ParaView is rendering the frames, so the workbench is locked until the export ends. Follow or cancel it in the Video tab.</p></div>
           </div>}
@@ -1050,7 +1060,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
               <div><p className="font-semibold">{selected.label}</p><p className="text-[10px] text-muted-foreground">{selected.type}</p>{selected.filePath && <p className="mt-1 break-all font-mono text-[9px] text-muted-foreground" title={selected.filePath}>{selected.filePath}</p>}</div>
               {selected.manipulatorAvailable && <Button size="sm" variant={selected.manipulatorVisible ? 'default' : 'outline'} className="h-8 w-full text-xs" disabled={busy} onClick={toggleManipulator}><Move3D className="h-4 w-4" />{selected.manipulatorVisible ? 'Hide 3D manipulator' : 'Edit graphically in 3D'}</Button>}
 
-              <section className="space-y-2 border-t pt-3">
+              <section className={`space-y-2 border-t pt-3 ${selected.renderable === false ? 'hidden' : ''}`}>
                 <p className="font-semibold">Display</p>
                 <Label className="text-[10px]">Representation</Label>
                 <Select value={selected.representation} onValueChange={representation => void command('update', { representation })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{(selected.representations?.length ? selected.representations : REPRESENTATIONS).map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
@@ -1060,7 +1070,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 {selected.representation === 'Points' && <><div className="flex items-center justify-between"><Label className="text-[10px]">Point size</Label><span className="font-mono text-[10px]">{displayDraft.pointSize.toFixed(1)}</span></div><input aria-label="Point size" className="w-full accent-primary" type="range" min="1" max="20" step="1" value={displayDraft.pointSize} onChange={event => setDisplayDraft(current => ({ ...current, pointSize: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
               </section>
 
-              <section className="space-y-2 border-t pt-3">
+              <section className={`space-y-2 border-t pt-3 ${selected.renderable === false ? 'hidden' : ''}`}>
                 <p className="font-semibold">Coloring</p>
                 <Select value={selected.color.association === 'SOLID' ? 'SOLID:' : selected.color.association === 'BLOCKS' ? 'BLOCKS:vtkBlockColors' : `${selected.color.association}:${selected.color.name}`} onValueChange={setColor}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SOLID:">Solid Color</SelectItem><SelectItem value="BLOCKS:vtkBlockColors">Patch / block colors</SelectItem>{workbench.arrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name} ({array.association === 'CELLS' ? 'cell' : 'point'})</SelectItem>)}</SelectContent></Select>
                 {(selected.color.association === 'CELLS' || selected.color.association === 'POINTS') && <><Label className="text-[10px]">Color preset</Label><Select value={selected.color.preset} onValueChange={preset => updateColor({ preset })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Preset" /></SelectTrigger><SelectContent>{workbench.presets.map(preset => <SelectItem key={preset} value={preset}>{preset}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2"><Checkbox id="pv-legend" checked={selected.color.legend} onCheckedChange={value => updateColor({ legend: value === true })} /><Label htmlFor="pv-legend" className="text-xs">Show color legend</Label></div></>}

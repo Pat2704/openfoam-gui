@@ -22,6 +22,7 @@ import {
   warmParaView,
 } from '@/lib/paraview';
 import type { VideoRequest } from '@/lib/paraview-video';
+import { paraViewDataRequest } from '@/lib/pvplots';
 import { createParaFoamMarker } from '@/lib/wsl';
 import { boundedInteger, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 
@@ -168,6 +169,7 @@ export async function POST(req: NextRequest) {
         'state', 'select', 'set_visibility', 'add_filter', 'delete', 'update', 'update_reader',
         'update_view', 'set_manipulator', 'list_case_files', 'open_case_file', 'time', 'refresh',
         'capture_view', 'apply_view',
+        'data_table',
       ]);
       if (!allowed.has(command)) {
         return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
@@ -178,6 +180,7 @@ export async function POST(req: NextRequest) {
       if (command === 'open_case_file') {
         data = { path: validateRelativePath(typeof data.path === 'string' ? data.path : '', 'File path') };
       }
+      if (command === 'data_table') data = { ...paraViewDataRequest(data) };
       const result = await sendParaViewCommand(command, data);
       return NextResponse.json(result);
     }
