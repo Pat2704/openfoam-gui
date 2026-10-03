@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAllResiduals, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
+import { parseAllResiduals, parseResidualEvents, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
 
 // The shape `foamRun` writes, which is what almost every log looks like.
 const FOAM_RUN_LOG = `
@@ -32,6 +32,83 @@ test('the initial residual of each field is read for every timestep', () => {
   // the step with, which is what a convergence plot means.
   assert.equal(data[0].Ux, 1);
   assert.equal(data[1].p, 0.363);
+});
+
+test('real Foundation pressure correctors use first initial and last final, never last initial', () => {
+  const log = `Time = 0.005s
+GAMG:  Solving for p, Initial residual = 1, Final residual = 0.0378382, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.0371368, Final residual = 6.05335e-07, No Iterations 10
+Time = 0.01s
+GAMG:  Solving for p, Initial residual = 0.142047, Final residual = 0.0132983, No Iterations 1
+GAMG:  Solving for p, Initial residual = 0.0132778, Final residual = 8.78146e-07, No Iterations 7
+`;
+  assert.deepEqual(parseAllResiduals(log).data.map(point => point.p), [1, 0.142047]);
+  assert.deepEqual(parseAllResiduals(log, { kind: 'final' }).data.map(point => point.p), [6.05335e-7, 8.78146e-7]);
+  assert.deepEqual(residualsToTable(log, { kind: 'final' }).rows, [[0.005, 6.05335e-7], [0.01, 8.78146e-7]]);
+  const events = parseResidualEvents(log).events;
+  assert.equal(events[1].line, 3);
+  assert.equal(events[1].iterations, 10);
+  assert.equal(events[1].initial, 0.0371368);
+  assert.equal(events[1].final, 6.05335e-7);
+});
+
+test('each field independently selects its first initial and last final solve', () => {
+  const log = `Time = 1
+solver: Solving for Ux, Initial residual = .4, Final residual = 4e-5, No Iterations 4
+solver: Solving for p, Initial residual = .3, Final residual = 3e-5, No Iterations 3
+solver: Solving for p, Initial residual = .8, Final residual = 8e-6, No Iterations 8
+solver: Solving for Ux, Initial residual = .1, Final residual = 1e-7, No Iterations 1
+solver: Solving for p, Initial residual = .02, Final residual = 2e-8, No Iterations 2
+`;
+  assert.deepEqual(parseAllResiduals(log).data[0], { time: 1, Ux: .4, p: .3 });
+  assert.deepEqual(parseAllResiduals(log, { kind: 'final' }).data[0], { time: 1, Ux: 1e-7, p: 2e-8 });
+});
+
+test('recomputed timestep blocks replace all old fields before selecting residuals', () => {
+  const log = `Time = 1
+solver: Solving for p, Initial residual = .9, Final residual = 9e-6, No Iterations 2
+Ux: iter = 1 residual = .6
+Time = 2
+p: iter = 1 residual = .8
+Create time
+solver: Solving for T, Initial residual = 1, Final residual = .5, No Iterations 1
+Time = 1
+solver: Solving for p, Initial residual = .3, Final residual = 3e-7, No Iterations 2
+solver: Solving for p, Initial residual = .1, Final residual = 1e-8, No Iterations 1
+Time = 2
+`;
+  const initial = parseAllResiduals(log);
+  assert.deepEqual(initial.fields, ['p']);
+  assert.deepEqual(initial.data, [{ time: 1, p: .3 }, { time: 2 }]);
+  assert.deepEqual(parseAllResiduals(log, { kind: 'final' }).data, [{ time: 1, p: 1e-8 }, { time: 2 }]);
+});
+
+test('malformed times reset attribution; negative times and seconds units remain valid', () => {
+  const log = 'Time = -2s\np: iter = 1 residual = .4\nTime = 1garbage\np: iter = 1 residual = .9\nTime = 1es\np: iter = 1 residual = .8\nTime = 1e999\np: iter = 1 residual = .7\n  Time = .5 s\np: iter = 1 residual = .2\n';
+  assert.deepEqual(parseAllResiduals(log).data.map(point => [point.time, point.p]), [[-2, .4], [.5, .2]]);
+});
+
+test('missing or invalid final of the last solve never falls back to an earlier final or an initial', () => {
+  for (const final of ['', ', Final residual = NaN', ', Final residual = 1e-7oops', ', Final residual = -1', ', Final residual = 1e999']) {
+    const log = `Time = 1\nsolver: Solving for p, Initial residual = .4, Final residual = 4e-8, No Iterations 1\nsolver: Solving for p, Initial residual = .2${final}\n`;
+    assert.equal(parseAllResiduals(log, { kind: 'final' }).data[0].p, undefined);
+    assert.ok(Number.isNaN(residualsToTable(log, { kind: 'final' }).rows[0][1]));
+  }
+  const legacy = 'Time = 1\np: iter = 3 residual = .2\n';
+  assert.equal(parseAllResiduals(legacy, { kind: 'final' }).data[0].p, undefined);
+});
+
+test('malformed first initial stays missing, while zero and scientific final values are preserved', () => {
+  const log = 'Time = 1\nsolver: Solving for p, Initial residual = 1garbage, Final residual = 0, No Iterations 0\nsolver: Solving for p, Initial residual = .2, Final residual = +1.2E-10, No Iterations 2\n';
+  assert.equal(parseAllResiduals(log).data[0].p, undefined);
+  assert.equal(parseAllResiduals(log, { kind: 'final' }).data[0].p, 1.2e-10);
+  assert.equal(parseAllResiduals(FOAM_RUN_LOG, { kind: 'final' }).data[0].Uy, 0);
+});
+
+test('indented CRLF logs and terminal colours preserve original source line provenance', () => {
+  const log = '  \u001b[32mTime = 1e-2s\u001b[0m\r\n    solver: Solving for alpha.water, Initial residual = 1e-3, Final residual = 2e-9, No Iterations 4\r\n';
+  assert.deepEqual(parseAllResiduals(log, { kind: 'final' }).data[0], { time: .01, 'alpha.water': 2e-9 });
+  assert.equal(parseResidualEvents(log).events[0].line, 2);
 });
 
 test('timesteps come back in time order however the log was assembled', () => {

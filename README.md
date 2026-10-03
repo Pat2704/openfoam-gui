@@ -90,6 +90,9 @@ the **OpenFOAM card in the Dashboard**.
   the case script in the background and takes you to the Monitor.
 - **Monitor** — live log tail, residual plot, running processes with per-PID
   kill.
+  Residual plots in Monitor and Post-Process offer **Initial** (first solve's
+  initial residual) and **Final** (last solve's final residual), per field and
+  timestep. Missing values stay gaps; CSV and chart exports retain the selection.
 
   ![The Monitor tab, with the residual plot and the live log tail side by side](screenshots/monitor.png)
 - **Mesh** — 3D view of the case's boundary patches: orbit/zoom/pan, wireframe,

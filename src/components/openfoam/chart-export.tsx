@@ -51,6 +51,8 @@ export interface ChartExportSource {
   xLabel: string;
   yLabel: string;
   logScale: boolean;
+  /** Solver residual samples use straight segments and preserve missing values. */
+  residuals?: boolean;
   /** The window the chart on screen was zoomed to, when it was. */
   xDomain?: [number, number];
   yDomain?: [number, number];
@@ -313,13 +315,13 @@ export default function ChartExportDialog({
       {source.series.map(series => (
         <Line
           key={series.index}
-          type="monotone"
+          type={source.residuals ? 'linear' : 'monotone'}
           dataKey={`c${series.index}`}
           name={series.name}
           stroke={series.color}
           strokeWidth={options.lineWidth}
           dot={false}
-          connectNulls
+          connectNulls={!source.residuals}
           isAnimationActive={false}
         />
       ))}

@@ -44,7 +44,7 @@ import {
   buildCommandTemplate, parsePostProcessCommand, POST_PROCESS_NAMES,
   serializeCsv,
 } from '@/lib/postprocess';
-import { residualsToTable } from '@/lib/residuals';
+import { residualsToTable, type ResidualKind } from '@/lib/residuals';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
 
 interface FileRef { name: string; times: string[]; bytes: number }
@@ -278,14 +278,14 @@ function DocBlockView({ block }: { block: DocBlock }) {
  * uses them to watch a run — so this only reshapes, and the chart, the table,
  * the CSV and the image export then treat a log like any other dataset.
  */
-async function readResiduals(caseName: string, log: string, maxPoints = 4000): Promise<TableData> {
+async function readResiduals(caseName: string, log: string, maxPoints = 4000, kind: ResidualKind = 'initial'): Promise<TableData> {
   const response = await fetch(
     `/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(log)}&maxLines=50000`,
   );
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || 'Could not read the log');
 
-  const { columns, rows } = residualsToTable(payload.content || '');
+  const { columns, rows } = residualsToTable(payload.content || '', { kind });
   // JSON has no NaN, so the API's statistics arrive with nulls where a value
   // could not be computed. Matching that here keeps ONE shape on the client
   // instead of two that differ only in how "no value" is spelled.
@@ -311,7 +311,8 @@ async function readResiduals(caseName: string, log: string, maxPoints = 4000): P
     totalRows: rows.length,
     stats,
     notes: columns.length
-      ? [`Initial residuals parsed from log.${log === 'log' ? '' : log}`]
+      ? [`${kind === 'initial' ? 'Initial: first solve’s Initial residual' : 'Final: last solve’s Final residual'} per field/timestep. Missing values stay gaps.`,
+        `Read from ${log === 'log' || log.startsWith('log.') ? log : `log.${log}`} (latest 50,000 log lines). Unlabelled legacy values are initial only.`]
       : ['No residuals found in this log'],
     times: [],
     shownTime: null,
@@ -330,8 +331,9 @@ async function readSelectionData(
   target: Selection,
   time?: string,
   maxPoints = 4000,
+  residualKind: ResidualKind = 'initial',
 ): Promise<TableData> {
-  if (target.kind === 'log') return readResiduals(caseName, target.log, maxPoints);
+  if (target.kind === 'log') return readResiduals(caseName, target.log, maxPoints, residualKind);
   const query = new URLSearchParams({
     action: 'data', case: caseName, dataset: target.dataset, file: target.file,
     maxPoints: String(maxPoints),
@@ -347,6 +349,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [selected, setSelected] = useState<Selection | null>(null);
+  const [residualKind, setResidualKind] = useState<ResidualKind>('initial');
   const [data, setData] = useState<TableData | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
@@ -455,7 +458,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     const request = dataQueueRef.current.catch(() => undefined).then(async () => {
       if (requestId !== dataRequestRef.current) return;
       try {
-        const result = await readSelectionData(caseName, target, time);
+        const result = await readSelectionData(caseName, target, time, 4000, residualKind);
         if (requestId !== dataRequestRef.current) return;
         setData(result);
         setError(null);
@@ -469,7 +472,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     });
     dataQueueRef.current = request;
     return request;
-  }, [caseName]);
+  }, [caseName, residualKind]);
 
   useEffect(() => {
     if (active) void loadDatasets();
@@ -907,9 +910,11 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       // picture, so fetch the full parsed table instead of copying that visual
       // sample and calling it complete.
       const complete = data.totalRows > data.rows.length
-        ? await readSelectionData(caseName, selected, data.shownTime ?? undefined, 200000)
+        ? await readSelectionData(caseName, selected, data.shownTime ?? undefined, 200000, residualKind)
         : data;
-      await navigator.clipboard.writeText(serializeCsv(complete.columns, complete.rows));
+      const columns = selected.kind === 'log'
+        ? complete.columns.map((name, index) => index ? `${name} (${residualKind})` : name) : complete.columns;
+      await navigator.clipboard.writeText(serializeCsv(columns, complete.rows));
       if (complete.truncated || complete.runsTruncated || complete.totalRows > complete.rows.length) {
         toast.warning(`${complete.rows.length} rows copied; the source exceeded the safe read limit`);
       } else {
@@ -932,7 +937,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const exportSource: ChartExportSource | null = useMemo(() => {
     if (!data || !visibleSeries.length || !selected) return null;
     const label = selected.kind === 'log'
-      ? `${caseName}-residuals-${selected.log}`
+      ? `${caseName}-${residualKind}-residuals-${selected.log}`
       : `${caseName}-${describeDatasetName(selected.dataset).base}`;
     return {
       columns: data.columns,
@@ -949,11 +954,12 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       yLabel: visibleSeries.length === 1
         ? visibleSeries[0].name
         : selected.kind === 'log'
-          ? 'Initial residual'
+          ? `${residualKind === 'initial' ? 'Initial' : 'Final'} residual`
           : describeDatasetName(selected.dataset).base,
       // Residuals are the case where a log axis is almost always wanted, so it
       // starts on for them and otherwise follows the chart on screen.
       logScale: selected.kind === 'log' ? true : logScale,
+      residuals: selected.kind === 'log',
       // The saved figure shows what the chart shows: the window the user
       // zoomed to, and the shape they dragged it into.
       xDomain: zoom ? zoom.x : undefined,
@@ -961,15 +967,15 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       aspect: frame.width && frame.height ? frame.width / frame.height : undefined,
       fileName: label.replace(/[^A-Za-z0-9._-]+/g, '-'),
       title: selected.kind === 'log'
-        ? `${caseName} — initial residuals`
+        ? `${caseName} — ${residualKind} residuals`
         : `${caseName} — ${describeDatasetName(selected.dataset).base}`,
     };
-  }, [data, visibleSeries, selected, caseName, independent, logScale, zoom, frame]);
+  }, [data, visibleSeries, selected, caseName, independent, logScale, zoom, frame, residualKind]);
   // What the chart header calls the thing on screen.
   const heading = !selected
     ? null
     : selected.kind === 'log'
-      ? { base: `log.${selected.log === 'log' ? '' : selected.log}`.replace(/\.$/, ''), detail: 'initial residuals' }
+      ? { base: selected.log === 'log' || selected.log.startsWith('log.') ? selected.log : `log.${selected.log}`, detail: `${residualKind} residuals` }
       : { ...describeDatasetName(selected.dataset), detail: selected.file };
 
   const filteredCatalog = useMemo(() => {
@@ -1134,6 +1140,15 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
             {/* A profile has one complete curve per written time, so the time is
                 a choice the user makes. A time series has time on its own axis
                 and needs no selector at all. */}
+            {selected?.kind === 'log' && (
+              <Select value={residualKind} onValueChange={value => { setData(null); setZoom(null); setResidualKind(value as ResidualKind); }}>
+                <SelectTrigger aria-label="Residual kind" className="h-7 w-40 text-[10px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="initial">Initial (first solve)</SelectItem>
+                  <SelectItem value="final">Final (last solve)</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
             {data?.mode === 'profile' && data.times.length > 0 && (
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] text-muted-foreground">at</span>
@@ -1227,9 +1242,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   <p className="text-xs">Pick a result on the left, or compute one</p>
                 </div>
               </div>
-            ) : !data ? (
+            ) : !data?.rows.length ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : 'No readable data in this file'}
+                {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : selected.kind === 'log' ? 'No solver residuals found in this log' : 'No readable data in this file'}
               </div>
             ) : view === 'chart' ? (
               <div className="flex h-full min-h-0 w-full justify-center overflow-auto">
@@ -1311,13 +1326,13 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   {visibleSeries.map(series => (
                     <Line
                       key={series.index}
-                      type="monotone"
+                      type={selected.kind === 'log' ? 'linear' : 'monotone'}
                       dataKey={`c${series.index}`}
                       name={series.name}
                       stroke={SERIES_COLORS[(series.index - 1) % SERIES_COLORS.length]}
                       strokeWidth={1.6}
                       dot={false}
-                      connectNulls
+                      connectNulls={selected.kind !== 'log'}
                       isAnimationActive={false}
                     />
                   ))}
@@ -1379,7 +1394,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         <aside className="flex min-h-0 flex-col border-l bg-muted/15">
           <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-2 text-xs font-semibold">
             <Sigma className="h-3.5 w-3.5" /> Series
-            {data && <Badge variant="outline" className="ml-auto text-[9px]">{visibleSeries.length}/{data.columns.length - 1}</Badge>}
+            {data && <Badge variant="outline" className="ml-auto text-[9px]">{visibleSeries.length}/{Math.max(0, data.columns.length - 1)}</Badge>}
           </div>
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-1.5 p-2">

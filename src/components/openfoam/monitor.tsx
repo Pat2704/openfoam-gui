@@ -20,7 +20,7 @@ import {
   ResponsiveContainer, ReferenceLine
 } from 'recharts';
 import { confirmDialog } from '@/components/ui/confirm-host';
-import { parseAllResiduals, residualLogDomain, type ResidualPoint } from '@/lib/residuals';
+import { parseAllResiduals, residualLogDomain, type ResidualPoint, type ResidualKind } from '@/lib/residuals';
 import { isProcessForCase } from '@/lib/case-processes';
 
 interface ProcessRow {
@@ -166,9 +166,18 @@ export default function Monitor({ caseName, active = true }: {
   // ── Residual Chart state ──
   const [showResidualChart, setShowResidualChart] = useState(false);
   const [residualChartLoading, setResidualChartLoading] = useState(false);
-  const [residualData, setResidualData] = useState<{ data: ResidualPoint[]; fields: string[] }>({ data: [], fields: [] });
+  const [residualContent, setResidualContent] = useState('');
+  const [residualKind, setResidualKind] = useState<ResidualKind>('initial');
+  const residualData = useMemo(() => parseAllResiduals(residualContent, { kind: residualKind }), [residualContent, residualKind]);
+  const residualRequestRef = useRef(0);
   const [residualError, setResidualError] = useState<string | null>(null);
   const [residualLog, setResidualLog] = useState<string>(''); // log file used for chart
+  useEffect(() => {
+    residualRequestRef.current += 1;
+    setResidualContent('');
+    setResidualError(null);
+    setResidualChartLoading(false);
+  }, [caseName]);
 
 
   // ── Delete timesteps ──
@@ -221,23 +230,25 @@ export default function Monitor({ caseName, active = true }: {
       return;
     }
     setResidualLog(logFile);
+    const request = ++residualRequestRef.current;
     setResidualChartLoading(true);
     setResidualError(null);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(logFile)}&maxLines=50000`);
       const data = await res.json().catch(() => ({}));
+      if (request !== residualRequestRef.current) return;
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const content = data.content || '';
       if (content.startsWith('Log not found')) {
-        setResidualData({ data: [], fields: [] });
+        setResidualContent('');
         toast.error(`Log not found: ${logFile}`);
       } else {
-        const parsed = parseAllResiduals(content);
-        setResidualData(parsed);
+        setResidualContent(content);
       }
     } catch (e) {
+      if (request !== residualRequestRef.current) return;
       // A failed read is not a log without residuals, which is what it said.
-      setResidualData({ data: [], fields: [] });
+      setResidualContent('');
       setResidualError(e instanceof Error ? e.message : String(e));
     }
     setResidualChartLoading(false);
@@ -588,11 +599,7 @@ export default function Monitor({ caseName, active = true }: {
     [residualData],
   );
 
-  /**
-   * Values a logarithmic axis cannot place become gaps rather than points.
-   * `connectNulls` then bridges them, instead of Recharts drawing a curve down
-   * to negative infinity.
-   */
+  /** Non-positive values stay gaps on the log axis. */
   const residualChartData = useMemo(() => residualData.data.map(point => {
     const row: ResidualPoint = { time: point.time };
     for (const field of residualData.fields) {
@@ -923,6 +930,15 @@ export default function Monitor({ caseName, active = true }: {
                 {showResidualChart ? 'Hide' : 'Show'} Chart
               </Button>
               {showResidualChart && (
+                <Select value={residualKind} onValueChange={value => setResidualKind(value as ResidualKind)}>
+                  <SelectTrigger aria-label="Residual kind" className="w-40 h-7 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="initial">Initial (first solve)</SelectItem>
+                    <SelectItem value="final">Final (last solve)</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+              {showResidualChart && (
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => fetchResidualChart()} disabled={residualChartLoading}>
                   <RefreshCw className={`w-3 h-3 mr-1 ${residualChartLoading ? 'animate-spin' : ''}`} />
                   Refresh
@@ -933,6 +949,7 @@ export default function Monitor({ caseName, active = true }: {
         </CardHeader>
         {showResidualChart && (
           <CardContent className="px-3 pb-3">
+            <p className="mb-2 text-[10px] text-muted-foreground">Per field/timestep: initial is the first solve’s Initial residual; final is the last solve’s Final residual. Unreported values stay gaps. Latest 50,000 log lines.</p>
             {residualChartLoading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
                 <Loader2 className="w-5 h-5 mr-2 animate-spin" /> Loading residuals from <span className="font-mono mx-1">{residualLog || '...'}</span>...
@@ -1037,11 +1054,11 @@ export default function Monitor({ caseName, active = true }: {
                       {residualData.fields.flatMap((field, i) => [
                         <Area
                           key={`area-${field}`}
-                          type="monotone"
+                          type="linear"
                           dataKey={field}
                           stroke="none"
                           fill={`url(#fill-${i})`}
-                          connectNulls
+                          connectNulls={false}
                           isAnimationActive={false}
                           /* the Area is only the gradient under the curve; without
                              this it registers a second legend entry per field */
@@ -1050,12 +1067,12 @@ export default function Monitor({ caseName, active = true }: {
                         />,
                         <Line
                           key={`line-${field}`}
-                          type="monotone"
+                          type="linear"
                           dataKey={field}
                           stroke={RESIDUAL_COLORS[i % RESIDUAL_COLORS.length]}
                           strokeWidth={1.5}
                           dot={false}
-                          connectNulls
+                          connectNulls={false}
                           isAnimationActive={false}
                         />,
                       ])}

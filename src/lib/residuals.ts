@@ -1,81 +1,98 @@
-/**
- * Reading solver residuals out of an OpenFOAM log.
- *
- * Lifted out of `monitor.tsx`, unchanged in behaviour, because the Post-Process
- * tab needs the same numbers for a different purpose: the Monitor watches a run
- * in progress, while Post-Process charts and exports the converged history
- * alongside the function-object output. Two copies of a parser that has to
- * recognise three solver output formats is exactly the kind of duplication that
- * drifts, so there is one, and it is unit-tested.
- *
- * Pure: no fetch, no React, no WSL.
- */
-
+/** Shared solver-log parser for Monitor and Post-Process. Pure: no fetch or WSL. */
 export interface ResidualPoint {
   time: number;
   [field: string]: number | undefined;
 }
 
-/**
- * Parse every timestep in a log.
- *
- * Three shapes are recognised, in the order they are tried:
- *
- *   1. `smoothSolver:  Solving for Ux, Initial residual = 0.01, …`  — by far the
- *      most common, and what `foamRun` writes.
- *   2. `p: iter = 3 residual = 1e-05`
- *   3. `Ux  3  1e-05` — legacy tabular output.
- *
- * The initial residual is the one taken: it is the error the solver STARTED the
- * timestep with, which is what a convergence plot means. The final residual only
- * says how well the linear solver did on that step.
- */
-export function parseAllResiduals(log: string): { data: ResidualPoint[]; fields: string[] } {
-  const lines = log.split('\n');
-  const fieldSet = new Set<string>();
-  const dataMap = new Map<number, ResidualPoint>();
+export type ResidualKind = 'initial' | 'final';
 
-  let currentTime = -1;
+export interface ResidualEvent {
+  time: number;
+  step: number;
+  field: string;
+  initial?: number;
+  final?: number;
+  iterations?: number;
+  line: number;
+}
+
+function finiteNumber(token: string): number | undefined {
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(token)) return undefined;
+  const value = Number(token);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function residualNumber(token: string): number | undefined {
+  const value = finiteNumber(token);
+  return value !== undefined && value >= 0 ? value : undefined;
+}
+
+/** Preserve every solve, its order and source line; missing values stay missing. */
+export function parseResidualEvents(log: string): {
+  events: ResidualEvent[];
+  timesteps: { time: number; step: number }[];
+} {
+  const events: ResidualEvent[] = [];
+  const timesteps: { time: number; step: number }[] = [];
+  let currentTime: number | undefined;
+  let step = -1;
+  const lines = log.split('\n');
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const timeMatch = line.match(/^Time\s*=\s*([\d.eE+\-]+)/);
+    const line = lines[i].replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim();
+    if (/^(?:Create time|Starting time loop)\b/.test(line)) currentTime = undefined;
+    const timeMatch = line.match(/^Time\s*=\s*(.*?)\s*$/);
     if (timeMatch) {
-      currentTime = parseFloat(timeMatch[1]);
-      if (!isNaN(currentTime) && !dataMap.has(currentTime)) {
-        dataMap.set(currentTime, { time: currentTime });
+      // Foundation's unit-aware output writes e.g. "Time = 0.005s".
+      currentTime = finiteNumber(timeMatch[1].replace(/\s*s$/, ''));
+      if (currentTime !== undefined) {
+        step += 1;
+        timesteps.push({ time: currentTime, step });
       }
       continue;
     }
-    if (currentTime < 0) continue;
-
-    // ── Format 1 (MOST COMMON): "solverName:  Solving for FIELD, Initial residual = X, ..." ──
-    // e.g. "smoothSolver:  Solving for Ux, Initial residual = 0.01, Final residual = 1e-05, No Iterations 3"
-    // e.g. "GAMG:  Solving for p, Initial residual = 1, Final residual = 0.001, No Iterations 5"
-    const m0 = line.match(/\bSolving\s+for\s+(\S+),\s+Initial\s+residual\s*=\s*([\d.eE+\-]+)/i);
-    if (m0) {
-      const pt = dataMap.get(currentTime);
-      if (pt) { pt[m0[1]] = parseFloat(m0[2]); fieldSet.add(m0[1]); }
+    if (currentTime === undefined) continue;
+    const solve = line.match(/\bSolving\s+for\s+([^,\s]+),\s+Initial\s+residual\s*=\s*([^,\s]*)/i);
+    if (solve) {
+      const final = line.match(/\bFinal\s+residual\s*=\s*([^,\s]*)/i);
+      const iterations = line.match(/\bNo\s+Iterations\s+(\d+)\s*$/i);
+      events.push({ time: currentTime, step, field: solve[1], initial: residualNumber(solve[2]),
+        final: final ? residualNumber(final[1]) : undefined,
+        iterations: iterations ? Number(iterations[1]) : undefined, line: i + 1 });
       continue;
     }
-
-    // ── Format 2: "field: iter = N residual = VALUE" (some foamRun output) ──
-    const m1 = line.match(/^(\S+)\s*:\s*iter\s*=\s*\d+\s*residual\s*=\s*([\d.eE+\-]+)/);
-    if (m1) {
-      const pt = dataMap.get(currentTime);
-      if (pt) { pt[m1[1]] = parseFloat(m1[2]); fieldSet.add(m1[1]); }
-      continue;
-    }
-
-    // ── Format 3: "field  iters  residual" (legacy tabular solver output) ──
-    const m2 = line.match(/^([A-Za-z_][\w.]*)\s+\d+\s+([\d.eE+\-]+)/);
-    if (m2 && !line.includes('Time') && !line.includes('PIMPLE') && !line.includes('SIMPLE')) {
-      const pt = dataMap.get(currentTime);
-      if (pt) { pt[m2[1]] = parseFloat(m2[2]); fieldSet.add(m2[1]); }
+    // Legacy unlabelled residuals have no reported final value; never invent one.
+    const legacy = line.match(/^([^\s:]+)\s*:\s*iter\s*=\s*(\d+)\s*residual\s*=\s*(\S+)\s*$/)
+      ?? line.match(/^([A-Za-z_][\w.]*)\s+(\d+)\s+(\S+)\s*$/);
+    if (legacy && !['Time', 'PIMPLE', 'SIMPLE'].includes(legacy[1])) {
+      events.push({ time: currentTime, step, field: legacy[1], initial: residualNumber(legacy[3]),
+        iterations: Number(legacy[2]), line: i + 1 });
     }
   }
+  return { events, timesteps };
+}
 
-  const data = Array.from(dataMap.values()).sort((a, b) => a.time - b.time);
-  return { data, fields: Array.from(fieldSet) };
+/** Initial = first solve's initial; final = last solve's final, per field/timestep. */
+export function parseAllResiduals(
+  log: string,
+  options: { kind?: ResidualKind } = {},
+): { data: ResidualPoint[]; fields: string[] } {
+  const { events, timesteps } = parseResidualEvents(log);
+  const latestSteps = new Map(timesteps.map(({ time, step }) => [time, step]));
+  // A recomputed timestep replaces the whole old row, including missing fields.
+  const dataMap = new Map<number, ResidualPoint>(timesteps.map(({ time }) => [time, { time }]));
+  const fields = new Set<string>();
+  const kind = options.kind ?? 'initial';
+  for (const event of events) {
+    if (latestSteps.get(event.time) !== event.step || event.field === 'time') continue;
+    fields.add(event.field);
+    const point = dataMap.get(event.time)!;
+    if (kind === 'final' || !Object.hasOwn(point, event.field)) {
+      Object.defineProperty(point, event.field, {
+        value: event[kind], writable: true, enumerable: true, configurable: true,
+      });
+    }
+  }
+  return { data: [...dataMap.values()].sort((a, b) => a.time - b.time), fields: [...fields] };
 }
 
 /**
@@ -91,8 +108,8 @@ export function parseAllResiduals(log: string): { data: ResidualPoint[]; fields:
  * would draw a line to the bottom of a logarithmic axis and read as perfect
  * convergence.
  */
-export function residualsToTable(log: string): { columns: string[]; rows: number[][] } {
-  const { data, fields } = parseAllResiduals(log);
+export function residualsToTable(log: string, options: { kind?: ResidualKind } = {}): { columns: string[]; rows: number[][] } {
+  const { data, fields } = parseAllResiduals(log, options);
   if (!data.length || !fields.length) return { columns: [], rows: [] };
   return {
     columns: ['Time', ...fields],

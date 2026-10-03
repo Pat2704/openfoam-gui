@@ -6,6 +6,20 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-03 — Correct initial/final solver residuals
+
+- At the user's request, add Initial/Final choices to Monitor and Post-Process,
+  without maximum. Initial is the first solve's Initial residual; Final is the
+  last solve's Final residual, independently per field/timestep. CSV and chart
+  exports use the selected kind; missing values stay gaps, including legacy
+  logs without a labelled final residual. Later timestep blocks replace old rows.
+- Real `myCavity/log.foamRun` revealed last-initial overwrites: pressure at
+  t=0.005 incorrectly showed 0.0371368; initial is 1 and final is 6.05335e-7.
+  Keep the rollback's File Editor indicators and prepared ParaView startup.
+- Checks: 18 residual tests pass; 20,000 initial/final values match the existing
+  myCavity log independently. UI confirms both choices, final table/chart,
+  Monitor curves and export labels; no case files were changed.
+
 ## 2026-10-03 — Restore the pre-phase-1 application
 
 - At the user's request, restore the application to `c7c8c3c`, before phase 1.
@@ -426,27 +440,11 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — ParaView loads in the background before its tab is opened
 
-- Reported by the user: the first ParaView start takes a very long time.
-  Measured again: the tree is 11,070 files and 4 GB, 2,215 of them DLLs and
-  Python modules, with Defender real-time scanning on. `from paraview.simple
-  import *` took 36.6 s with the cache half evicted and 1.4-1.9 s straight
-  after; the 107 s cold figure from 2026-09-09 is the post-reboot case. The cost
-  is Windows meeting the files for the first time, not the app or ParaView.
-- `warmParaView()` in `src/lib/paraview.ts` runs `pvpython` with the engine's
-  own render flags (`PARAVIEW_RENDER_ARGS`, now shared with the worker spawn),
-  the same import and one offscreen render, below normal priority, with no
-  output and a ten-minute ceiling. The render matters: it is 5 s warm against
-  1.4 s for the bare import, and that difference is the rendering stack a bare
-  import would have left cold. Once per installation per app process; skipped
-  when a session is running or starting.
-- The Dashboard starts it 5 s after detection finds ParaView, shows "warming up"
-  on the ParaView card while it runs, and the ParaView settings carry the
-  switch (`paraview-warmup` in the persisted config; on unless set to `off`)
-  with the outcome. A workbench start that overlaps the warm-up says so instead
-  of the generic cold-start note.
-- It hides the cold load rather than shortening it. The other lever is a
-  Defender exclusion for the ParaView folder, which is the user's security
-  decision and was only described to them, not made.
+- Cold imports measured 107 s after reboot, 36.6 s with a partial cache and
+  1.4–1.9 s warm; offscreen render also warms the rendering stack. Details in Git.
+- Dashboard starts below-normal-priority warm-up 5 s after detection, once per
+  installation/process, with a ten-minute ceiling and a persistent on/off setting.
+  It reports overlap with case startup; no Defender settings were changed.
 
 ## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
 
