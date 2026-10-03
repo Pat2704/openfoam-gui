@@ -1317,10 +1317,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                       border: '1px solid var(--border)',
                       borderRadius: 6,
                     }}
-                    formatter={(value: number, key: string) => {
-                      const index = Number(key.slice(1));
-                      return [formatNumber(value), data.columns[index] ?? key];
-                    }}
+                    formatter={(value: number, name: string) => [formatNumber(value), name]}
                     labelFormatter={(label: number) => `${independent} = ${formatNumber(label)}`}
                   />
                   {visibleSeries.map(series => (

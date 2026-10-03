@@ -697,14 +697,17 @@ export default function ChartExportDialog({
                 <div>
                   <Label className="text-[11px]">Size</Label>
                   <Select
-                    value={`${options.width}x${options.height}`}
+                    value={SIZE_PRESETS.some(preset => preset.width === options.width && preset.height === options.height)
+                      ? `${options.width}x${options.height}` : 'custom'}
                     onValueChange={value => {
+                      if (value === 'custom') return;
                       const [width, height] = value.split('x').map(Number);
                       setOptions(current => ({ ...current, width, height }));
                     }}
                   >
-                    <SelectTrigger size="sm" className="mt-1 w-full text-xs"><SelectValue placeholder="Custom" /></SelectTrigger>
+                    <SelectTrigger aria-label="Export size" size="sm" className="mt-1 w-full text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="custom" disabled className="text-xs">Custom — {options.width} × {options.height}</SelectItem>
                       {SIZE_PRESETS.map(preset => (
                         <SelectItem key={preset.label} value={`${preset.width}x${preset.height}`} className="text-xs">
                           {preset.label}
