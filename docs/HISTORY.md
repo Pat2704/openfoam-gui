@@ -6,6 +6,15 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-03 — v5.6.2: residuals, chart controls and ParaView editing
+
+- Release `v5.6.2` at the user's request; notes in `docs/releases/v5.6.2.md`
+  cover the final changes below. Phases 1–4 remain reverted.
+- Direct publication reuses the EXE/ZIP pair built from `7d23f73`, renaming
+  both copies without rebuilding or rerunning checks. Embedded version: 5.6.1.
+- GitHub release retention keeps v5.6.2 and v5.6.1; remove the v5.6.0 release
+  entry and assets while preserving its tag, history and source archives.
+
 ## 2026-10-03 — Visible dropdowns and freely editable ParaView numbers
 
 - Select popups now sit above the dialog/overlay (1100 versus 1000). The export
@@ -59,28 +68,16 @@ audits.
 
 ## 2026-09-13 — v5.6.1: finished agent answers use the provider's canonical result
 
-- Released `v5.6.1` at the user's request with notes in
-  `docs/releases/v5.6.1.md`, covering this entry. Direct publication reused
-  the pair built for commit `03a4a83` (source at 5.6.0), renamed without
-  a second build, so its embedded version resource reads 5.6.0. GitHub keeps
-  v5.6.1 and v5.6.0; the v5.5.0 release entry was removed, its tag kept.
-- Two earlier fixes tried to infer cumulative provider previews from delta and
-  item IDs. A real finished answer still contained triangular repetitions such
-  as `A`, `A+B`, `A+B+C`: the UI never consumed Claude's canonical result event,
-  while the Codex adapter explicitly emitted an empty result at turn completion.
-- `done.text` is now the contract for a completed turn. Claude already supplies
-  that authoritative result; the Codex adapter retains its last completed public
-  agent message and supplies it too. The shared transcript replaces all preview
-  text with that single answer while preserving tool and reasoning cards. A
-  regression test includes incomplete, cumulative previews and proves that only
-  one canonical final text block survives.
-- A packaged-server check then observed the same non-empty canonical text in
-  both Claude's and Codex's final `done` event.
-- The remaining symptom was visual: closing and reopening a panel immediately
-  showed the same stored answer correctly. Both panels had keyed their changing
-  transcript blocks by array index while `done` removed and reordered previews.
-  They now use stable semantic keys, give the canonical final block its own ID,
-  and synchronously commit the terminal replacement before the SSE stream closes.
+- Released `v5.6.1`; notes: `docs/releases/v5.6.1.md`. Direct publication reused
+  the pair built from `03a4a83`, renamed without rebuilding; embedded version
+  5.6.0. Retention kept v5.6.1/v5.6.0 and removed v5.5.0's release, keeping its tag.
+- Completed turns use `done.text`: Claude supplies its canonical result, and
+  Codex retains its last completed public agent message. This replaces repeated
+  cumulative previews while preserving tool/reasoning cards. Regression tests
+  and packaged-server checks confirmed non-empty final results from both agents.
+- Stable semantic transcript keys and synchronous terminal replacement fix the
+  stale rendering that previously required closing and reopening the panel.
+  Earlier preview inference attempts and diagnostic detail remain in Git.
 
 ## 2026-09-13 — v5.6.0: long videos confirmed with a measured time; Feature Edges
 
