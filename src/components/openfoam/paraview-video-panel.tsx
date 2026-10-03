@@ -20,7 +20,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { confirmDialog } from '@/components/ui/confirm-host';
@@ -384,7 +384,7 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
           <span className="min-w-0 flex-1">
             <span className="block">Each saved time step lasts</span>
             <span className="mt-1 flex items-center gap-1">
-              <Input type="number" min={SECONDS_PER_STEP_RANGE[0]} max={SECONDS_PER_STEP_RANGE[1]} step="0.05" className="h-6 w-20 font-mono text-xs" value={secondsPerStep} disabled={disabled || mode !== 'perStep'} onChange={event => setSecondsPerStep(Number(event.target.value))} />
+              <NumberInput aria-label="Video seconds per timestep" min={SECONDS_PER_STEP_RANGE[0]} max={SECONDS_PER_STEP_RANGE[1]} step="0.05" className="h-6 w-20 font-mono text-xs" value={secondsPerStep} disabled={disabled || mode !== 'perStep'} onValueChange={setSecondsPerStep} />
               <span className="text-[10px] text-muted-foreground">s of video (slow motion, any spacing)</span>
             </span>
           </span>
@@ -394,7 +394,7 @@ export default function ParaViewVideoPanel({ workbench, imageUrl, locked, onAppl
           <span className="min-w-0 flex-1">
             <span className="block">Follow simulation time: 1 simulated second =</span>
             <span className="mt-1 flex items-center gap-1">
-              <Input type="number" min={VIDEO_SECONDS_PER_SIM_SECOND_RANGE[0]} max={VIDEO_SECONDS_PER_SIM_SECOND_RANGE[1]} step="any" className="h-6 w-20 font-mono text-xs" value={factor} disabled={disabled || mode !== 'realTime'} onChange={event => setFactor(Number(event.target.value))} />
+              <NumberInput aria-label="Video seconds per simulated second" min={VIDEO_SECONDS_PER_SIM_SECOND_RANGE[0]} max={VIDEO_SECONDS_PER_SIM_SECOND_RANGE[1]} step="any" className="h-6 w-20 font-mono text-xs" value={factor} disabled={disabled || mode !== 'realTime'} onValueChange={setFactor} />
               <span className="text-[10px] text-muted-foreground">s of video (1 real time, more is slower)</span>
             </span>
           </span>

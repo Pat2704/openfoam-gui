@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -197,17 +198,17 @@ function fileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function VectorInputs({ value, onChange }: { value: Vector3; onChange: (index: number, value: string) => void }) {
+function VectorInputs({ label, value, onChange }: { label: string; value: Vector3; onChange: (index: number, value: number) => void }) {
   return (
     <div className="grid grid-cols-3 gap-1">
       {value.map((coordinate, index) => (
-        <Input
+        <NumberInput
           key={index}
-          type="number"
+          aria-label={`${label} ${['X', 'Y', 'Z'][index]}`}
           step="any"
           className="h-7 px-1.5 font-mono text-[10px]"
           value={coordinate}
-          onChange={event => onChange(index, event.target.value)}
+          onValueChange={value => onChange(index, value)}
         />
       ))}
     </div>
@@ -563,23 +564,23 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       invert: selected.invert || false,
       contourAssociation: selected.contour?.association || 'POINTS',
       contourName: selected.contour?.name || '',
-      contourValue: selected.contour?.value || 0,
+      contourValue: selected.contour?.value ?? 0,
       thresholdAssociation: selected.threshold?.association || 'CELLS',
       thresholdName: selected.threshold?.name || '',
-      thresholdLower: selected.threshold?.lower || 0,
-      thresholdUpper: selected.threshold?.upper || 1,
+      thresholdLower: selected.threshold?.lower ?? 0,
+      thresholdUpper: selected.threshold?.upper ?? 1,
       streamName: stream?.name || '',
       streamSeedType: stream?.seedType || 'Point Cloud',
       streamCenter: stream?.center || [0, 0, 0],
-      streamRadius: stream?.radius || 1,
-      streamPoints: stream?.points || 50,
+      streamRadius: stream?.radius ?? 1,
+      streamPoints: stream?.points ?? 50,
       streamPoint1: stream?.point1 || [0, 0, 0],
       streamPoint2: stream?.point2 || [1, 0, 0],
-      streamResolution: stream?.resolution || 50,
+      streamResolution: stream?.resolution ?? 50,
       streamDirection: stream?.direction || 'BOTH',
-      streamMaximumLength: stream?.maximumLength || 1,
-      tubeRadius: selected.tube?.radius || 0.01,
-      tubeSides: selected.tube?.sides || 8,
+      streamMaximumLength: stream?.maximumLength ?? 1,
+      tubeRadius: selected.tube?.radius ?? 0.01,
+      tubeSides: selected.tube?.sides ?? 8,
       calculatorAssociation: selected.calculator?.association || 'POINTS',
       calculatorExpression: selected.calculator?.expression || '',
       calculatorResultName: selected.calculator?.resultName || 'Result',
@@ -587,8 +588,8 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       gradientName: selected.gradient?.name || '',
       gradientResultName: selected.gradient?.resultName || 'Gradient',
       glyphName: selected.glyph?.name || '',
-      glyphScaleFactor: selected.glyph?.scaleFactor || 1,
-      glyphMaxPoints: selected.glyph?.maxPoints || 1200,
+      glyphScaleFactor: selected.glyph?.scaleFactor ?? 1,
+      glyphMaxPoints: selected.glyph?.maxPoints ?? 1200,
       warpAssociation: selected.warp?.association || 'POINTS',
       warpName: selected.warp?.name || '',
       warpScaleFactor: selected.warp?.scaleFactor ?? 1,
@@ -603,7 +604,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       shrinkFactor: selected.shrink?.factor ?? 0.8,
       plotPoint1: selected.plotOverLine?.point1 || [0, 0, 0],
       plotPoint2: selected.plotOverLine?.point2 || [1, 1, 1],
-      plotResolution: selected.plotOverLine?.resolution || 200,
+      plotResolution: selected.plotOverLine?.resolution ?? 200,
     });
     setDisplayDraft({ opacity: selected.opacity, lineWidth: selected.lineWidth, pointSize: selected.pointSize });
   }, [selected]);
@@ -739,11 +740,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     // A still frame is useful when playback stops, not on every state update.
   }, [playing]);
 
-  const updateVector = (field: keyof Pick<PropertyDraft, 'origin' | 'normal' | 'streamCenter' | 'streamPoint1' | 'streamPoint2' | 'warpNormal' | 'transformTranslate' | 'transformRotate' | 'transformScale' | 'reflectOrigin' | 'reflectNormal' | 'plotPoint1' | 'plotPoint2'>, index: number, value: string) => {
-    const parsed = Number(value);
+  const updateVector = (field: keyof Pick<PropertyDraft, 'origin' | 'normal' | 'streamCenter' | 'streamPoint1' | 'streamPoint2' | 'warpNormal' | 'transformTranslate' | 'transformRotate' | 'transformScale' | 'reflectOrigin' | 'reflectNormal' | 'plotPoint1' | 'plotPoint2'>, index: number, value: number) => {
     setDraft(current => {
       const next = [...current[field]] as Vector3;
-      next[index] = Number.isFinite(parsed) ? parsed : 0;
+      next[index] = value;
       return { ...current, [field]: next };
     });
   };
@@ -1066,15 +1066,15 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 {(selected.color.association === 'CELLS' || selected.color.association === 'POINTS') && <><Label className="text-[10px]">Color preset</Label><Select value={selected.color.preset} onValueChange={preset => updateColor({ preset })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Preset" /></SelectTrigger><SelectContent>{workbench.presets.map(preset => <SelectItem key={preset} value={preset}>{preset}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2"><Checkbox id="pv-legend" checked={selected.color.legend} onCheckedChange={value => updateColor({ legend: value === true })} /><Label htmlFor="pv-legend" className="text-xs">Show color legend</Label></div></>}
               </section>
 
-              {(selected.type === 'Slice' || selected.type === 'Clip') && <section className="space-y-2 border-t pt-3"><p className="font-semibold">{selected.type} plane</p><Label className="text-[10px]">Origin (X, Y, Z)</Label><VectorInputs value={draft.origin} onChange={(index, value) => updateVector('origin', index, value)} /><Label className="text-[10px]">Normal (X, Y, Z)</Label><VectorInputs value={draft.normal} onChange={(index, value) => updateVector('normal', index, value)} />{selected.type === 'Clip' && <div className="flex items-center gap-2"><Checkbox id="pv-invert" checked={draft.invert} onCheckedChange={value => setDraft(current => ({ ...current, invert: value === true }))} /><Label htmlFor="pv-invert" className="text-xs">Invert clip</Label></div>}<Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
+              {(selected.type === 'Slice' || selected.type === 'Clip') && <section className="space-y-2 border-t pt-3"><p className="font-semibold">{selected.type} plane</p><Label className="text-[10px]">Origin (X, Y, Z)</Label><VectorInputs label="Origin" value={draft.origin} onChange={(index, value) => updateVector('origin', index, value)} /><Label className="text-[10px]">Normal (X, Y, Z)</Label><VectorInputs label="Normal" value={draft.normal} onChange={(index, value) => updateVector('normal', index, value)} />{selected.type === 'Clip' && <div className="flex items-center gap-2"><Checkbox id="pv-invert" checked={draft.invert} onCheckedChange={value => setDraft(current => ({ ...current, invert: value === true }))} /><Label htmlFor="pv-invert" className="text-xs">Invert clip</Label></div>}<Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
 
-              {selected.type === 'Contour' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Contour</p><Select value={`${draft.contourAssociation}:${draft.contourName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); setDraft(current => ({ ...current, contourAssociation: association as 'CELLS' | 'POINTS', contourName: parts.join(':') })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Point scalar" /></SelectTrigger><SelectContent>{pointScalarArrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name}</SelectItem>)}</SelectContent></Select><Label className="text-[10px]">Isovalue</Label><Input type="number" step="any" className="h-7 font-mono text-xs" value={draft.contourValue} onChange={event => setDraft(current => ({ ...current, contourValue: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.contourName} onClick={applyFilterProperties}>Apply</Button></section>}
+              {selected.type === 'Contour' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Contour</p><Select value={`${draft.contourAssociation}:${draft.contourName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); setDraft(current => ({ ...current, contourAssociation: association as 'CELLS' | 'POINTS', contourName: parts.join(':') })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Point scalar" /></SelectTrigger><SelectContent>{pointScalarArrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name}</SelectItem>)}</SelectContent></Select><Label className="text-[10px]">Isovalue</Label><NumberInput aria-label="Contour value" step="any" className="h-7 font-mono text-xs" value={draft.contourValue} onValueChange={value => setDraft(current => ({ ...current, contourValue: value }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.contourName} onClick={applyFilterProperties}>Apply</Button></section>}
 
-              {selected.type === 'Threshold' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Threshold</p><Select value={`${draft.thresholdAssociation}:${draft.thresholdName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); const array = scalarArrays.find(item => item.association === association && item.name === parts.join(':')); setDraft(current => ({ ...current, thresholdAssociation: association as 'CELLS' | 'POINTS', thresholdName: parts.join(':'), thresholdLower: array?.range[0] ?? current.thresholdLower, thresholdUpper: array?.range[1] ?? current.thresholdUpper })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Scalar array" /></SelectTrigger><SelectContent>{scalarArrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name} ({array.association.toLowerCase()})</SelectItem>)}</SelectContent></Select><div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Minimum</Label><Input type="number" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.thresholdLower} onChange={event => setDraft(current => ({ ...current, thresholdLower: Number(event.target.value) }))} /></div><div><Label className="text-[10px]">Maximum</Label><Input type="number" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.thresholdUpper} onChange={event => setDraft(current => ({ ...current, thresholdUpper: Number(event.target.value) }))} /></div></div><Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.thresholdName} onClick={applyFilterProperties}>Apply</Button></section>}
+              {selected.type === 'Threshold' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Threshold</p><Select value={`${draft.thresholdAssociation}:${draft.thresholdName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); const array = scalarArrays.find(item => item.association === association && item.name === parts.join(':')); setDraft(current => ({ ...current, thresholdAssociation: association as 'CELLS' | 'POINTS', thresholdName: parts.join(':'), thresholdLower: array?.range[0] ?? current.thresholdLower, thresholdUpper: array?.range[1] ?? current.thresholdUpper })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Scalar array" /></SelectTrigger><SelectContent>{scalarArrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name} ({array.association.toLowerCase()})</SelectItem>)}</SelectContent></Select><div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Minimum</Label><NumberInput aria-label="Threshold minimum" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.thresholdLower} onValueChange={value => setDraft(current => ({ ...current, thresholdLower: value }))} /></div><div><Label className="text-[10px]">Maximum</Label><NumberInput aria-label="Threshold maximum" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.thresholdUpper} onValueChange={value => setDraft(current => ({ ...current, thresholdUpper: value }))} /></div></div><Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.thresholdName} onClick={applyFilterProperties}>Apply</Button></section>}
 
-              {selected.type === 'StreamTracer' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Stream Tracer</p><Label className="text-[10px]">Vector field</Label><Select value={draft.streamName} onValueChange={streamName => setDraft(current => ({ ...current, streamName }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{pointVectorArrays.map(array => <SelectItem key={array.name} value={array.name}>{array.name}</SelectItem>)}</SelectContent></Select><Label className="text-[10px]">Seed type</Label><Select value={draft.streamSeedType} onValueChange={streamSeedType => setDraft(current => ({ ...current, streamSeedType: streamSeedType as 'Point Cloud' | 'Line' }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Point Cloud">Point Cloud</SelectItem><SelectItem value="Line">Line</SelectItem></SelectContent></Select>{draft.streamSeedType === 'Point Cloud' ? <><Label className="text-[10px]">Center</Label><VectorInputs value={draft.streamCenter} onChange={(index, value) => updateVector('streamCenter', index, value)} /><div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Radius</Label><Input type="number" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.streamRadius} onChange={event => setDraft(current => ({ ...current, streamRadius: Number(event.target.value) }))} /></div><div><Label className="text-[10px]">Seed points</Label><Input type="number" min="1" max="2000" className="mt-1 h-7 font-mono text-xs" value={draft.streamPoints} onChange={event => setDraft(current => ({ ...current, streamPoints: Number(event.target.value) }))} /></div></div></> : <><Label className="text-[10px]">Point 1</Label><VectorInputs value={draft.streamPoint1} onChange={(index, value) => updateVector('streamPoint1', index, value)} /><Label className="text-[10px]">Point 2</Label><VectorInputs value={draft.streamPoint2} onChange={(index, value) => updateVector('streamPoint2', index, value)} /><Label className="text-[10px]">Resolution</Label><Input type="number" min="1" max="2000" className="h-7 font-mono text-xs" value={draft.streamResolution} onChange={event => setDraft(current => ({ ...current, streamResolution: Number(event.target.value) }))} /></>}<Label className="text-[10px]">Integration direction</Label><Select value={draft.streamDirection} onValueChange={streamDirection => setDraft(current => ({ ...current, streamDirection: streamDirection as 'FORWARD' | 'BACKWARD' | 'BOTH' }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="FORWARD">Forward</SelectItem><SelectItem value="BACKWARD">Backward</SelectItem><SelectItem value="BOTH">Both</SelectItem></SelectContent></Select><Label className="text-[10px]">Maximum streamline length</Label><Input type="number" step="any" min="0" className="h-7 font-mono text-xs" value={draft.streamMaximumLength} onChange={event => setDraft(current => ({ ...current, streamMaximumLength: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.streamName} onClick={applyFilterProperties}>Apply</Button></section>}
+              {selected.type === 'StreamTracer' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Stream Tracer</p><Label className="text-[10px]">Vector field</Label><Select value={draft.streamName} onValueChange={streamName => setDraft(current => ({ ...current, streamName }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{pointVectorArrays.map(array => <SelectItem key={array.name} value={array.name}>{array.name}</SelectItem>)}</SelectContent></Select><Label className="text-[10px]">Seed type</Label><Select value={draft.streamSeedType} onValueChange={streamSeedType => setDraft(current => ({ ...current, streamSeedType: streamSeedType as 'Point Cloud' | 'Line' }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Point Cloud">Point Cloud</SelectItem><SelectItem value="Line">Line</SelectItem></SelectContent></Select>{draft.streamSeedType === 'Point Cloud' ? <><Label className="text-[10px]">Center</Label><VectorInputs label="Seed center" value={draft.streamCenter} onChange={(index, value) => updateVector('streamCenter', index, value)} /><div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Radius</Label><NumberInput aria-label="Seed radius" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.streamRadius} onValueChange={value => setDraft(current => ({ ...current, streamRadius: value }))} /></div><div><Label className="text-[10px]">Seed points</Label><NumberInput aria-label="Seed points" min="1" max="2000" className="mt-1 h-7 font-mono text-xs" value={draft.streamPoints} onValueChange={value => setDraft(current => ({ ...current, streamPoints: value }))} /></div></div></> : <><Label className="text-[10px]">Point 1</Label><VectorInputs label="Seed point 1" value={draft.streamPoint1} onChange={(index, value) => updateVector('streamPoint1', index, value)} /><Label className="text-[10px]">Point 2</Label><VectorInputs label="Seed point 2" value={draft.streamPoint2} onChange={(index, value) => updateVector('streamPoint2', index, value)} /><Label className="text-[10px]">Resolution</Label><NumberInput aria-label="Seed resolution" min="1" max="2000" className="h-7 font-mono text-xs" value={draft.streamResolution} onValueChange={value => setDraft(current => ({ ...current, streamResolution: value }))} /></>}<Label className="text-[10px]">Integration direction</Label><Select value={draft.streamDirection} onValueChange={streamDirection => setDraft(current => ({ ...current, streamDirection: streamDirection as 'FORWARD' | 'BACKWARD' | 'BOTH' }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="FORWARD">Forward</SelectItem><SelectItem value="BACKWARD">Backward</SelectItem><SelectItem value="BOTH">Both</SelectItem></SelectContent></Select><Label className="text-[10px]">Maximum streamline length</Label><NumberInput aria-label="Maximum streamline length" step="any" min="0" className="h-7 font-mono text-xs" value={draft.streamMaximumLength} onValueChange={value => setDraft(current => ({ ...current, streamMaximumLength: value }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.streamName} onClick={applyFilterProperties}>Apply</Button></section>}
 
-              {selected.type === 'Tube' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Tube</p><Label className="text-[10px]">Radius</Label><Input type="number" step="any" min="0" className="h-7 font-mono text-xs" value={draft.tubeRadius} onChange={event => setDraft(current => ({ ...current, tubeRadius: Number(event.target.value) }))} /><Label className="text-[10px]">Sides</Label><Input type="number" min="3" max="64" className="h-7 font-mono text-xs" value={draft.tubeSides} onChange={event => setDraft(current => ({ ...current, tubeSides: Number(event.target.value) }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
+              {selected.type === 'Tube' && <section className="space-y-2 border-t pt-3"><p className="font-semibold">Tube</p><Label className="text-[10px]">Radius</Label><NumberInput aria-label="Tube radius" step="any" min="0" className="h-7 font-mono text-xs" value={draft.tubeRadius} onValueChange={value => setDraft(current => ({ ...current, tubeRadius: value }))} /><Label className="text-[10px]">Sides</Label><NumberInput aria-label="Tube sides" min="3" max="64" className="h-7 font-mono text-xs" value={draft.tubeSides} onValueChange={value => setDraft(current => ({ ...current, tubeSides: value }))} /><Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
 
               {selected.type === 'Calculator' && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Calculator</p>
@@ -1094,30 +1094,30 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
               {selected.type === 'Glyph' && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Glyph vectors</p>
                 <Select value={draft.glyphName} onValueChange={glyphName => setDraft(current => ({ ...current, glyphName }))}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{pointVectorArrays.map(array => <SelectItem key={array.name} value={array.name}>{array.name}</SelectItem>)}</SelectContent></Select>
-                <div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Scale factor</Label><Input type="number" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.glyphScaleFactor} onChange={event => setDraft(current => ({ ...current, glyphScaleFactor: Number(event.target.value) }))} /></div><div><Label className="text-[10px]">Max glyphs</Label><Input type="number" min="1" max="50000" className="mt-1 h-7 font-mono text-xs" value={draft.glyphMaxPoints} onChange={event => setDraft(current => ({ ...current, glyphMaxPoints: Number(event.target.value) }))} /></div></div>
+                <div className="grid grid-cols-2 gap-2"><div><Label className="text-[10px]">Scale factor</Label><NumberInput aria-label="Glyph scale factor" step="any" className="mt-1 h-7 font-mono text-xs" value={draft.glyphScaleFactor} onValueChange={value => setDraft(current => ({ ...current, glyphScaleFactor: value }))} /></div><div><Label className="text-[10px]">Max glyphs</Label><NumberInput aria-label="Max glyphs" min="1" max="50000" className="mt-1 h-7 font-mono text-xs" value={draft.glyphMaxPoints} onValueChange={value => setDraft(current => ({ ...current, glyphMaxPoints: value }))} /></div></div>
                 <Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.glyphName} onClick={applyFilterProperties}>Apply</Button>
               </section>}
 
               {(selected.type === 'WarpByVector' || selected.type === 'WarpByScalar') && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">{filterLabel(selected.type)}</p>
                 <Select value={`${draft.warpAssociation}:${draft.warpName}`} onValueChange={value => { const [association, ...parts] = value.split(':'); setDraft(current => ({ ...current, warpAssociation: association as 'CELLS' | 'POINTS', warpName: parts.join(':') })); }}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{workbench.arrays.filter(array => selected.type === 'WarpByVector' ? array.components >= 2 : array.components === 1).map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name}</SelectItem>)}</SelectContent></Select>
-                <Label className="text-[10px]">Scale factor</Label><Input type="number" step="any" className="h-7 font-mono text-xs" value={draft.warpScaleFactor} onChange={event => setDraft(current => ({ ...current, warpScaleFactor: Number(event.target.value) }))} />
-                {selected.type === 'WarpByScalar' && <><div className="flex items-center gap-2"><Checkbox id="pv-warp-normal" checked={draft.warpUseNormal} onCheckedChange={value => setDraft(current => ({ ...current, warpUseNormal: value === true }))} /><Label htmlFor="pv-warp-normal" className="text-xs">Use explicit normal</Label></div><VectorInputs value={draft.warpNormal} onChange={(index, value) => updateVector('warpNormal', index, value)} /></>}
+                <Label className="text-[10px]">Scale factor</Label><NumberInput aria-label="Warp scale factor" step="any" className="h-7 font-mono text-xs" value={draft.warpScaleFactor} onValueChange={value => setDraft(current => ({ ...current, warpScaleFactor: value }))} />
+                {selected.type === 'WarpByScalar' && <><div className="flex items-center gap-2"><Checkbox id="pv-warp-normal" checked={draft.warpUseNormal} onCheckedChange={value => setDraft(current => ({ ...current, warpUseNormal: value === true }))} /><Label htmlFor="pv-warp-normal" className="text-xs">Use explicit normal</Label></div><VectorInputs label="Warp normal" value={draft.warpNormal} onChange={(index, value) => updateVector('warpNormal', index, value)} /></>}
                 <Button size="sm" className="h-7 w-full text-xs" disabled={busy || !draft.warpName} onClick={applyFilterProperties}>Apply</Button>
               </section>}
 
               {selected.type === 'Transform' && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Transform geometry</p>
-                <Label className="text-[10px]">Translate X, Y, Z</Label><VectorInputs value={draft.transformTranslate} onChange={(index, value) => updateVector('transformTranslate', index, value)} />
-                <Label className="text-[10px]">Rotate X, Y, Z (degrees)</Label><VectorInputs value={draft.transformRotate} onChange={(index, value) => updateVector('transformRotate', index, value)} />
-                <Label className="text-[10px]">Scale X, Y, Z</Label><VectorInputs value={draft.transformScale} onChange={(index, value) => updateVector('transformScale', index, value)} />
+                <Label className="text-[10px]">Translate X, Y, Z</Label><VectorInputs label="Translate" value={draft.transformTranslate} onChange={(index, value) => updateVector('transformTranslate', index, value)} />
+                <Label className="text-[10px]">Rotate X, Y, Z (degrees)</Label><VectorInputs label="Rotate" value={draft.transformRotate} onChange={(index, value) => updateVector('transformRotate', index, value)} />
+                <Label className="text-[10px]">Scale X, Y, Z</Label><VectorInputs label="Scale" value={draft.transformScale} onChange={(index, value) => updateVector('transformScale', index, value)} />
                 <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
               </section>}
 
               {selected.type === 'Reflect' && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Reflection plane</p>
-                <Label className="text-[10px]">Origin X, Y, Z</Label><VectorInputs value={draft.reflectOrigin} onChange={(index, value) => updateVector('reflectOrigin', index, value)} />
-                <Label className="text-[10px]">Normal X, Y, Z</Label><VectorInputs value={draft.reflectNormal} onChange={(index, value) => updateVector('reflectNormal', index, value)} />
+                <Label className="text-[10px]">Origin X, Y, Z</Label><VectorInputs label="Reflection origin" value={draft.reflectOrigin} onChange={(index, value) => updateVector('reflectOrigin', index, value)} />
+                <Label className="text-[10px]">Normal X, Y, Z</Label><VectorInputs label="Reflection normal" value={draft.reflectNormal} onChange={(index, value) => updateVector('reflectNormal', index, value)} />
                 <div className="flex items-center gap-2"><Checkbox id="pv-reflect-copy" checked={draft.reflectCopyInput} onCheckedChange={value => setDraft(current => ({ ...current, reflectCopyInput: value === true }))} /><Label htmlFor="pv-reflect-copy" className="text-xs">Keep original geometry</Label></div>
                 <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
               </section>}
@@ -1126,9 +1126,9 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
 
               {selected.type === 'PlotOverLine' && <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Sampling line</p>
-                <Label className="text-[10px]">Point 1</Label><VectorInputs value={draft.plotPoint1} onChange={(index, value) => updateVector('plotPoint1', index, value)} />
-                <Label className="text-[10px]">Point 2</Label><VectorInputs value={draft.plotPoint2} onChange={(index, value) => updateVector('plotPoint2', index, value)} />
-                <Label className="text-[10px]">Resolution</Label><Input type="number" min="1" max="10000" className="h-7 font-mono text-xs" value={draft.plotResolution} onChange={event => setDraft(current => ({ ...current, plotResolution: Number(event.target.value) }))} />
+                <Label className="text-[10px]">Point 1</Label><VectorInputs label="Sampling point 1" value={draft.plotPoint1} onChange={(index, value) => updateVector('plotPoint1', index, value)} />
+                <Label className="text-[10px]">Point 2</Label><VectorInputs label="Sampling point 2" value={draft.plotPoint2} onChange={(index, value) => updateVector('plotPoint2', index, value)} />
+                <Label className="text-[10px]">Resolution</Label><NumberInput aria-label="Sampling resolution" min="1" max="10000" className="h-7 font-mono text-xs" value={draft.plotResolution} onValueChange={value => setDraft(current => ({ ...current, plotResolution: value }))} />
                 <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button>
               </section>}
 

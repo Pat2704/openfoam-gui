@@ -6,6 +6,19 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-03 — Visible dropdowns and freely editable ParaView numbers
+
+- Select popups now sit above the dialog/overlay (1100 versus 1000). The export
+  size menu had opened underneath them; previous accessibility-only checks
+  missed the covered menu. Verify visible options and real mouse clicks.
+- ParaView scalar, XYZ and video fields keep text drafts, including empty,
+  sign and incomplete exponent; blur/Enter confirms, Escape cancels. Select
+  the full value on focus. Validate finite numbers, bounds and integer counts
+  before committing; preserve legitimate zero values when loading properties.
+- Checks: 4 focused tests, typecheck/lint, popup hit testing and mouse selection,
+  complete deletion/replacement and worker Apply/reselection pass. Video edits
+  also preserve empty drafts. Case data read only; test pipeline was in memory.
+
 ## 2026-10-03 — Chart tooltip names and custom export dimensions
 
 - Post-Process tooltip uses the series name supplied by Recharts; treating it
@@ -13,8 +26,8 @@ audits.
 - Export size represents manual dimensions as Custom, with all presets still
   available after dragging the corner or editing width/height.
   Standard restores 1600 × 900 after any manual deformation.
-- Checks: typecheck and focused lint pass. UI verifies p/k tooltip labels,
-  manual drag/input dimensions and return to the Standard and Square presets.
+- Tooltip labels and programmatic preset selection passed; the later mouse
+  check found the dropdown was covered by the dialog, as recorded above.
 
 ## 2026-10-03 — Correct initial/final solver residuals
 
@@ -84,21 +97,13 @@ audits.
   duration, the frame count and the render time. Progress also shows the time
   left.
 - The render time is measured on the case: the worker renders and encodes
-  (into a discarded file, flush included) three triples of frames — a far
-  frame, the same again, the next one — and `estimateRenderSeconds` combines
-  the three costs over the plan: every frame renders and encodes, every change
-  of time pays interpolation, every saved step is read once. A first model
-  that charged every new time as a full read over-estimated 8×. Measured on
-  cavity at 1080p/4K: estimates 21.5/23.1/18.5 s against 16.6/19.9/14.9 s
-  actual (held; interpolated; 4K interpolated); a 28,501-frame request showed
-  the confirmation instead of being refused.
+  three frame triples to distinguish rendering, interpolation and step reads.
+  Cavity 1080p/4K estimates were 21.5/23.1/18.5 s versus 16.6/19.9/14.9 s actual.
+  A 28,501-frame request showed confirmation instead of refusal. Details in Git.
 - **Feature Edges** is offered as a display representation, as in ParaView
-  (silhouette and sharp edges). Each pipeline item lists the representations
-  its own display offers (`representations_for` against the build's
-  available values); the menu, the line-width control and video timeline
-  snapshots use that list, and anything else is refused. Verified on v14 with
-  ParaView 6.2.0: listed, applied from the menu, captured in a timeline view;
-  "Volume" refused. 344 tests, typecheck and lint pass; the case was removed.
+  using each item's `representations_for` list for display controls and timeline
+  snapshots. Verified on v14/ParaView 6.2.0; unsupported Volume refused.
+  344 tests, typecheck and lint passed. Evidence: v5.6.0 notes and Git history.
 
 ## 2026-09-12 — ParaView: video export with a timeline of views
 

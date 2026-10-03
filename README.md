@@ -164,6 +164,8 @@ the **OpenFOAM card in the Dashboard**.
   OBJ, PLY, VTK/XML, PVD, XDMF, EnSight, Exodus and CSV files found inside the
   active case, including its subfolders. Mesh-only cases remain usable, and
   detection assumes neither a versioned folder name nor an install directory.
+  Numeric property and video fields can be cleared and replaced completely;
+  Enter or leaving the field confirms the number, and Escape cancels the edit.
   The **Video** tab exports the simulation as MP4 (or OGV): build a timeline of
   views, each lasting until a chosen time step, with a cut or a smooth camera
   move between them; let every saved step last a fixed time or follow
