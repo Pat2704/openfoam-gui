@@ -12,8 +12,9 @@ audits.
   as a column key had renamed p and k to Time.
 - Export size represents manual dimensions as Custom, with all presets still
   available after dragging the corner or editing width/height.
+  Standard restores 1600 × 900 after any manual deformation.
 - Checks: typecheck and focused lint pass. UI verifies p/k tooltip labels,
-  manual drag/input dimensions and successful return to the Square preset.
+  manual drag/input dimensions and return to the Standard and Square presets.
 
 ## 2026-10-03 — Correct initial/final solver residuals
 
@@ -452,20 +453,11 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
 
-Audited against the v14/v13 sources, every installed template and 127 real
-replays in `cavity_test` (61 failed before the change). The Compute panel now:
-
-- carries `-solver` when the case and installed utility support it, and refuses
-  its invalid combination with `-fields`;
-- reads template comments, commented options, nesting, placeholders, examples,
-  patch/field/direction arguments and sampled lines in OpenFOAM's own idiom;
-- searches every etc directory `findConfigFile` uses, including user entries;
-- shows class-header descriptions, examples and property tables from the
-  installed source, plus output location, times and libraries.
-
-Remaining replay failures are genuine physics/case mismatches or required
-placeholders the cavity cannot supply; the panel leaves those holes visible.
-The detailed evidence is in commit `89211cb` and the v5.3.0 release history.
+Audited v14/v13 sources, installed templates and 127 `cavity_test` replays.
+Compute uses supported `-solver`/`-fields` combinations, template comments and
+nested arguments; searches all `findConfigFile` etc paths; and shows installed
+class help, properties and output details. Remaining failures are physics/case
+mismatches or missing required placeholders. Evidence: `89211cb` and v5.3.0 notes.
 
 ## 2026-09-08 – 09-09 in brief
 

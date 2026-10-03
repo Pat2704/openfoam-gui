@@ -85,7 +85,7 @@ interface ExportOptions {
 }
 
 const SIZE_PRESETS: { label: string; width: number; height: number }[] = [
-  { label: 'Report figure — 1600 × 900', width: 1600, height: 900 },
+  { label: 'Standard — 1600 × 900', width: 1600, height: 900 },
   { label: 'Square — 1200 × 1200', width: 1200, height: 1200 },
   { label: 'Slide — 1920 × 1080', width: 1920, height: 1080 },
   { label: 'Two-column paper — 1000 × 750', width: 1000, height: 750 },
