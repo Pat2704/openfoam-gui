@@ -10,6 +10,8 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ChartExportDialog, { type ChartExportSource } from './chart-export';
+import PostProcessAnalysisPanel from './post-process-analysis-panel';
+import { emptyAdvancedAnalysis, type AdvancedAnalysisConfig } from '@/lib/postprocess-math';
 import {
   COMPARISON_TRACE_LIMIT, COMPARISON_READ_LIMIT, COMPARISON_CHART_LIMIT,
   comparisonAxisError, comparisonSource, createComparisonTrace, sampleComparisonTrace, serializeComparisonCsv,
@@ -67,6 +69,8 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
   const [documentBusy, setDocumentBusy] = useState(false);
   const [documentStatus, setDocumentStatus] = useState('');
   const [pendingTransfer, setPendingTransfer] = useState<AnalysisTransfer | null>(null);
+  const [advancedView, setAdvancedView] = useState(false);
+  const [advanced, setAdvanced] = useState<AdvancedAnalysisConfig>(emptyAdvancedAnalysis);
   const documentVersion = useRef(0);
   const lastTransfer = useRef('');
   const requestVersion = useRef(0);
@@ -109,6 +113,8 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
       setDocumentBusy(false);
       setDocumentStatus('');
       setPendingTransfer(null);
+      setAdvanced(emptyAdvancedAnalysis());
+      setAdvancedView(false);
       lastTransfer.current = '';
       setInstallationRevision(value => value + 1);
     };
@@ -221,7 +227,7 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
       if (axisError) throw new Error(axisError);
       if (traces.some(entry => entry.trace.label === trace.label)) throw new Error('This curve is already included. Remove it before reloading its values.');
       const color = COLORS.find(color => !traces.some(entry => entry.color === color)) ?? COLORS[0];
-      setTraces(current => [...current, { trace, color, visible: true, origin: {
+      setTraces(current => [...current, { key: crypto.randomUUID(), trace, color, visible: true, origin: {
         kind: 'source', caseName: chosenCase, selection, time: trace.snapshot, residualSelection: residual,
         field: trace.field, axis: trace.axis, mode: trace.mode,
       } }]);
@@ -271,15 +277,15 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
       const imported = pendingTransfer.traces.map((value, index) => {
         const trace = validateCapturedAnalysisTrace(value);
         trace.id = `captured-${pendingTransfer.id}-${index}`;
-        return { trace, origin: { kind: 'captured' as const, trace }, color: COLORS[(replace ? index : traces.length + index) % COLORS.length], visible: true };
+        return { key: trace.id, trace, origin: { kind: 'captured' as const, trace }, color: COLORS[(replace ? index : traces.length + index) % COLORS.length], visible: true };
       });
       const next = [...(replace ? [] : traces), ...imported];
-      parsePostProcessAnalysis({ version: 1, curves: next, logScale, tableView });
+      parsePostProcessAnalysis({ version: 2, curves: next, logScale, tableView, advanced: replace ? emptyAdvancedAnalysis() : advanced });
       setTraces(next);
       lastTransfer.current = pendingTransfer.id;
       consumeAnalysisTransfer(pendingTransfer.id);
       setPendingTransfer(null);
-      if (replace) { setDocumentId(''); setAnalysisName('ParaView captured analysis'); }
+      if (replace) { setDocumentId(''); setAnalysisName('ParaView captured analysis'); setAdvanced(emptyAdvancedAnalysis()); }
       setDocumentStatus('Imported ParaView values as captured snapshots. Saving preserves these values; reopening does not re-run the ParaView pipeline.');
     } catch (reason) { setDocumentStatus(reason instanceof Error ? reason.message : String(reason)); }
   }
@@ -290,7 +296,7 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
     setDocumentBusy(true);
     setDocumentStatus('');
     try {
-      const data = parsePostProcessAnalysis({ version: 1, curves: traces.map(({ origin, color, visible }) => ({ origin, color, visible })), logScale, tableView });
+      const data = parsePostProcessAnalysis({ version: 2, curves: traces.map(({ key, trace, origin, color, visible }) => ({ key: key ?? trace.id, origin, color, visible })), logScale, tableView, advanced });
       const saved = await saveAnalysisDocument('postprocess', caseName, { id: documentId || crypto.randomUUID(), name: analysisName.trim(), savedAt: new Date().toISOString(), data });
       if (version !== documentVersion.current) return;
       setDocuments(current => [...current.filter(item => item.id !== saved.id), saved].sort((a, b) => b.savedAt.localeCompare(a.savedAt)));
@@ -312,6 +318,7 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
       setTraces(restored.curves.map((entry, index) => ({ ...entry, trace: { ...entry.trace, id: `restored-${++nextId.current}-${index}` } })));
       setLogScale(restored.analysis.logScale);
       setTableView(restored.analysis.tableView);
+      setAdvanced(restored.analysis.advanced ?? emptyAdvancedAnalysis());
       setAnalysisName(saved.name);
       setDocumentStatus(restored.warnings.length ? `Loaded ${restored.curves.length}/${restored.analysis.curves.length} curves. ${restored.warnings.join(' ')}` : 'Analysis reopened. Source-backed curves use current results; captured snapshots keep their original capture time.');
     } catch (reason) { if (version === documentVersion.current) setDocumentStatus(reason instanceof Error ? reason.message : String(reason)); }
@@ -334,7 +341,7 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
 
   function saveReport() {
     try {
-      const html = buildPostProcessAnalysisReport(analysisName.trim() || 'Post-Process analysis', traces, effectiveLogScale, new Date().toISOString());
+      const html = buildPostProcessAnalysisReport(analysisName.trim() || 'Post-Process analysis', traces, effectiveLogScale, new Date().toISOString(), advanced);
       const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
       const anchor = document.createElement('a');
       anchor.href = url; anchor.download = 'post-process-analysis.html'; anchor.click();
@@ -364,6 +371,8 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
         </div>
         {documentStatus && <p role="status" aria-live="polite" className="text-xs text-muted-foreground">{documentStatus}</p>}
         {pendingTransfer && <div className="flex flex-wrap items-center gap-2 rounded border border-blue-500/30 bg-blue-500/5 p-2 text-xs"><span className="flex-1">{pendingTransfer.traces.length} captured ParaView curves are ready. {pendingTransfer.provenance}</span><Button size="sm" variant="outline" disabled={adding || documentBusy} onClick={() => importTransfer()}>Add captured curves</Button><Button size="sm" variant="outline" disabled={adding || documentBusy} onClick={() => importTransfer(true)}>Use as new analysis</Button></div>}
+        <div className="flex gap-2"><Button size="sm" variant={advancedView ? "outline" : "default"} onClick={() => setAdvancedView(false)}>Curves</Button><Button size="sm" variant={advancedView ? "default" : "outline"} onClick={() => setAdvancedView(true)}>Analysis</Button></div>
+        {advancedView ? <PostProcessAnalysisPanel entries={traces} config={advanced} onChange={setAdvanced} disabled={busy} /> : <>
         <p className="text-xs text-muted-foreground">Up to {COMPARISON_TRACE_LIMIT} curves. Original coordinates and gaps are retained. Matching coordinate names do not guarantee matching units or reference frames; verify quantities and sampling locations in the sources.</p>
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-[160px_minmax(220px,1fr)_150px_170px_auto]">
           <div><Label className="text-xs">Case</Label><Select value={chosenCase} disabled={busy} onValueChange={value => { setChosenCase(value); setSources([]); changeSource(''); }}><SelectTrigger className="mt-1 text-xs"><SelectValue /></SelectTrigger><SelectContent>{cases.map(name => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></div>
@@ -430,6 +439,7 @@ export default function PostProcessComparison({ open, onOpenChange, caseName, in
           )}
         </div>
         <p className="text-[10px] text-muted-foreground">{tableView ? `Table: first ${tableRows.length} of ${visible.reduce((sum, entry) => sum + entry.trace.points.length, 0)} loaded rows. CSV includes every loaded row, including gaps.` : `Chart: ${plotted.map(entry => `${entry.points.length}/${entry.trace.points.length}`).join(', ') || '0'} points per visible curve; cap ${COMPARISON_CHART_LIMIT}/curve. CSV uses loaded source rows, independent of this preview.`}{plotted.some(entry => entry.blocked) && <span className="text-warning"> Some curves are withheld because source or chart sampling omitted important boundaries; inspect the table/CSV.</span>}</p>
+        </>}
       </DialogContent>
     </Dialog>
     <ChartExportDialog open={exportOpen} onOpenChange={setExportOpen} source={exportSource} />

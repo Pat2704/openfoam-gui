@@ -5,6 +5,7 @@ import {
   type ComparisonReader, type ComparisonSelection, type ComparisonTrace,
 } from './postprocess-comparison';
 import type { ResidualSelection } from './residuals';
+import { computeAdvancedAnalysis, emptyAdvancedAnalysis, validateAdvancedAnalysis, type AdvancedAnalysisConfig } from './postprocess-math';
 
 export const CAPTURED_ANALYSIS_POINT_LIMIT = 20000;
 export const ANALYSIS_REPORT_BYTE_LIMIT = 12 * 1024 * 1024;
@@ -20,12 +21,13 @@ export interface AnalysisSource {
   axis: string;
 }
 export type AnalysisOrigin = AnalysisSource | { kind: 'captured'; trace: ComparisonTrace };
-export interface AnalysisCurve { origin: AnalysisOrigin; color: string; visible: boolean }
+export interface AnalysisCurve { key?: string; origin: AnalysisOrigin; color: string; visible: boolean }
 export interface SavedPostProcessAnalysis {
-  version: 1;
+  version: 1 | 2;
   curves: AnalysisCurve[];
   logScale: boolean;
   tableView: boolean;
+  advanced?: AdvancedAnalysisConfig;
 }
 export interface AnalysisDisplayCurve extends AnalysisCurve { trace: ComparisonTrace }
 
@@ -81,9 +83,9 @@ export function validateCapturedAnalysisTrace(value: unknown): ComparisonTrace {
 
 export function parsePostProcessAnalysis(value: unknown): SavedPostProcessAnalysis {
   const analysis = record(value);
-  if (analysis.version !== 1) throw new Error('Unsupported Post-Process analysis version.');
+  if (analysis.version !== 1 && analysis.version !== 2) throw new Error('Unsupported Post-Process analysis version.');
   if (!Array.isArray(analysis.curves) || !analysis.curves.length || analysis.curves.length > COMPARISON_TRACE_LIMIT) throw new Error(`An analysis supports 1–${COMPARISON_TRACE_LIMIT} curves.`);
-  const curves = analysis.curves.map(value => {
+  const curves = analysis.curves.map((value, index) => {
     const curve = record(value);
     const input = record(curve.origin);
     let origin: AnalysisOrigin;
@@ -103,15 +105,16 @@ export function parsePostProcessAnalysis(value: unknown): SavedPostProcessAnalys
     } else throw new Error('Unknown analysis origin.');
     const color = text(curve.color, 'curve color', 7);
     if (!/^#[0-9a-f]{6}$/i.test(color)) throw new Error('Invalid analysis curve color.');
-    return { origin, color, visible: bool(curve.visible) };
+    return { key: analysis.version === 2 ? text(curve.key, 'stable curve key', 128) : `curve-${index}`, origin, color, visible: bool(curve.visible) };
   });
+  if (new Set(curves.map(curve => curve.key)).size !== curves.length) throw new Error('Saved curve keys must be distinct.');
   const reference = curves[0].origin.kind === 'source' ? curves[0].origin : curves[0].origin.trace;
   for (const curve of curves.slice(1)) {
     const candidate = curve.origin.kind === 'source' ? curve.origin : curve.origin.trace;
     const error = comparisonAxisError(reference, candidate);
     if (error) throw new Error(error);
   }
-  return { version: 1, curves, logScale: bool(analysis.logScale), tableView: bool(analysis.tableView) };
+  return { version: 2, curves, logScale: bool(analysis.logScale), tableView: bool(analysis.tableView), advanced: analysis.version === 2 ? validateAdvancedAnalysis(analysis.advanced) : emptyAdvancedAnalysis() };
 }
 
 /** Re-read source-backed curves; missing fields/snapshots never silently fall back. */
@@ -159,7 +162,7 @@ export function analysisCurveStatistics(trace: ComparisonTrace): { count: number
   return { count, gaps: trace.points.length - count, min: count ? min : null, max: count ? max : null, mean: count ? mean : null };
 }
 
-export function buildPostProcessAnalysisReport(title: string, entries: readonly AnalysisDisplayCurve[], logScale: boolean, createdAt: string): string {
+export function buildPostProcessAnalysisReport(title: string, entries: readonly AnalysisDisplayCurve[], logScale: boolean, createdAt: string, advanced?: AdvancedAnalysisConfig): string {
   if (!entries.length || entries.length > COMPARISON_TRACE_LIMIT) throw new Error('Choose at least one curve for the report.');
   const visible = entries.filter(entry => entry.visible);
   if (!visible.length) throw new Error('Enable at least one curve for the report.');
@@ -210,5 +213,39 @@ export function buildPostProcessAnalysisReport(title: string, entries: readonly 
   if (new TextEncoder().encode(csv).length > ANALYSIS_REPORT_BYTE_LIMIT / 3) throw new Error('The report CSV exceeds 4 MB. Export the comparison CSV separately or reduce the curves.');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>body{font:14px system-ui,sans-serif;color:#0f172a;margin:2rem auto;max-width:1100px;padding:0 1rem}h1{font-size:24px}svg{width:100%;height:auto}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border-bottom:1px solid #cbd5e1;text-align:left;padding:8px;overflow-wrap:anywhere}.provenance{color:#475569;font-size:11px}a{color:#2563eb}@media print{body{margin:0;max-width:none}.download{display:none}tr{break-inside:avoid}svg{max-height:100mm}}</style></head><body><h1>${escapeHtml(title)}</h1><p>OpenFOAM Studio · report ${escapeHtml(createdAt)}</p><p>Independent grids and missing-value gaps are preserved. Values have no inferred units or coordinate conversion. Statistics are sample statistics over all retained loaded rows, including non-positive values; log Y only changes the chart. They are not time-weighted or spatial integrals.</p>${chart.join('')}<table><thead><tr><th>Curve</th><th>Finite / gaps</th><th>Min</th><th>Max</th><th>Sample mean</th></tr></thead><tbody>${rows}</tbody></table><p class="download"><a download="post-process-analysis.csv" href="data:text/csv;charset=utf-8,${encodeURIComponent(csv)}">Download retained numerical rows and provenance (CSV)</a></p><p>Chart cap: 1,200 points per curve. Curves are withheld when safe sampling cannot preserve boundaries. The CSV contains every retained loaded row, independent of chart sampling.</p></body></html>`;
   if (new TextEncoder().encode(html).length > ANALYSIS_REPORT_BYTE_LIMIT) throw new Error('The report exceeds 12 MB. Export CSV separately or reduce the curves.');
-  return html;
+  if (!advanced) return html;
+  const config = validateAdvancedAnalysis(advanced);
+  const results = computeAdvancedAnalysis(entries.map(entry => ({ key: entry.key ?? entry.trace.id, trace: entry.trace })), config);
+  let sections = `<h2>Advanced analysis</h2><p>Selected interval: ${config.interval.from ?? 'source start'}–${config.interval.to ?? 'source end'}. Population sample statistics; time-weighted values integrate piecewise-linear finite adjacent segments and exclude gaps. Covered duration is reported separately from the requested interval. Reference values, units and orientations are supplied by the user.</p><table><thead><tr><th>Curve</th><th>Finite/gaps</th><th>Mean</th><th>RMS</th><th>Fluctuation RMS / population SD</th><th>Peak-to-peak</th><th>Least-squares slope</th><th>Time-weighted mean/RMS/fluctuation RMS</th><th>Covered/requested duration</th><th>Temporal integral (value × time-axis unit)</th></tr></thead><tbody>`;
+  for (const stats of results.statistics) {
+    const s = stats.result;
+    sections += `<tr><td>${escapeHtml(stats.label)}</td>${s ? `<td>${s.samples}/${s.gaps}</td><td>${s.mean}</td><td>${s.rms}</td><td>${s.fluctuationRms}</td><td>${s.peakToPeak}</td><td>${s.slope ?? 'undefined'}</td><td>${s.weightedMean ?? 'n/a'} / ${s.weightedRms ?? 'n/a'} / ${s.weightedFluctuationRms ?? 'n/a'}</td><td>${s.coveredDuration}/${s.requestedDuration}</td><td>${s.integral ?? 'n/a'}</td>` : `<td colspan="9">${escapeHtml(stats.error ?? 'Unavailable')}</td>`}</tr>`;
+  }
+  sections += '</tbody></table>';
+  for (const balance of results.balances) {
+    const name = config.quantities.find(recipe => recipe.id === balance.id)!.name;
+    sections += `<p>${escapeHtml(name)}: ${balance.finiteSamples} finite balance samples; last net ${balance.lastNet ?? 'undefined'}; maximum |net| ${balance.maxAbsoluteNet ?? 'undefined'}; maximum 100·|signed sum|/sum(|operand flux|) ${balance.maxRelativePercent ?? 'undefined'}%. The relative error is undefined at zero total absolute flux. Storage/source terms and density are not inferred.</p>`;
+  }
+  if (results.quantities.length) {
+    const derivedHtml = buildPostProcessAnalysisReport('Derived quantities / signed flux balances', results.quantities.map((trace, index) => ({ trace, origin: { kind: 'captured', trace }, color: ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#06b6d4'][index], visible: true })), false, createdAt);
+    sections += derivedHtml.slice(derivedHtml.indexOf('<body>') + 6, derivedHtml.lastIndexOf('</body>')).replaceAll('Captured snapshot (not re-read)', 'Derived from the loaded operands; saved recipe is replayed');
+  }
+  const numericalOutput = (title: string, columns: string[], rows: number[][], notes: string) => {
+    const csv = columns.join(',') + '\n' + rows.map(row => row.join(',')).join('\n');
+    const trace: ComparisonTrace = { ...entries[0].trace, id: 'advanced-report-output', label: title, field: columns[1], mode: 'series', axis: columns[0], source: notes, points: rows.map(row => ({ x: row[0], y: row[1] })), totalRows: rows.length, coverage: notes, sourceOmissions: 0 };
+    const output = buildPostProcessAnalysisReport(title, [{ trace, origin: { kind: 'captured', trace }, color: '#8b5cf6', visible: true }], false, createdAt);
+    return `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(notes)}</p>${output.slice(output.indexOf('<svg'), output.indexOf('</svg>') + 6)}<a class="download" download="advanced-analysis.csv" href="data:text/csv;charset=utf-8,${encodeURIComponent(csv)}">Download all numerical output (CSV)</a>`;
+  };
+  if (results.spectrum) {
+    const s = results.spectrum;
+    sections += numericalOutput(`PSD — dominant ${s.dominantFrequency ?? 'undefined'} Hz; Strouhal ${s.strouhal ?? 'not supplied'}`, ['Frequency (Hz)', 'PSD', 'Peak amplitude'], s.points.map(point => [point.frequency, point.psd, point.amplitude]), `${s.notes} Nyquist ${s.nyquist} Hz; resolution ${s.frequencyResolution} Hz; interval used ${s.from}–${s.to}.`);
+  }
+  if (results.correlation) {
+    const c = results.correlation;
+    sections += numericalOutput(`Cross-correlation — second follows first by ${c.delay} s; coefficient ${c.correlation}`, ['Delay (s)', 'Normalized correlation', 'Overlap pairs'], c.points.map(point => [point.delay, point.correlation, point.pairs]), c.notes);
+  }
+  sections += `<p>${results.warnings.map(escapeHtml).join('<br>')}</p><h3>Reproducible settings</h3><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify(config, null, 2))}</pre>`;
+  const complete = html.replace('</body>', `${sections}</body>`);
+  if (new TextEncoder().encode(complete).length > ANALYSIS_REPORT_BYTE_LIMIT) throw new Error('The advanced report exceeds 12 MB. Export numerical CSV separately or reduce the interval/curves.');
+  return complete;
 }

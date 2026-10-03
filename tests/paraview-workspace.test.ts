@@ -27,7 +27,7 @@ test('workspace parser round-trips independent filter parameters, camera and vid
   assert.deepEqual(parseParaViewWorkspace(input), input);
   const parsed = parseParaViewWorkspace(input); parsed.nodes[0].parameters.lineWidth = 2;
   assert.equal(input.nodes[0].parameters.lineWidth, 1, 'Parsing produces an independent document.');
-  assert.equal(Object.keys(WORKSPACE_PARAMETER_SCHEMA).length, 25);
+  assert.equal(Object.keys(WORKSPACE_PARAMETER_SCHEMA).length, 28);
 });
 
 test('workspace imports reject unsupported commands, proxy properties, corrupt topology and case escapes', () => {

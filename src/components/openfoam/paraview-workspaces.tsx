@@ -22,10 +22,11 @@ async function workspaceCommand(command: string, data: Record<string, unknown> =
   return result;
 }
 
-export default function ParaViewWorkspaces({ caseName, locked, getVideo, onBusyChange, onRestored }: {
+export default function ParaViewWorkspaces({ caseName, locked, getVideo, getClientView, onBusyChange, onRestored }: {
   caseName: string;
   locked: boolean;
   getVideo: () => VideoRequest | null;
+  getClientView: () => NonNullable<ParaViewWorkspace['clientView']>;
   onBusyChange: (value: boolean) => void;
   onRestored: (state: ParaViewWorkbenchState, workspace: ParaViewWorkspace) => Promise<void>;
 }) {
@@ -71,7 +72,7 @@ export default function ParaViewWorkspaces({ caseName, locked, getVideo, onBusyC
     const workspace = parseParaViewWorkspace(result.workspace);
     if (workspace.caseName !== caseName) throw new Error('The active ParaView case changed. Try again in the original case.');
     const video = getVideo();
-    return parseParaViewWorkspace({ ...workspace, ...(video ? { video } : {}) });
+    return parseParaViewWorkspace({ ...workspace, clientView: getClientView(), ...(video ? { video } : {}) });
   };
 
   const download = (workspace: ParaViewWorkspace, label: string) => {
@@ -96,7 +97,7 @@ export default function ParaViewWorkspaces({ caseName, locked, getVideo, onBusyC
     <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={locked} onClick={() => setOpen(true)}><FolderOpen className="h-3.5 w-3.5" /> Workspaces</Button>
     <Dialog open={open} onOpenChange={value => { if (!busy) setOpen(value); }}>
       <DialogContent className="max-w-2xl">
-        <DialogHeader><DialogTitle>ParaView workspaces</DialogTitle><DialogDescription>Save named views with their complete pipeline, reader regions, filter parameters, colors, camera, timestep and video timeline. Workspaces use the current installation and case; source data stays in the case.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>ParaView workspaces</DialogTitle><DialogDescription>Save named views with their complete pipeline, reader regions, filter parameters, colors, volume opacity, camera, timestep, viewport layout, chart source and video timeline. Workspaces use the current installation and case; source data stays in the case.</DialogDescription></DialogHeader>
         <p className="text-xs text-muted-foreground">Reopening reads current results at the saved timestep. Missing files, regions, fields or timesteps produce an error and preserve the active pipeline. This app JSON format does not import native ParaView state files.</p>
         <div className="flex gap-2"><Input aria-label="Workspace name" placeholder="Pressure slice…" maxLength={100} value={name} onChange={event => setName(event.target.value)} disabled={busy} /><Button disabled={busy || !name.trim()} onClick={() => void run(async ticket => {
           const workspace = await capture(); if (revision.current !== ticket) return;

@@ -141,7 +141,26 @@ the **OpenFOAM card in the Dashboard**.
   across app restarts, scoped to the case and selected OpenFOAM installation.
   **HTML report** exports a printable chart, retained-row sample statistics,
   coverage and provenance, with an embedded CSV download. Read and chart limits
-  remain explicit; statistics are neither time-weighted nor spatial integrals.
+  remain explicit; the basic curve summary uses sample statistics.
+
+  In **Compare → Analysis**, choose an interval and inspect sample and time-weighted
+  mean, RMS, fluctuation RMS, population standard deviation, peak-to-peak, slope
+  and temporal integral.
+  Time weighting uses actual timestep spacing and adjacent finite samples, with
+  covered duration shown separately from the requested interval. Guided recipes
+  add pressure differences, vector magnitudes, reference/pressure/force coefficients
+  and signed mass or volume flux balances. Declare operand units and reference
+  values; matching coordinates are required unless you explicitly choose bounded
+  linear interpolation onto the first operand. Gaps and extrapolation stay excluded.
+
+  **Spectrum / PSD / Strouhal** computes a bounded one-sided periodogram with an
+  explicit FFT length, Hann or rectangular window and mean removal choice.
+  **Cross-correlation delay** compares two signals over their common interval,
+  with a documented delay sign and bounded lag. Declare the time unit; irregular
+  sampling is rejected unless explicit uniform resampling is selected. Frequency
+  peaks are bin estimates, and periodic signals can have ambiguous delay peaks.
+  Numerical charts/CSV, saved analyses and HTML reports retain these settings,
+  references, source coverage and calculation limits.
 
   Compute runs in the background with live output, elapsed time and cancellation.
   Reopening the panel restores the latest job during the current app session.
@@ -211,8 +230,28 @@ the **OpenFOAM card in the Dashboard**.
   filter or simulation time. Tables are paged, charts have a visible point budget,
   and CSV/chart exports report their own limits and preserve missing-value gaps.
 
+  **3D + Chart** shows the rendered geometry and a numerical plot together. The
+  chart has its own pipeline source, so a sampled line can remain plotted while
+  another filter is selected; both panes use the same simulation time. Panes sit
+  side by side on wide windows and stack on smaller ones.
+
+  The **Analysis** tab adds XYZ probes with explicit point interpolation or
+  containing-cell values, and **Find Data** selects numeric components or vector
+  magnitudes by range. Inspect original tuple IDs and coordinates, export the
+  displayed matches, or extract a bounded selection that re-evaluates at each
+  timestep. Guided CFD diagnostics compute a vector gradient, vorticity,
+  divergence and Q criterion. Spatial integrals use **Integrate Variables**;
+  input geometry and explicit flux fields determine their physical meaning.
+
+  **Volume rendering** in Properties maps a scalar to color and a configurable
+  opacity curve, with opacity unit distance in mesh coordinate units. Availability
+  follows the output's geometry and the installed engine. **Resample to Image**
+  creates a bounded regular XYZ sampling grid; this interpolates existing results
+  and preserves invalid sample masks. It does not refine the CFD simulation.
+
   **Workspaces** saves named pipelines with case-local readers, filter parameters,
-  mesh regions, display/color settings, camera, timestep and video timeline.
+  mesh regions, display/color and volume settings, camera, timestep, viewport
+  layout, independent chart source and video timeline.
   Reopening rebuilds the pipeline from current case data; missing dependencies
   leave the active pipeline intact. JSON import/export uses the app's versioned
   workspace format. Workspaces load only when requested, preserving fast startup.

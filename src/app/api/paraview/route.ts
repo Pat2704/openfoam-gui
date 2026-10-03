@@ -25,6 +25,7 @@ import {
 import type { VideoRequest } from '@/lib/paraview-video';
 import { paraViewDataRequest } from '@/lib/pvplots';
 import { parseParaViewWorkspace } from '@/lib/paraview-workspace';
+import { probeRequest, findDataRequest, diagnosticRequest, resampleRequest, volumeSettings, diagnosticSettings, selectionRecipe } from '@/lib/paraview-analysis';
 import { createParaFoamMarker } from '@/lib/wsl';
 import { boundedInteger, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 
@@ -176,6 +177,7 @@ export async function POST(req: NextRequest) {
         'update_view', 'set_manipulator', 'list_case_files', 'open_case_file', 'time', 'refresh',
         'capture_view', 'apply_view', 'workspace_capture', 'workspace_restore',
         'data_table',
+        'analysis_probe', 'find_data', 'selection_extract', 'cfd_diagnostic', 'resample_to_image',
       ]);
       if (!allowed.has(command)) {
         return NextResponse.json({ error: 'Unsupported ParaView command.' }, { status: 400 });
@@ -187,6 +189,20 @@ export async function POST(req: NextRequest) {
         data = { path: validateRelativePath(typeof data.path === 'string' ? data.path : '', 'File path') };
       }
       if (command === 'data_table') data = { ...paraViewDataRequest(data) };
+      if (command === 'analysis_probe') data = { ...probeRequest(data) };
+      if (command === 'find_data' || command === 'selection_extract') data = { ...findDataRequest(data) };
+      if (command === 'cfd_diagnostic') data = { ...diagnosticRequest(data) };
+      if (command === 'resample_to_image') data = { ...resampleRequest(data) };
+      if (command === 'update') {
+        if (data.volume !== undefined) data.volume = volumeSettings(data.volume);
+        if (data.diagnostic !== undefined) data.diagnostic = diagnosticSettings(data.diagnostic);
+        if (data.selection !== undefined) data.selection = selectionRecipe(data.selection);
+        if (data.resample !== undefined) {
+          const resample = data.resample as Record<string, unknown>;
+          if (!resample || typeof resample !== 'object' || Object.keys(resample).some(key => key !== 'dimensions')) throw new Error('Invalid resampling settings.');
+          data.resample = { dimensions: resampleRequest({ id: 'reader', revision: 0, time: 0, dimensions: resample.dimensions }).dimensions };
+        }
+      }
       if (command === 'workspace_restore') {
         const workspace = parseParaViewWorkspace(data.workspace);
         validateCaseName(workspace.caseName);

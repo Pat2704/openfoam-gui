@@ -4,6 +4,31 @@ This informative file records project state and history; `docs/RULES.md` is the
 sole source of project rules. Keep at or below **500 lines**, adding entries at
 the top and compacting older detail into Git history, release notes or audits.
 
+## 2026-10-03 — Phase 4: advanced numerical and CFD analysis
+
+- Compare Analysis exposes interval sample/time-weighted statistics and temporal
+  integrals, guided differences/magnitudes/coefficients and signed flux balances,
+  FFT periodograms/PSD/Strouhal and cross-correlation delay. Units, references,
+  grid alignment, sampling and numerical limits are explicit; gaps do not bridge.
+- Saved Post analyses migrate v1 to v2 with stable operand keys and advanced
+  settings. Reopening replays current sources while captured data stays frozen;
+  HTML reports carry configuration, coverage, computed charts and numerical CSV.
+- ParaView adds block/association-aware XYZ probes, bounded range selections and
+  dynamic extraction, vector gradient/vorticity/divergence/Q diagnostics, scalar
+  volume opacity curves and bounded Resample to Image grids. Fixed commands keep
+  browser Python/proxy/property names out of the worker/API.
+- 3D + Chart panes share time and allow an independent numerical pipeline source;
+  wide windows use adjacent panes, smaller ones stack. Optional workspace v1
+  fields retain layout/source and new nodes/volume settings without breaking old
+  files. Heavy analysis starts explicitly; prepared-engine startup is preserved.
+- Verification uses analytical signals/fields and disposable `_test` cases;
+  File Editor's initial/manual-only indexing indicators remain unchanged.
+- Checks: typecheck/lint and 413 tests pass (7 native checks skipped in the
+  default suite). Native ParaView 6.2 probes, solid-rotation diagnostics,
+  selection/extraction, resampling, two independent volume functions and
+  workspace/video roundtrips pass; browser QA covers saved analysis replay,
+  volume/probe/selection UI, split layout/time/source restore and breakpoints.
+
 ## 2026-10-02 — Phase 3: reproducible analyses and ParaView workspaces
 
 - Compare saves named source recipes and display choices; reopening re-reads
@@ -433,40 +458,14 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
   `nu 1e-05 [m^2/s]` is unverified. (The rest of this list was addressed in
   the entries above.)
 
-## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards
+## 2026-09-10 in brief
 
-- Recursive tutorial listing recognizes cases and Allrun groups; v14 exposes
-  mesh, multiRegion and legacy cases. Copies use atomic destination creation
-  and cleanup; the panel rejects stale answers and exposes errors/empty folders.
-- File Editor confirms replacing existing files, preserves content after failed
-  reads and displays multi-select state. The wizard refreshes cases before Create.
-  Details and disposable-case verification are retained in Git history.
-
-## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
-
-- Dashboard → Tutorial: categories and a category's tutorials scroll
-  independently, in a grid measured by `tutGridRef` to end at `main`'s bottom.
-- `electron/build/icon.ico` was repaired as a raster (airfoil dash, barb and
-  a broken streamline); smaller frames are LANCZOS downsamples, with 20, 40 and
-  96 px added for display scaling.
-
-## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
-
-- Released `v5.3.0`; notes in `docs/releases/v5.3.0.md`. Direct publication
-  renamed the packaged-verified `v5.2.2` pair from `9d7719f`, so embedded version
-  resources still read 5.2.2. Retention kept v5.3.0/v5.2.2 and the older tags.
-
-## 2026-09-10 — ParaView loads in the background before its tab is opened
-
-- Added low-priority import/render warm-up after detection, with progress,
-  a ten-minute ceiling and persisted `paraview-warmup` switch. See Git history.
-
-## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
-
-Audited v14/v13 templates and 127 `cavity_test` replays. Compute now resolves
-solver/field options, template arguments, etc search paths and class references
-from the installation. Remaining failures were physics/case mismatches or required
-placeholders. Details: commit `89211cb` and the v5.3.0 release history.
+Tutorial discovery/copying and separate scroll areas, File Editor/wizard data-loss
+guards, raster icon repair and low-priority ParaView warm-up are recorded in Git.
+The v14/v13 function catalogue audit covered 127 disposable-case replays; remaining
+failures required suitable physics/inputs (commit `89211cb`). The v5.3.0 direct
+release reused renamed v5.2.2 artifacts from `9d7719f`, retaining embedded 5.2.2
+resources. See `docs/releases/v5.3.0.md` for release and retention details.
 
 ## 2026-09-08 – 09-09 in brief
 

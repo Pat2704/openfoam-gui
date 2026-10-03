@@ -1,6 +1,7 @@
 import type { ParaViewNodeType } from './paraview';
 import type { ParaViewViewSnapshot, VideoRequest } from './paraview-video';
 import { isValidCaseName } from './case-name';
+import { selectionRecipe, diagnosticSettings, volumeSettings, resampleRequest } from './paraview-analysis';
 
 type Rule = 'number' | 'boolean' | 'string' | 'vector' | readonly string[] | { [key: string]: Rule };
 const association = ['CELLS', 'POINTS'] as const;
@@ -24,6 +25,9 @@ export const WORKSPACE_PARAMETER_SCHEMA: Record<string, Record<string, Rule>> = 
   PlotOverLine: { plotOverLine: { point1: 'vector', point2: 'vector', resolution: 'number' } },
   CellDatatoPointData: {}, PointDatatoCellData: {}, ExtractSurface: {}, CellCenters: {},
   ExtractEdges: {}, Connectivity: {}, IntegrateVariables: {}, TemporalStatistics: {},
+  CFDGradient: { diagnostic: { association, name: 'string', prefix: 'string' } },
+  Selection: { selection: { block: 'number', association, name: 'string', component: 'number', lower: 'number', upper: 'number' } },
+  ResampleToImage: { resample: { dimensions: 'vector' } },
 };
 
 export interface ParaViewWorkspaceNode {
@@ -45,6 +49,7 @@ export interface ParaViewWorkspace {
   view: ParaViewViewSnapshot;
   centerAxes: boolean;
   video?: VideoRequest;
+  clientView?: { mode: 'render' | 'chart' | 'table' | 'split'; chartSourceId?: string };
 }
 
 export const MAX_WORKSPACE_BYTES = 1_500_000;
@@ -120,10 +125,11 @@ function snapshot(raw: unknown, ids: Set<string>, complete = true): ParaViewView
   const displays = value.nodes as Record<string, unknown>;
   if ((complete && Object.keys(displays).length !== ids.size) || Object.keys(displays).some(id => !ids.has(id))) throw new Error('The captured view does not match the workspace pipeline.');
   for (const rawDisplay of Object.values(displays)) {
-    const display = object(rawDisplay, ['label', 'visible', 'representation', 'opacity', 'color'], 'display');
+    const display = object(rawDisplay, ['label', 'visible', 'representation', 'opacity', 'color', 'volume'], 'display');
     validate(display.label, 'string', 'display label');
     validate(display.visible, 'boolean', 'visibility');
-    validate(display.representation, ['Surface', 'Surface With Edges', 'Wireframe', 'Feature Edges', 'Points', 'Outline'], 'representation');
+    validate(display.representation, ['Surface', 'Surface With Edges', 'Wireframe', 'Feature Edges', 'Points', 'Outline', 'Volume'], 'representation');
+    if (display.volume !== undefined) volumeSettings(display.volume);
     validate(display.opacity, 'number', 'opacity');
     if ((display.opacity as number) < 0 || (display.opacity as number) > 1) throw new Error('Opacity must be between 0 and 1.');
     const color = object(display.color, ['association', 'name', 'preset', 'legend', 'range'], 'color');
@@ -142,7 +148,7 @@ function snapshot(raw: unknown, ids: Set<string>, complete = true): ParaViewView
 export function parseParaViewWorkspace(raw: unknown): ParaViewWorkspace {
   if (!raw || typeof raw !== 'object') throw new Error('Invalid workspace.');
   if (new TextEncoder().encode(JSON.stringify(raw)).byteLength > MAX_WORKSPACE_BYTES) throw new Error('The workspace is too large.');
-  const value = object(raw, ['format', 'version', 'caseName', 'paraviewVersion', 'selectedId', 'reader', 'nodes', 'view', 'centerAxes', 'video'], 'workspace');
+  const value = object(raw, ['format', 'version', 'caseName', 'paraviewVersion', 'selectedId', 'reader', 'nodes', 'view', 'centerAxes', 'video', 'clientView'], 'workspace');
   if (value.format !== 'openfoam-studio-paraview' || value.version !== 1) throw new Error('Unsupported workspace format or version.');
   validate(value.caseName, 'string', 'workspace case');
   if (!isValidCaseName(value.caseName as string)) throw new Error('Invalid workspace case.');
@@ -169,12 +175,23 @@ export function parseParaViewWorkspace(raw: unknown): ParaViewWorkspace {
       const path = node.filePath as string;
       if (!path || /[\\:\x00-\x1f]/.test(path) || path.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Workspace source files must remain inside the case.');
     } else if (node.filePath !== undefined) throw new Error('Only case-file readers have a file path.');
-    validate(node.parameters, { ...WORKSPACE_PARAMETER_SCHEMA[node.type], lineWidth: 'number', pointSize: 'number' }, 'filter parameters');
-    parameterBounds(node.type, node.parameters as Record<string, unknown>);
+    const parameters = object(node.parameters, [...Object.keys(WORKSPACE_PARAMETER_SCHEMA[node.type]), 'lineWidth', 'pointSize', 'volume'], 'filter parameters');
+    const { volume, ...base } = parameters;
+    validate(base, { ...WORKSPACE_PARAMETER_SCHEMA[node.type], lineWidth: 'number', pointSize: 'number' }, 'filter parameters');
+    parameterBounds(node.type, base);
+    if (volume !== undefined) volumeSettings(volume);
+    if (node.type === 'Selection') selectionRecipe(base.selection);
+    if (node.type === 'CFDGradient') diagnosticSettings(base.diagnostic);
+    if (node.type === 'ResampleToImage') resampleRequest({ id: 'reader', revision: 0, time: 0, dimensions: (base.resample as Record<string, unknown>).dimensions });
     ids.add(node.id);
   }
   if (!ids.has(value.selectedId as string)) throw new Error('The selected workspace item is missing.');
   snapshot(value.view, ids);
+  if (value.clientView !== undefined) {
+    const client = object(value.clientView, ['mode', 'chartSourceId'], 'workspace view layout');
+    validate(client.mode, ['render', 'chart', 'table', 'split'], 'workspace view mode');
+    if (client.chartSourceId !== undefined && !ids.has(client.chartSourceId as string)) throw new Error('The chart source is missing from the workspace.');
+  }
   if (value.video !== undefined) {
     const video = object(value.video, ['start', 'segments', 'timing', 'interpolate', 'fps', 'resolution', 'format', 'colorRange'], 'video');
     validate(video.start, 'number', 'video start'); validate(video.interpolate, 'boolean', 'interpolation');

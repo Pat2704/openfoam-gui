@@ -86,7 +86,7 @@ test('captured traces survive replay without a source read or a new capture time
 });
 
 test('validation rejects unsupported versions, unsafe values, mismatched axes and unbounded captures', () => {
-  assert.throws(() => parsePostProcessAnalysis({ ...recipe(), version: 2 }), /version/);
+  assert.throws(() => parsePostProcessAnalysis({ ...recipe(), version: 3 }), /version/);
   assert.throws(() => parsePostProcessAnalysis({ ...recipe(), curves: [] }), /1–6/);
   assert.throws(() => parsePostProcessAnalysis({ ...recipe(), curves: Array(7).fill(recipe().curves[0]) }), /1–6/);
   const color = recipe(); color.curves[0].color = 'red"';
