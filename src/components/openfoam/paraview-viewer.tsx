@@ -12,13 +12,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { loadFoamyConfig } from '@/lib/foamy-store';
-import type { ParaViewViewSnapshot, VideoRequest } from '@/lib/paraview-video';
-import type { ParaViewWorkspace } from '@/lib/paraview-workspace';
+import type { ParaViewViewSnapshot } from '@/lib/paraview-video';
 import ParaViewVideoPanel from './paraview-video-panel';
-import ParaViewWorkspaces from './paraview-workspaces';
-import ParaViewDataPanel from './paraview-data-panel';
-import ParaViewAnalysisPanel from './paraview-analysis-panel';
-import ParaViewVolumePanel from './paraview-volume-panel';
 import type {
   ParaViewCaseFile, ParaViewNodeType, ParaViewPipelineNode, ParaViewStartupStage, ParaViewWorkbenchState,
 } from '@/lib/paraview';
@@ -257,13 +252,6 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const [filesLoading, setFilesLoading] = useState(false);
   /** A video export owns the ParaView process: the workbench is locked meanwhile. */
   const [exporting, setExporting] = useState(false);
-  const [viewportMode, setViewportMode] = useState<'render' | 'chart' | 'table' | 'split'>('render');
-  const [chartSourceId, setChartSourceId] = useState('');
-  const [propertiesTab, setPropertiesTab] = useState('properties');
-  const [restoredTimeline, setRestoredTimeline] = useState<{ revision: number; request: VideoRequest | null }>({ revision: 0, request: null });
-  const videoTimelineRef = useRef<VideoRequest | null>(null);
-  const getVideoTimeline = useCallback(() => videoTimelineRef.current, []);
-  const timelineChanged = useCallback((request: VideoRequest) => { videoTimelineRef.current = request; }, []);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef('');
@@ -290,20 +278,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     () => workbench?.pipeline.find(node => node.id === workbench.selectedId) || null,
     [workbench],
   );
-  const chartWorkbench = useMemo(() => workbench && ({ ...workbench,
-    selectedId: workbench.pipeline.some(node => node.id === chartSourceId) ? chartSourceId : workbench.selectedId,
-  }), [workbench, chartSourceId]);
-  const getClientView = useCallback(() => ({ mode: viewportMode,
-    ...(viewportMode === 'split' && chartWorkbench ? { chartSourceId: chartWorkbench.selectedId } : {}),
-  }), [viewportMode, chartWorkbench]);
   const visibleCaseFiles = useMemo(() => {
     const query = fileSearch.trim().toLowerCase();
     return query ? caseFiles.filter(file => file.path.toLowerCase().includes(query)) : caseFiles;
   }, [caseFiles, fileSearch]);
-
-  useEffect(() => {
-    if (selected?.renderable === false) setViewportMode(current => current === 'render' ? 'table' : current);
-  }, [selected?.id, selected?.renderable]);
 
   // A hidden pane measures 0x0, so the last real measurement is the honest
   // answer: rendering at the fallback size would change the image's aspect.
@@ -370,17 +348,6 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     } finally {
       if (!options.quiet) setBusy(false);
     }
-  }, [fetchRender]);
-
-  const workspaceRestored = useCallback(async (state: ParaViewWorkbenchState, workspace: ParaViewWorkspace) => {
-    setPlaying(false);
-    setWorkbench(state);
-    videoTimelineRef.current = workspace.video ?? null;
-    setRestoredTimeline(current => ({ revision: current.revision + 1, request: workspace.video ?? null }));
-    setViewportTool('camera');
-    setViewportMode(workspace.clientView?.mode ?? 'render');
-    setChartSourceId(workspace.clientView?.chartSourceId ?? '');
-    await fetchRender();
   }, [fetchRender]);
 
   const loadCaseFiles = useCallback(async () => {
@@ -586,25 +553,6 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     imageRecoveryRef.current += 1;
     void fetchRender(false).catch(() => undefined);
   }, [active, busy, fetchRender, imageUrl, starting, workbench]);
-
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || !active || !workbench || starting || busy || exporting || playing) return;
-    let timer: ReturnType<typeof setTimeout>;
-    const observer = new ResizeObserver(() => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (!viewport.clientWidth || !viewport.clientHeight) return;
-        const previous = lastSizeRef.current;
-        const next = imageSize();
-        if (previous.width !== next.width || previous.height !== next.height) {
-          void fetchRender().catch(cause => setError(cause instanceof Error ? cause.message : 'The resized view could not be rendered.'));
-        }
-      }, 250);
-    });
-    observer.observe(viewport);
-    return () => { observer.disconnect(); clearTimeout(timer); };
-  }, [active, workbench?.caseName, starting, busy, exporting, playing, viewportMode, imageSize, fetchRender]);
 
   useEffect(() => {
     if (!selected) return;
@@ -963,7 +911,6 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
       <div className="flex min-h-11 flex-wrap items-center gap-1 border-b bg-muted/35 px-2 py-1.5">
         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={starting || busy} onClick={() => void start(true)} title="Reload the OpenFOAM case"><RefreshCw className={`h-3.5 w-3.5 ${starting ? 'animate-spin' : ''}`} /> Reload</Button>
         <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => void command('refresh')} title="Refresh fields and timesteps" aria-label="Refresh fields and timesteps"><RefreshCw className="h-3.5 w-3.5" /></Button>
-        <ParaViewWorkspaces caseName={caseName} locked={busy || cameraBusy || exporting || playing} getVideo={getVideoTimeline} getClientView={getClientView} onBusyChange={setBusy} onRestored={workspaceRestored} />
         <span className="mx-1 h-6 w-px bg-border" />
         <Select value={filterChoice} onValueChange={value => addFilter(value as FilterType)} disabled={busy}>
           <SelectTrigger size="sm" className="h-7 w-[178px] text-xs"><Search className="h-3.5 w-3.5" /><SelectValue placeholder="Add filter…" /></SelectTrigger>
@@ -1009,7 +956,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 }}
               >
                 {depthOf(node) > 0 && <span className="text-muted-foreground">└</span>}
-                <button disabled={node.renderable === false} className="rounded p-0.5 opacity-80 hover:bg-background/20 disabled:opacity-30" title={node.visible ? 'Hide' : 'Show'} aria-label={`${node.visible ? 'Hide' : 'Show'} ${node.label}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void command('set_visibility', { id: node.id, visible: !node.visible }); }}>{node.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
+                <button className="rounded p-0.5 opacity-80 hover:bg-background/20" title={node.visible ? 'Hide' : 'Show'} aria-label={`${node.visible ? 'Hide' : 'Show'} ${node.label}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void command('set_visibility', { id: node.id, visible: !node.visible }); }}>{node.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
                 {filterIcon(node.type)}<span className="truncate" title={node.label}>{node.label}</span>
               </div>
             ))}</div>
@@ -1040,12 +987,9 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
         </aside>
 
         <main className="relative min-h-[400px] overflow-hidden bg-[#252931]">
-          <div className="absolute inset-x-0 top-0 z-20 flex h-9 items-center gap-1 border-b bg-background px-2" role="toolbar" aria-label="ParaView output view">
-            {(['render', 'chart', 'table', 'split'] as const).map(mode => <Button key={mode} size="sm" variant={viewportMode === mode ? 'secondary' : 'ghost'} aria-pressed={viewportMode === mode} className="h-7 text-[10px]" disabled={exporting} onClick={() => { if (mode === 'split' && viewportMode !== 'split') setChartSourceId(workbench.selectedId); setViewportMode(mode); }}>{mode === 'render' ? '3D' : mode === 'chart' ? 'Chart' : mode === 'table' ? 'Table' : '3D + Chart'}</Button>)}
-          </div>
           <div
             ref={viewportRef}
-            className={`absolute inset-0 top-9 cursor-grab select-none overflow-hidden active:cursor-grabbing ${viewportMode === 'split' ? 'bottom-1/2 2xl:bottom-0 2xl:right-1/2' : viewportMode === 'render' ? '' : 'invisible pointer-events-none'}`}
+            className="absolute inset-0 cursor-grab select-none overflow-hidden active:cursor-grabbing"
             onContextMenu={event => event.preventDefault()}
             onPointerDown={event => {
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -1089,22 +1033,16 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
             <div className="pointer-events-none absolute left-2 top-2 flex gap-1"><Badge className="bg-black/45 text-[9px] text-white hover:bg-black/45">{workbench.reader.caseType}</Badge>{!workbench.reader.hasTimeSteps && <Badge className="bg-amber-500/80 text-[9px] text-black hover:bg-amber-500/80">mesh only · time 0</Badge>}</div>
             {cameraBusy && <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/45 p-1.5"><Rotate3D className="h-4 w-4 animate-pulse text-white" /></div>}
           </div>
-          {(viewportMode === 'chart' || viewportMode === 'table') && <ParaViewDataPanel workbench={workbench} mode={viewportMode} locked={busy || exporting || playing || cameraBusy} active={active} />}
-          {viewportMode === 'split' && chartWorkbench && <section aria-label="Linked chart view" className="absolute inset-x-0 bottom-0 top-1/2 border-t border-border bg-background 2xl:left-1/2 2xl:top-9 2xl:border-l 2xl:border-t-0">
-            <div className="flex h-9 items-center gap-2 border-b px-2 text-[10px]"><span>Chart source</span><Select value={chartWorkbench.selectedId} onValueChange={setChartSourceId} disabled={busy || exporting}><SelectTrigger aria-label="Linked chart source" size="sm" className="h-7 min-w-0 flex-1 text-[10px]"><SelectValue /></SelectTrigger><SelectContent>{workbench.pipeline.map(node => <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>)}</SelectContent></Select><span className="text-muted-foreground">Shared time</span></div>
-            <ParaViewDataPanel workbench={chartWorkbench} mode="chart" locked={busy || exporting || playing || cameraBusy} active={active} />
-          </section>}
           {exporting && <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 p-6 text-center text-xs text-white">
             <div><Film className="mx-auto mb-2 h-8 w-8 animate-pulse text-cyan-300" /><p className="font-medium">Exporting video…</p><p className="mt-1 max-w-xs text-white/70">ParaView is rendering the frames, so the workbench is locked until the export ends. Follow or cancel it in the Video tab.</p></div>
           </div>}
         </main>
 
         <aside className="min-h-0 border-l bg-muted/10">
-          <Tabs value={propertiesTab} onValueChange={setPropertiesTab} className="flex h-full min-h-0 flex-col">
+          <Tabs defaultValue="properties" className="flex h-full min-h-0 flex-col">
             <TabsList className="h-9 w-full flex-shrink-0 rounded-none border-b bg-transparent p-0">
               <TabsTrigger value="properties" className="h-8 flex-1 rounded-none text-[10px]"><SlidersHorizontal className="h-3 w-3" /> Properties</TabsTrigger>
               <TabsTrigger value="information" className="h-8 flex-1 rounded-none text-[10px]"><Info className="h-3 w-3" /> Information</TabsTrigger>
-              <TabsTrigger value="analysis" className="h-8 flex-1 rounded-none text-[10px]"><Grid3X3 className="h-3 w-3" /> Analysis</TabsTrigger>
               <TabsTrigger value="video" className="h-8 flex-1 rounded-none text-[10px]"><Film className="h-3 w-3" /> Video</TabsTrigger>
             </TabsList>
 
@@ -1112,23 +1050,21 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
               <div><p className="font-semibold">{selected.label}</p><p className="text-[10px] text-muted-foreground">{selected.type}</p>{selected.filePath && <p className="mt-1 break-all font-mono text-[9px] text-muted-foreground" title={selected.filePath}>{selected.filePath}</p>}</div>
               {selected.manipulatorAvailable && <Button size="sm" variant={selected.manipulatorVisible ? 'default' : 'outline'} className="h-8 w-full text-xs" disabled={busy} onClick={toggleManipulator}><Move3D className="h-4 w-4" />{selected.manipulatorVisible ? 'Hide 3D manipulator' : 'Edit graphically in 3D'}</Button>}
 
-              <section className={`space-y-2 border-t pt-3 ${selected.renderable === false ? 'hidden' : ''}`}>
+              <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Display</p>
                 <Label className="text-[10px]">Representation</Label>
-                <Select value={selected.representation} onValueChange={representation => void command('update', { representation })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{(selected.representations?.length ? selected.representations : REPRESENTATIONS).map(value => <SelectItem key={value} value={value} disabled={value === 'Volume' && !selected.volumeCapabilities?.supported}>{value}</SelectItem>)}</SelectContent></Select>
+                <Select value={selected.representation} onValueChange={representation => void command('update', { representation })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent>{(selected.representations?.length ? selected.representations : REPRESENTATIONS).map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
                 <div className="flex items-center justify-between"><Label className="text-[10px]">Opacity</Label><span className="font-mono text-[10px]">{displayDraft.opacity.toFixed(2)}</span></div>
                 <input aria-label="Opacity" className="w-full accent-primary" type="range" min="0" max="1" step="0.05" value={displayDraft.opacity} onChange={event => setDisplayDraft(current => ({ ...current, opacity: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} />
                 {(selected.representation === 'Surface With Edges' || selected.representation === 'Wireframe' || selected.representation === 'Feature Edges') && <><div className="flex items-center justify-between"><Label className="text-[10px]">Line width</Label><span className="font-mono text-[10px]">{displayDraft.lineWidth.toFixed(1)}</span></div><input aria-label="Line width" className="w-full accent-primary" type="range" min="1" max="10" step="0.5" value={displayDraft.lineWidth} onChange={event => setDisplayDraft(current => ({ ...current, lineWidth: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
                 {selected.representation === 'Points' && <><div className="flex items-center justify-between"><Label className="text-[10px]">Point size</Label><span className="font-mono text-[10px]">{displayDraft.pointSize.toFixed(1)}</span></div><input aria-label="Point size" className="w-full accent-primary" type="range" min="1" max="20" step="1" value={displayDraft.pointSize} onChange={event => setDisplayDraft(current => ({ ...current, pointSize: Number(event.target.value) }))} onPointerUp={applyDisplay} onKeyUp={applyDisplay} /></>}
               </section>
 
-              <section className={`space-y-2 border-t pt-3 ${selected.renderable === false ? 'hidden' : ''}`}>
+              <section className="space-y-2 border-t pt-3">
                 <p className="font-semibold">Coloring</p>
                 <Select value={selected.color.association === 'SOLID' ? 'SOLID:' : selected.color.association === 'BLOCKS' ? 'BLOCKS:vtkBlockColors' : `${selected.color.association}:${selected.color.name}`} onValueChange={setColor}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SOLID:">Solid Color</SelectItem><SelectItem value="BLOCKS:vtkBlockColors">Patch / block colors</SelectItem>{workbench.arrays.map(array => <SelectItem key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>{array.name} ({array.association === 'CELLS' ? 'cell' : 'point'})</SelectItem>)}</SelectContent></Select>
                 {(selected.color.association === 'CELLS' || selected.color.association === 'POINTS') && <><Label className="text-[10px]">Color preset</Label><Select value={selected.color.preset} onValueChange={preset => updateColor({ preset })}><SelectTrigger size="sm" className="w-full text-xs"><SelectValue placeholder="Preset" /></SelectTrigger><SelectContent>{workbench.presets.map(preset => <SelectItem key={preset} value={preset}>{preset}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2"><Checkbox id="pv-legend" checked={selected.color.legend} onCheckedChange={value => updateColor({ legend: value === true })} /><Label htmlFor="pv-legend" className="text-xs">Show color legend</Label></div></>}
               </section>
-
-              <ParaViewVolumePanel workbench={workbench} locked={busy || exporting || playing || cameraBusy} active={active && propertiesTab === 'properties'} onCommand={command} />
 
               {(selected.type === 'Slice' || selected.type === 'Clip') && <section className="space-y-2 border-t pt-3"><p className="font-semibold">{selected.type} plane</p><Label className="text-[10px]">Origin (X, Y, Z)</Label><VectorInputs value={draft.origin} onChange={(index, value) => updateVector('origin', index, value)} /><Label className="text-[10px]">Normal (X, Y, Z)</Label><VectorInputs value={draft.normal} onChange={(index, value) => updateVector('normal', index, value)} />{selected.type === 'Clip' && <div className="flex items-center gap-2"><Checkbox id="pv-invert" checked={draft.invert} onCheckedChange={value => setDraft(current => ({ ...current, invert: value === true }))} /><Label htmlFor="pv-invert" className="text-xs">Invert clip</Label></div>}<Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={applyFilterProperties}>Apply</Button></section>}
 
@@ -1217,8 +1153,6 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
               <section className="space-y-2 border-t pt-3"><div className="flex items-center justify-between"><p className="font-semibold">Data arrays</p><Badge variant="outline" className="text-[9px]">{workbench.arrays.length}</Badge></div>{workbench.arrays.length === 0 ? <p className="text-[10px] text-muted-foreground">No result arrays at this pipeline output. Mesh-only representations remain available.</p> : workbench.arrays.map(array => <div key={`${array.association}:${array.name}`} className="rounded border bg-background/60 p-2"><div className="flex items-center justify-between gap-2"><span className="font-mono font-medium">{array.name}</span><Badge variant="secondary" className="text-[8px]">{array.association}</Badge></div><div className="mt-1 flex justify-between text-[9px] text-muted-foreground"><span>{array.components} component{array.components === 1 ? '' : 's'}</span><span className="font-mono">{array.range[0].toPrecision(4)} → {array.range[1].toPrecision(4)}</span></div></div>)}</section>
             </div></ScrollArea></TabsContent>
 
-            <TabsContent value="analysis" className="mt-0 min-h-0 flex-1"><ScrollArea className="h-full"><ParaViewAnalysisPanel workbench={workbench} locked={busy || exporting || playing || cameraBusy} active={active && propertiesTab === 'analysis'} onCommand={command} /></ScrollArea></TabsContent>
-
             {/* forceMount keeps the timeline (and a running export's progress) when switching tabs. */}
             <TabsContent value="video" forceMount className="mt-0 min-h-0 flex-1 data-[state=inactive]:hidden"><ScrollArea className="h-full">
               <ParaViewVideoPanel
@@ -1229,8 +1163,6 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
                 onApplyView={applyTimelineView}
                 onExportingChange={exportingChange}
                 onFinished={videoFinished}
-                restoredTimeline={restoredTimeline}
-                onTimelineChange={timelineChanged}
               />
             </ScrollArea></TabsContent>
           </Tabs>

@@ -31,7 +31,6 @@ import {
 import { parseCheckMeshOutput } from './check-mesh';
 import { SNAPPY_ETC_FILES, SNAPPY_VERSIONS, snappyAvailability } from './snappy-templates';
 import { WIZARD_MARKER_PATH } from './wizard-state';
-import type { PostProcessTask } from './postprocess-jobs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EVERY child_process call in this file MUST pass `windowsHide: true`.
@@ -2785,44 +2784,6 @@ export function getCaseLog(caseName: string, logFile: string, tail = 100): strin
   }
 }
 
-export interface CaseLogRead {
-  content: string;
-  truncated: boolean;
-  returnedLines: number;
-  maxLines: number;
-  maxBytes: number;
-}
-
-/** A bounded log snapshot with evidence of whether its beginning was omitted. */
-export async function readCaseLogSnapshot(caseName: string, logFile: string, tail = 50000): Promise<CaseLogRead> {
-  const casePath = getCasePath(caseName);
-  const safeLogName = validateLogName(logFile);
-  const maxLines = boundedInteger(tail, 50000, 1, 50000);
-  const maxBytes = 40 * 1024 * 1024;
-  const logPath = safeLogName === 'log' ? `${casePath}/log` : `${casePath}/log.${safeLogName}`;
-  const script = `
-case_root=$(realpath -e -- ${shellQuote(casePath)}) || exit 1
-source_file=$(realpath -e -- ${shellQuote(logPath)}) || exit 1
-case "$source_file" in "$case_root"/*) ;; *) echo 'Log leaves the case' >&2; exit 2 ;; esac
-[ -f "$source_file" ] || exit 1
-snapshot=$(mktemp) || exit 1
-trap 'rm -f -- "$snapshot"' EXIT
-tail -n ${maxLines + 1} -- "$source_file" | tail -c ${maxBytes + 1} > "$snapshot"
-bytes=$(wc -c < "$snapshot")
-lines=$(awk 'END {print NR}' "$snapshot")
-limited=0
-if [ "$bytes" -gt ${maxBytes} ] || [ "$lines" -gt ${maxLines} ]; then limited=1; fi
-printf 'OFSTUDIO_LOG_LIMITED=%s\\n' "$limited"
-tail -n ${maxLines} -- "$snapshot" | tail -c ${maxBytes}
-`;
-  const output = await runInWslScriptAsync(Buffer.from(script).toString('base64'), 120000);
-  const marker = output.match(/^OFSTUDIO_LOG_LIMITED=([01])\r?\n/);
-  if (!marker) throw new Error('The log snapshot could not be read.');
-  const content = output.slice(marker[0].length);
-  const returnedLines = content ? content.split('\n').length - (content.endsWith('\n') ? 1 : 0) : 0;
-  return { content, truncated: marker[1] === '1', returnedLines, maxLines, maxBytes };
-}
-
 export function listLogFiles(caseName: string): string[] {
   const casePath = getCasePath(caseName);
   try {
@@ -3861,12 +3822,6 @@ export interface PostProcessDataset {
  * is mistaken for a sibling.
  */
 export function listPostProcessing(caseName: string): PostProcessDataset[] {
-  return listPostProcessingInventory(caseName).datasets;
-}
-
-export function listPostProcessingInventory(caseName: string): {
-  datasets: PostProcessDataset[]; inventoryTruncated: boolean;
-} {
   const casePath = getCasePath(caseName);
   const root = `${casePath}/${POST_PROCESSING_DIR}`;
   // A cap, because a long transient with per-timestep surface output can hold
@@ -3880,13 +3835,12 @@ find -L "$root" -mindepth 3 -type f -printf '%P\\t%s\\n' 2>/dev/null |
 while IFS=$'\\t' read -r relative size; do
   resolved=$(realpath -e -- "$root/$relative" 2>/dev/null) || continue
   case "$resolved" in "$root"/*) printf '%s\\t%s\\n' "$relative" "$size" ;; esac
-done | head -n ${MAX_ENTRIES + 1}
+done | head -n ${MAX_ENTRIES}
 `;
   const output = runInWslScript(Buffer.from(script).toString('base64'), 30000);
 
   const datasets = new Map<string, Map<string, { times: Set<string>; bytes: number }>>();
-  const inventory = output.split('\n').filter(line => line.trim());
-  for (const line of inventory.slice(0, MAX_ENTRIES)) {
+  for (const line of output.split('\n')) {
     if (!line.trim()) continue;
     const [relative, size] = line.split('\t');
     if (!relative) continue;
@@ -3910,7 +3864,7 @@ done | head -n ${MAX_ENTRIES + 1}
     entry.bytes += Number(size) || 0;
   }
 
-  const result = Array.from(datasets.entries())
+  return Array.from(datasets.entries())
     .map(([name, files]) => ({
       name,
       files: Array.from(files.entries())
@@ -3922,7 +3876,6 @@ done | head -n ${MAX_ENTRIES + 1}
         .sort((a, b) => a.name.localeCompare(b.name)),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return { datasets: result, inventoryTruncated: inventory.length > MAX_ENTRIES };
 }
 
 /** One time directory's copy of a dataset file, as text. */
@@ -4255,16 +4208,14 @@ export interface PostProcessRunResult {
  * Deliberately NOT a general command runner: the Commands tab already is one.
  * This exists so the tab can produce the dataset it is about to plot.
  */
-export interface PostProcessRunOptions {
-  time?: string; fields?: string[]; region?: string; solver?: string;
-  latestTime?: boolean; noZero?: boolean; constant?: boolean;
-}
-
-function postProcessScript(
+export function runPostProcessFunction(
   caseName: string,
   spec: string,
-  options: PostProcessRunOptions,
-): string {
+  options: {
+    time?: string; fields?: string[]; region?: string; solver?: string;
+    latestTime?: boolean; noZero?: boolean; constant?: boolean;
+  } = {},
+): PostProcessRunResult {
   const casePath = getCasePath(caseName);
   if (!FUNCTION_SPEC_SAFE.test(spec) || spec.length > 1024) {
     throw new WslInputError('Function specification is not valid');
@@ -4319,13 +4270,6 @@ echo "OFSTUDIO_UTILITY=$PP"
 echo "OFSTUDIO_EXIT=$?"
 exit 0
 `;
-  return script;
-}
-
-export function runPostProcessFunction(
-  caseName: string, spec: string, options: PostProcessRunOptions = {},
-): PostProcessRunResult {
-  const script = postProcessScript(caseName, spec, options);
   try {
     const output = runInWslScript(Buffer.from(script).toString('base64'), 600000);
     const status = output.match(/OFSTUDIO_EXIT=(\d+)/);
@@ -4339,123 +4283,6 @@ export function runPostProcessFunction(
     // unreachable, the distro down, a failed `cd`.
     return { exitCode: 1, output: String(e?.message ?? 'postProcess could not be started'), command: 'postProcess' };
   }
-}
-
-/** Stream one validated function in its own Linux process group. */
-export function startPostProcessFunction(
-  caseName: string, spec: string, options: PostProcessRunOptions,
-  onOutput: (chunk: string) => void,
-): PostProcessTask {
-  const script = postProcessScript(caseName, spec, options);
-  const distro = getDistro();
-  const token = randomBytes(24).toString('hex');
-  const marker = `__OFSTUDIO_JOB_${token}:`;
-  const command = `export COLUMNS=80 LINES=24 TERM=dumb; base64 -d | env OFSTUDIO_POSTPROCESS_JOB=${token} setsid bash`;
-  const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', command], {
-    windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
-  });
-  let pid: number | null = null;
-  let closed = false;
-  let timedOut = false;
-  let pending = '';
-  let utility = 'postProcess';
-  let exitCode: number | null = null;
-  let cancellation: Promise<void> | null = null;
-  let signalReady: () => void = () => {};
-  const ready = new Promise<void>(resolve => { signalReady = resolve; });
-
-  const stopOwnedGroup = (): Promise<void> => {
-    if (pid === null || closed) return Promise.resolve();
-    if (cancellation) return cancellation;
-    // The browser never supplies a PID. A group member must carry this launch's
-    // random environment token before it can be signalled, including escalation.
-    const stopScript = `
-pid=${pid}
-owned() {
-  [ -r "/proc/$1/environ" ] &&
-  tr '\\0' '\\n' < "/proc/$1/environ" | grep -Fxq 'OFSTUDIO_POSTPROCESS_JOB=${token}'
-}
-if owned "$pid" && [ "$(ps -o pgid= -p "$pid" | tr -d ' ')" = "$pid" ]; then
-  kill -TERM -- "-$pid" 2>/dev/null || true
-  sleep 0.5
-  for member in $(ps -eo pid=,pgid= | awk -v group="$pid" '$2 == group {print $1}'); do
-    if owned "$member"; then kill -KILL -- "$member" 2>/dev/null || true; fi
-  done
-fi
-`;
-    cancellation = new Promise<void>((resolve, reject) => {
-      const killer = spawn('wsl', ['-d', distro, '--', 'bash', '-c', 'base64 -d | bash'], {
-        windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'],
-      });
-      let errorText = '';
-      killer.stderr.setEncoding('utf-8');
-      killer.stderr.on('data', (chunk: string) => { errorText = (errorText + chunk).slice(-4096); });
-      const timer = setTimeout(() => { killer.kill(); reject(new Error('Cancelling the WSL job timed out.')); }, 10000);
-      killer.on('error', error => { clearTimeout(timer); reject(error); });
-      killer.on('close', code => {
-        clearTimeout(timer);
-        if (code === 0) resolve(); else reject(new Error(errorText || 'The WSL job could not be cancelled.'));
-      });
-      killer.stdin.on('error', () => {});
-      killer.stdin.end(Buffer.from(stopScript).toString('base64'));
-    });
-    return cancellation.catch(error => { cancellation = null; throw error; });
-  };
-  const line = (value: string) => {
-    if (value.startsWith(marker)) {
-      const parsed = Number(value.slice(marker.length));
-      if (Number.isSafeInteger(parsed) && parsed > 1) {
-        pid = parsed;
-        signalReady();
-      }
-    } else if (/^OFSTUDIO_UTILITY=\S+$/.test(value)) utility = value.slice('OFSTUDIO_UTILITY='.length);
-    else if (/^OFSTUDIO_EXIT=\d+$/.test(value)) exitCode = Number(value.slice('OFSTUDIO_EXIT='.length));
-    else onOutput(value + '\n');
-  };
-  child.stdout.setEncoding('utf-8');
-  child.stderr.setEncoding('utf-8');
-  child.stdout.on('data', (chunk: string) => {
-    pending += chunk;
-    let newline: number;
-    while ((newline = pending.indexOf('\n')) !== -1) {
-      line(pending.slice(0, newline).replace(/\r$/, ''));
-      pending = pending.slice(newline + 1);
-    }
-    if (pending.length > 65536) { onOutput(pending); pending = ''; }
-  });
-  child.stderr.on('data', (chunk: string) => onOutput(chunk));
-  child.stdin.on('error', () => {});
-  const completion = new Promise<{ exitCode: number; command: string }>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      timedOut = true;
-      void stopOwnedGroup().catch(error => {
-        onOutput(`\n${error.message}\nWSL cleanup could not be confirmed; check the case's processes.\n`);
-      }).finally(() => {
-        child.kill();
-        reject(new Error('Post-processing timed out after ten minutes.'));
-      });
-    }, 600000);
-    child.on('error', error => { closed = true; signalReady(); clearTimeout(timer); reject(error); });
-    child.on('close', code => {
-      closed = true;
-      signalReady();
-      clearTimeout(timer);
-      if (pending) line(pending);
-      if (timedOut) reject(new Error('Post-processing timed out after ten minutes.'));
-      else resolve({ exitCode: exitCode ?? code ?? 1, command: utility });
-    });
-  });
-  child.stdin.end(Buffer.from(`printf '${marker}%s\\n' "$$"\n${script}`).toString('base64'));
-  return { completion, cancel: async () => {
-    let startupTimer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([ready, new Promise<never>((_, reject) => {
-        startupTimer = setTimeout(() => reject(new Error('The WSL job has not started yet; retry cancellation.')), 10000);
-      })]);
-    } finally { clearTimeout(startupTimer); }
-    await stopOwnedGroup();
-  } };
 }
 
 /** Same allowlist `buildFunctionSpec` enforces, applied again at the WSL edge. */

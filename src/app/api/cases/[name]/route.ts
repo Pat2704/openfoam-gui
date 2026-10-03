@@ -12,7 +12,6 @@ import {
   deleteAllTimesteps,
   cloneCase,
   getCaseLog,
-  readCaseLogSnapshot,
   listLogFiles,
   runCheckMesh,
   validateBoundaryConditions,
@@ -32,7 +31,7 @@ import { runCasePreflight } from '@/lib/case-preflight';
 //   ?action=ls&path=…            → { items }
 //   ?action=logs&log=…&tail=…    → { content, availableLogs }
 //   ?action=listLogs             → { availableLogs }
-//   ?action=residuals&log=…&maxLines=… → bounded log snapshot and coverage
+//   ?action=residuals&log=…&maxLines=… → { content }
 //   ?action=checkMesh            → CheckMeshResult
 //   ?action=validateBC           → BCValidationResult
 //   ?action=caseSummary          → CaseSummaryInfo
@@ -82,8 +81,9 @@ export async function GET(
       }
       case 'residuals': {
         const log = searchParams.get('log') || 'log';
-        const maxLines = boundedInteger(searchParams.get('maxLines'), 50000, 1, 50000);
-        return NextResponse.json(await readCaseLogSnapshot(caseName, log, maxLines));
+        const maxLines = boundedInteger(searchParams.get('maxLines'), 50000, 1, 200000);
+        const content = getCaseLog(caseName, log, maxLines);
+        return NextResponse.json({ content });
       }
       case 'checkMesh': {
         const result = runCheckMesh(caseName);

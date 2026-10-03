@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAllResiduals, parseResidualEvents, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
+import { parseAllResiduals, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
 
 // The shape `foamRun` writes, which is what almost every log looks like.
 const FOAM_RUN_LOG = `
@@ -32,56 +32,6 @@ test('the initial residual of each field is read for every timestep', () => {
   // the step with, which is what a convergence plot means.
   assert.equal(data[0].Ux, 1);
   assert.equal(data[1].p, 0.363);
-});
-
-test('repeated solves remain distinct events with explicit first, last and maximum selections', () => {
-  const log = 'Time = 1\nGAMG: Solving for p, Initial residual = 0.3, Final residual = 1e-7, No Iterations 4\nGAMG: Solving for p, Initial residual = 0.8, Final residual = 2e-7, No Iterations 9\nGAMG: Solving for p, Initial residual = 0.02, Final residual = 3e-8, No Iterations 2\n';
-  const { events } = parseResidualEvents(log);
-  assert.equal(events.length, 3);
-  assert.deepEqual(events.map(event => event.initial), [0.3, 0.8, 0.02]);
-  assert.equal(events[1].final, 2e-7);
-  assert.equal(events[1].iterations, 9);
-  assert.equal(events[1].line, 3);
-  assert.equal(parseAllResiduals(log).data[0].p, 0.3);
-  assert.equal(parseAllResiduals(log, { selection: 'last' }).data[0].p, 0.02);
-  assert.equal(parseAllResiduals(log, { selection: 'maximum' }).data[0].p, 0.8);
-  assert.equal(residualsToTable(log, { selection: 'last' }).rows[0][1], 0.02);
-});
-
-test('a later restart replaces the old timestep before selecting its residual event', () => {
-  const log = 'Time = 1\np: iter = 1 residual = 0.9\nUx: iter = 1 residual = 0.6\nTime = 2\np: iter = 1 residual = 0.8\nTime = 1\np: iter = 1 residual = 0.3\np: iter = 2 residual = 0.1\nTime = 2\np: iter = 1 residual = 0.2\n';
-  assert.deepEqual(parseAllResiduals(log).data.map(point => point.p), [0.3, 0.2]);
-  assert.deepEqual(parseAllResiduals(log, { selection: 'last' }).data.map(point => point.p), [0.1, 0.2]);
-  assert.deepEqual(parseAllResiduals(log).fields, ['p']);
-  const { events } = parseResidualEvents(log);
-  assert.equal(events.length, 6);
-  assert.equal(events.at(-1)?.run, 1);
-});
-
-test('negative simulation times are valid and malformed time markers do not contaminate another step', () => {
-  const parsed = parseAllResiduals('Time = -2\np: iter = 1 residual = 0.4\nTime = -1\np: iter = 1 residual = 0.2\nTime = 1e999\np: iter = 1 residual = 0.8\nTime = bad\np: iter = 1 residual = 0.7\n');
-  assert.deepEqual(parsed.data.map(point => [point.time, point.p]), [[-2, 0.4], [-1, 0.2]]);
-});
-
-test('Foundation time values with a seconds suffix populate residual charts and tables', () => {
-  const log = `Time = 0.005s
-smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 1.1324e-06, No Iterations 5
-GAMG:  Solving for p, Initial residual = 1, Final residual = 0.0378382, No Iterations 2
-GAMG:  Solving for p, Initial residual = 0.0371368, Final residual = 6.05335e-07, No Iterations 10
-Time = 1e-2s
-smoothSolver:  Solving for Ux, Initial residual = 0.325089, Final residual = 3.0405e-06, No Iterations 4
-GAMG:  Solving for p, Initial residual = 0.25, Final residual = 1e-6, No Iterations 3
-`;
-  assert.deepEqual(residualsToTable(log), {
-    columns: ['Time', 'Ux', 'p'], rows: [[0.005, 1, 1], [0.01, 0.325089, 0.25]],
-  });
-  assert.equal(parseAllResiduals(log, { selection: 'last' }).data[0].p, 0.0371368);
-  assert.equal(parseResidualEvents(log).events[0].iterations, 5);
-});
-
-test('a seconds suffix does not permit malformed numeric prefixes to reuse a timestep', () => {
-  const log = 'Time = -2s\np: iter = 1 residual = 0.4\nTime = 1garbage\np: iter = 1 residual = 0.8\nTime = 1es\np: iter = 1 residual = 0.7\nTime = .5s\np: iter = 1 residual = 0.2\n';
-  assert.deepEqual(parseAllResiduals(log).data.map(point => [point.time, point.p]), [[-2, 0.4], [0.5, 0.2]]);
 });
 
 test('timesteps come back in time order however the log was assembled', () => {

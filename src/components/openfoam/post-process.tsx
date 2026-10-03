@@ -40,15 +40,12 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
-  describeDatasetName, summarizeColumn, sampleRowsForChart, buildCallTemplate, buildFunctionsEntry,
+  describeDatasetName, summarizeColumn, downsampleRows, buildCallTemplate, buildFunctionsEntry,
   buildCommandTemplate, parsePostProcessCommand, POST_PROCESS_NAMES,
   serializeCsv,
 } from '@/lib/postprocess';
-import { residualsToTable, type ResidualSelection } from '@/lib/residuals';
-import type { PostProcessJob } from '@/lib/postprocess-jobs';
+import { residualsToTable } from '@/lib/residuals';
 import ChartExportDialog, { type ChartExportSource } from '@/components/openfoam/chart-export';
-import PostProcessComparison from '@/components/openfoam/post-process-comparison';
-import { ANALYSIS_TRANSFER_EVENT, peekAnalysisTransfer, type AnalysisTransfer } from '@/lib/analysis-transfer';
 
 interface FileRef { name: string; times: string[]; bytes: number }
 interface Dataset { name: string; files: FileRef[] }
@@ -95,9 +92,6 @@ interface TableData {
   truncated: boolean;
   timesTruncated: boolean;
   runsTruncated: boolean;
-  diagnostics?: { skippedRows: number; nonFiniteCells: number };
-  omittedFeatures?: number;
-  logCoverage?: { returnedLines: number; maxLines: number; maxBytes: number };
 }
 
 interface CatalogArg {
@@ -284,15 +278,14 @@ function DocBlockView({ block }: { block: DocBlock }) {
  * uses them to watch a run — so this only reshapes, and the chart, the table,
  * the CSV and the image export then treat a log like any other dataset.
  */
-async function readResiduals(caseName: string, log: string, maxPoints = 4000, selection: ResidualSelection = 'first'): Promise<TableData> {
+async function readResiduals(caseName: string, log: string, maxPoints = 4000): Promise<TableData> {
   const response = await fetch(
     `/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(log)}&maxLines=50000`,
   );
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || 'Could not read the log');
 
-  const { columns, rows } = residualsToTable(payload.content || '', { selection });
-  const sampled = sampleRowsForChart(rows, maxPoints);
+  const { columns, rows } = residualsToTable(payload.content || '');
   // JSON has no NaN, so the API's statistics arrive with nulls where a value
   // could not be computed. Matching that here keeps ONE shape on the client
   // instead of two that differ only in how "no value" is spelled.
@@ -314,11 +307,11 @@ async function readResiduals(caseName: string, log: string, maxPoints = 4000, se
   return {
     mode: 'series',
     columns,
-    rows: sampled.rows,
+    rows: downsampleRows(rows, maxPoints),
     totalRows: rows.length,
     stats,
     notes: columns.length
-      ? [`${selection === 'maximum' ? 'Maximum' : selection === 'last' ? 'Last' : 'First'} initial residual per field and timestep, parsed from ${log === 'log' ? 'log' : `log.${log}`}`]
+      ? [`Initial residuals parsed from log.${log === 'log' ? '' : log}`]
       : ['No residuals found in this log'],
     times: [],
     shownTime: null,
@@ -326,15 +319,9 @@ async function readResiduals(caseName: string, log: string, maxPoints = 4000, se
     incompatible: [],
     overwritten: 0,
     synthesizedColumns: false,
-    truncated: payload.truncated === true,
+    truncated: false,
     timesTruncated: false,
     runsTruncated: false,
-    omittedFeatures: sampled.omittedFeatures,
-    logCoverage: {
-      returnedLines: Number(payload.returnedLines) || 0,
-      maxLines: Number(payload.maxLines) || 50000,
-      maxBytes: Number(payload.maxBytes) || 40 * 1024 * 1024,
-    },
   };
 }
 
@@ -343,9 +330,8 @@ async function readSelectionData(
   target: Selection,
   time?: string,
   maxPoints = 4000,
-  residualSelection: ResidualSelection = 'first',
 ): Promise<TableData> {
-  if (target.kind === 'log') return readResiduals(caseName, target.log, maxPoints, residualSelection);
+  if (target.kind === 'log') return readResiduals(caseName, target.log, maxPoints);
   const query = new URLSearchParams({
     action: 'data', case: caseName, dataset: target.dataset, file: target.file,
     maxPoints: String(maxPoints),
@@ -360,21 +346,9 @@ async function readSelectionData(
 export default function PostProcess({ caseName, active = true }: { caseName: string; active?: boolean }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const [inventoryTruncated, setInventoryTruncated] = useState(false);
-  const [residualSelection, setResidualSelection] = useState<ResidualSelection>('first');
   const [selected, setSelected] = useState<Selection | null>(null);
   const [data, setData] = useState<TableData | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
-  const [comparisonOpen, setComparisonOpen] = useState(false);
-  useEffect(() => {
-    const receive = (event?: Event) => {
-      const transfer = event ? (event as CustomEvent<AnalysisTransfer>).detail : peekAnalysisTransfer(caseName);
-      if (transfer?.caseName === caseName) setComparisonOpen(true);
-    };
-    receive();
-    window.addEventListener(ANALYSIS_TRANSFER_EVENT, receive);
-    return () => window.removeEventListener(ANALYSIS_TRANSFER_EVENT, receive);
-  }, [caseName]);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [copyingCsv, setCopyingCsv] = useState(false);
@@ -425,11 +399,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const [docLoading, setDocLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [runOutput, setRunOutput] = useState<string | null>(null);
-  const [computeJob, setComputeJob] = useState<PostProcessJob | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-  const [computeInstallationRevision, setComputeInstallationRevision] = useState(0);
-  const computeEpoch = useRef(0);
-  const watchedJob = useRef<string | null>(null);
 
   // An in-flight guard per request kind. Without it the follow timer stacks
   // requests on a slow WSL call and the last answer to arrive wins, which is
@@ -462,7 +431,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         if (!logsResponse.ok) throw new Error(logPayload.error || 'Could not list solver logs');
         if (requestId !== listRequestRef.current) return;
         setDatasets(payload.datasets ?? []);
-        setInventoryTruncated(payload.inventoryTruncated === true);
         setLogs(Array.isArray(logPayload.availableLogs) ? logPayload.availableLogs : []);
         setError(null);
       } catch (e: unknown) {
@@ -487,7 +455,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     const request = dataQueueRef.current.catch(() => undefined).then(async () => {
       if (requestId !== dataRequestRef.current) return;
       try {
-        const result = await readSelectionData(caseName, target, time, 4000, residualSelection);
+        const result = await readSelectionData(caseName, target, time);
         if (requestId !== dataRequestRef.current) return;
         setData(result);
         setError(null);
@@ -501,7 +469,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     });
     dataQueueRef.current = request;
     return request;
-  }, [caseName, residualSelection]);
+  }, [caseName]);
 
   useEffect(() => {
     if (active) void loadDatasets();
@@ -621,7 +589,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       listInFlight.current = null;
       setDatasets([]);
       setLogs([]);
-      setInventoryTruncated(false);
       setSelected(null);
       setData(null);
       setLoadingData(false);
@@ -693,7 +660,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
 
   const runFunction = async () => {
     if (!caseName || !commandText.trim()) return;
-    const epoch = ++computeEpoch.current;
     setRunning(true);
     setRunOutput(null);
     try {
@@ -709,85 +675,19 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'The function object could not be run');
-      if (epoch !== computeEpoch.current) return;
-      watchedJob.current = payload.job.id;
-      setComputeJob(payload.job);
-      setRunOutput(payload.job.output || '');
+      setRunOutput(payload.output || '');
+      if (payload.exitCode === 0) {
+        toast.success(`${payload.command} finished`);
+        await loadDatasets();
+      } else {
+        toast.error('OpenFOAM reported an error — see the output below');
+      }
     } catch (e: unknown) {
-      if (epoch !== computeEpoch.current) return;
       const message = e instanceof Error ? e.message : 'The function object could not be run';
       setRunOutput(message);
       toast.error(message);
-      setRunning(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!caseName || !active) return;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const epoch = computeEpoch.current;
-    const poll = async () => {
-      try {
-        const response = await fetch(`/api/postprocess?action=job&case=${encodeURIComponent(caseName)}`, { cache: 'no-store' });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Could not read the post-processing job');
-        if (disposed || epoch !== computeEpoch.current) return;
-        const job = payload.job as PostProcessJob | null;
-        setComputeJob(job);
-        const ongoing = job?.status === 'running' || job?.status === 'cancelling';
-        setRunning(ongoing);
-        if (job) setRunOutput(job.output);
-        if (ongoing) {
-          watchedJob.current = job.id;
-          timer = setTimeout(() => void poll(), 1000);
-        } else if (job && watchedJob.current === job.id) {
-          watchedJob.current = null;
-          if (job.status === 'done') toast.success(`${job.command} finished`);
-          else if (job.status === 'cancelled') toast.info('Post-processing cancelled');
-          else toast.error('OpenFOAM reported an error — see the output below');
-          await loadDatasets();
-        }
-      } catch (cause) {
-        if (!disposed && epoch === computeEpoch.current) {
-          setRunOutput(cause instanceof Error ? cause.message : 'Could not read the post-processing job');
-          timer = setTimeout(() => void poll(), 3000);
-        }
-      }
-    };
-    void poll();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [caseName, active, computeJob?.id, computeInstallationRevision, loadDatasets]);
-
-  useEffect(() => {
-    const changed = () => {
-      computeEpoch.current += 1;
-      watchedJob.current = null;
-      setComputeJob(null);
-      setRunning(false);
-      setCancelling(false);
-      setComputeInstallationRevision(value => value + 1);
-    };
-    window.addEventListener('foam-version-changed', changed);
-    return () => { computeEpoch.current += 1; window.removeEventListener('foam-version-changed', changed); };
-  }, []);
-
-  const cancelCompute = async () => {
-    if (!computeJob || cancelling) return;
-    const epoch = computeEpoch.current;
-    setCancelling(true);
-    try {
-      const response = await fetch('/api/postprocess', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel', case: caseName, id: computeJob.id }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not cancel post-processing');
-      if (epoch === computeEpoch.current) setComputeJob(payload.job);
-    } catch (cause) {
-      if (epoch === computeEpoch.current) toast.error(cause instanceof Error ? cause.message : 'Could not cancel post-processing');
     } finally {
-      if (epoch === computeEpoch.current) setCancelling(false);
+      setRunning(false);
     }
   };
 
@@ -1007,7 +907,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       // picture, so fetch the full parsed table instead of copying that visual
       // sample and calling it complete.
       const complete = data.totalRows > data.rows.length
-        ? await readSelectionData(caseName, selected, data.shownTime ?? undefined, 200000, residualSelection)
+        ? await readSelectionData(caseName, selected, data.shownTime ?? undefined, 200000)
         : data;
       await navigator.clipboard.writeText(serializeCsv(complete.columns, complete.rows));
       if (complete.truncated || complete.runsTruncated || complete.totalRows > complete.rows.length) {
@@ -1108,9 +1008,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         <span className="text-sm font-semibold">Post-Process</span>
         <Badge variant="secondary" className="font-mono text-[10px]">{caseName}</Badge>
         <span className="mx-1 h-6 w-px bg-border" />
-        <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" onClick={() => setComparisonOpen(true)}>
-          <LineChartIcon className="h-3.5 w-3.5" /> Compare…
-        </Button>
         <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" onClick={() => void openCatalog()}>
           <Sigma className="h-3.5 w-3.5" /> Compute…
         </Button>
@@ -1127,7 +1024,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
           <Radio className="h-3.5 w-3.5" /> Follow
         </Button>
         <div className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
-          {running && <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => setCatalogOpen(true)}><Loader2 className="mr-1 h-3 w-3 animate-spin" /> Computing…</Button>}
           {loadingData && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {data && <span className="font-mono">{data.totalRows} samples</span>}
         </div>
@@ -1138,11 +1034,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription className="text-xs">{error}</AlertDescription>
         </Alert>
-      )}
-      {inventoryTruncated && (
-        <div className="border-b bg-warning-soft/40 px-3 py-1.5 text-[10px] text-warning">
-          Result inventory is incomplete: only the first 20,000 output files were inspected.
-        </div>
       )}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[240px_minmax(320px,1fr)_290px]">
@@ -1260,16 +1151,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                 <span className="text-[10px] text-muted-foreground">of {data.times.length}</span>
               </div>
             )}
-            {selected?.kind === 'log' && (
-              <Select value={residualSelection} onValueChange={value => setResidualSelection(value as ResidualSelection)}>
-                <SelectTrigger aria-label="Initial residual selection per timestep" size="sm" className="h-7 w-36 text-[10px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="first">First initial residual</SelectItem>
-                  <SelectItem value="last">Last initial residual</SelectItem>
-                  <SelectItem value="maximum">Maximum initial residual</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
             <div className="ml-auto flex items-center gap-1">
               {view === 'chart' && (zoom || frame.width !== null || frame.height !== null) && (
                 <Button
@@ -1303,7 +1184,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
               <Button size="sm" variant={view === 'table' ? 'default' : 'ghost'} className="h-7 px-2 text-[10px]" onClick={() => setView('table')}>
                 <Table2 className="mr-1 h-3 w-3" /> Table
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data?.rows.length || copyingCsv} onClick={() => void copyCsv()}>
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" disabled={!data || copyingCsv} onClick={() => void copyCsv()}>
                 {copyingCsv ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Copy className="mr-1 h-3 w-3" />} CSV
               </Button>
               <Button
@@ -1319,11 +1200,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
             </div>
           </div>
 
-          {data && (
+          {data && (data.incompatible.length > 0 || data.synthesizedColumns || data.truncated || data.timesTruncated || data.runsTruncated || data.startTimes.length > 1) && (
             <div className="flex flex-wrap gap-x-4 gap-y-1 border-b bg-info-soft/40 px-3 py-1.5 text-[10px] text-muted-foreground">
-              <span>{data.mode === 'profile' ? `Snapshot ${data.shownTime ?? 'unknown'}` : 'Time series'} · {data.totalRows} retained samples{data.rows.length < data.totalRows ? ` · ${data.rows.length} chart points` : ''}</span>
-              {data.rows.length > 0 && <span>Coverage: {formatNumber(data.rows[0][0])}–{formatNumber(data.rows[data.rows.length - 1][0])} {data.columns[0]}</span>}
-              {data.logCoverage && <span>{data.logCoverage.returnedLines.toLocaleString()} log lines read · limit {data.logCoverage.maxLines.toLocaleString()} lines / {formatBytes(data.logCoverage.maxBytes)}</span>}
               {data.startTimes.length > 1 && (
                 <span className="inline-flex items-center gap-1">
                   <Info className="h-3 w-3" />
@@ -1335,12 +1213,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                 <span className="text-warning">Runs {data.incompatible.join(', ')} left out: their columns differ</span>
               )}
               {data.synthesizedColumns && <span className="text-warning">Column names were not in the file and have been numbered</span>}
-              {data.truncated && <span className="text-warning">{data.logCoverage ? 'Only the tail of the log is included; earlier history is missing' : 'The file was too large to read in full; statistics and CSV cover only retained data'}</span>}
+              {data.truncated && <span className="text-warning">The file was too large to read in full</span>}
               {data.timesTruncated && <span className="text-warning">Only the latest 20,000 written times are listed</span>}
               {data.runsTruncated && <span className="text-warning">Only the latest 200 restart files are included in this series</span>}
-              {Boolean(data.diagnostics?.skippedRows) && <span className="text-warning">{data.diagnostics!.skippedRows} malformed rows skipped</span>}
-              {Boolean(data.diagnostics?.nonFiniteCells) && <span className="text-warning">{data.diagnostics!.nonFiniteCells} non-finite cells shown as gaps</span>}
-              {Boolean(data.omittedFeatures) && <span className="text-warning">Chart budget omitted {data.omittedFeatures} extrema/gap anchors; use CSV for retained data</span>}
             </div>
           )}
 
@@ -1352,9 +1227,9 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   <p className="text-xs">Pick a result on the left, or compute one</p>
                 </div>
               </div>
-            ) : !data?.rows.length ? (
+            ) : !data ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : selected.kind === 'log' ? 'No solver residuals found in this log' : 'No readable data in this file'}
+                {loadingData ? <Loader2 className="h-5 w-5 animate-spin" /> : 'No readable data in this file'}
               </div>
             ) : view === 'chart' ? (
               <div className="flex h-full min-h-0 w-full justify-center overflow-auto">
@@ -1436,13 +1311,13 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   {visibleSeries.map(series => (
                     <Line
                       key={series.index}
-                      type="linear"
+                      type="monotone"
                       dataKey={`c${series.index}`}
                       name={series.name}
                       stroke={SERIES_COLORS[(series.index - 1) % SERIES_COLORS.length]}
                       strokeWidth={1.6}
                       dot={false}
-                      connectNulls={false}
+                      connectNulls
                       isAnimationActive={false}
                     />
                   ))}
@@ -1504,7 +1379,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         <aside className="flex min-h-0 flex-col border-l bg-muted/15">
           <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b px-2 text-xs font-semibold">
             <Sigma className="h-3.5 w-3.5" /> Series
-            {data && <Badge variant="outline" className="ml-auto text-[9px]">{visibleSeries.length}/{Math.max(0, data.columns.length - 1)}</Badge>}
+            {data && <Badge variant="outline" className="ml-auto text-[9px]">{visibleSeries.length}/{data.columns.length - 1}</Badge>}
           </div>
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-1.5 p-2">
@@ -1530,14 +1405,12 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                     <dl className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 pl-6 text-[9px]">
                       <dt className="text-muted-foreground">last</dt>
                       <dd className="text-right font-mono">{formatNumber(stat.last)}</dd>
-                      <dt className="text-muted-foreground" title={data.mode === 'profile' ? 'Arithmetic mean of the retained spatial samples' : 'Arithmetic mean over the final fifth of retained finite samples'}>{data.mode === 'profile' ? 'sample mean' : 'tail mean'}</dt>
-                      <dd className="text-right font-mono">{formatNumber(data.mode === 'profile' ? stat.mean : stat.tailMean)}</dd>
+                      <dt className="text-muted-foreground" title="Mean over the final fifth of the series">tail mean</dt>
+                      <dd className="text-right font-mono">{formatNumber(stat.tailMean)}</dd>
                       <dt className="text-muted-foreground">min / max</dt>
                       <dd className="truncate text-right font-mono">{formatNumber(stat.min)} / {formatNumber(stat.max)}</dd>
-                      {data.mode === 'series' && <>
-                        <dt className="text-muted-foreground">mean drift</dt>
-                        <dd className={`text-right font-medium ${badge.className}`} title={`${badge.title}. A stable mean does not prove physical convergence; oscillations may remain.`}>{badge.label}</dd>
-                      </>}
+                      <dt className="text-muted-foreground">drift</dt>
+                      <dd className={`text-right font-medium ${badge.className}`} title={badge.title}>{badge.label}</dd>
                     </dl>
                   </div>
                 );
@@ -1620,12 +1493,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                     <p>Pick a function object.</p>
                     <p className="mt-1">The list, the descriptions and the example call are read from
                       the OpenFOAM installation itself, so they match the version in use.</p>
-                    {computeJob && (
-                      <div className="mt-4 min-w-0 rounded border text-left">
-                        <p className="border-b px-2 py-1 font-mono text-[10px]">{computeJob.spec} · {computeJob.status}</p>
-                        <pre className="max-h-48 overflow-auto px-2 py-1.5 font-mono text-[10px]">{runOutput?.trim() || '(waiting for output)'}</pre>
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (
@@ -1930,8 +1797,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
 
                     {runOutput !== null && (
                       <div className="rounded border">
-                        <div className="border-b bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">OpenFOAM output {computeJob && <span className="ml-2 normal-case font-normal">{computeJob.status} · {Math.round(((computeJob.finishedAt ?? Date.now()) - computeJob.startedAt) / 1000)} s · {computeJob.spec}</span>}</div>
-                        {computeJob?.outputTruncated && <p className="px-2 py-1 text-[10px] text-warning">Showing the latest 262,144 characters of output.</p>}
+                        <div className="border-b bg-muted/40 px-2 py-1 text-[9px] font-semibold uppercase text-muted-foreground">OpenFOAM output</div>
                         <pre className="max-h-48 overflow-auto px-2 py-1.5 font-mono text-[10px] leading-relaxed">{runOutput.trim() || '(no output)'}</pre>
                       </div>
                     )}
@@ -1946,7 +1812,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                   </span>
                 )}
                 <div className="ml-auto flex items-center gap-2">
-                  {running && <Button size="sm" variant="outline" className="h-8 text-xs" disabled={cancelling || computeJob?.status === 'cancelling' || !computeJob} onClick={() => void cancelCompute()}><X className="mr-1 h-3.5 w-3.5" /> {cancelling || computeJob?.status === 'cancelling' ? 'Cancelling…' : 'Cancel computation'}</Button>}
                   <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setCatalogOpen(false)}>
                     <X className="mr-1 h-3.5 w-3.5" /> Close
                   </Button>
@@ -1967,7 +1832,6 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
       </Dialog>
 
       <ChartExportDialog open={exportOpen} onOpenChange={setExportOpen} source={exportSource} />
-      <PostProcessComparison open={comparisonOpen} onOpenChange={setComparisonOpen} caseName={caseName} initialSelection={selected} initialTime={data?.shownTime ?? undefined} initialResidualSelection={residualSelection} readData={readSelectionData} />
     </div>
   );
 }

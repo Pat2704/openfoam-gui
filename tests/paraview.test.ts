@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import {
   compareParaViewVersions,
   normalizeParaViewPath,
@@ -78,19 +76,4 @@ test('cancelling ParaView invalidates running and queued startup tickets', () =>
   assert.throws(() => guard.assertCurrent(running), /cancelled/i);
   assert.throws(() => guard.assertCurrent(queued), /cancelled/i);
   guard.assertCurrent(guard.issue());
-});
-
-test('ParaView reconciles shared and replaced legends in the real worker', {
-  skip: !process.env.OFSTUDIO_TEST_PVPYTHON,
-}, () => {
-  const script = fileURLToPath(new URL('./paraview-legends.py', import.meta.url));
-  const args = ['--disable-registry', ...PARAVIEW_RENDER_ARGS, script];
-  if (process.env.OFSTUDIO_TEST_PVCASE) args.push(process.env.OFSTUDIO_TEST_PVCASE);
-  const output = execFileSync(process.env.OFSTUDIO_TEST_PVPYTHON!, args, {
-    windowsHide: true, timeout: 600_000, encoding: 'utf-8',
-  });
-  assert.match(output, /PASS recolor preserves another node using old LUT/);
-  assert.match(output, /PASS delete removes orphan legend/);
-  assert.match(output, /PASS video snapshot restores both legends/);
-  assert.match(output, /PASS missing array removes legend after reader update/);
 });

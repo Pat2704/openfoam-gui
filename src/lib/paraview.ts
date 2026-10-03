@@ -2,9 +2,6 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_proc
 import { promises as fs, type Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { ParaViewDataTable } from './pvplots';
-import { WORKSPACE_PARAMETER_SCHEMA, parseParaViewWorkspace, type ParaViewWorkspace } from './paraview-workspace';
-import { probeRequest, findDataRequest, diagnosticRequest, diagnosticSettings, selectionRecipe, resampleRequest, volumeSettings, type ProbeResult, type FindDataResult, type VolumeSettings, type SelectionRecipe, type DiagnosticSettings } from './paraview-analysis';
 import {
   benchmarkFrames, buildVideoPlan, estimateRenderSeconds, videoConfirmation, videoFileName,
   type VideoFormat, type VideoPlan, type VideoRequest,
@@ -411,10 +408,7 @@ export type ParaViewNodeType =
   | 'Shrink'
   | 'IntegrateVariables'
   | 'PlotOverLine'
-  | 'TemporalStatistics'
-  | 'CFDGradient'
-  | 'Selection'
-  | 'ResampleToImage';
+  | 'TemporalStatistics';
 
 export interface ParaViewReaderState {
   caseType: string;
@@ -440,7 +434,6 @@ export interface ParaViewPipelineNode {
   type: ParaViewNodeType;
   parent: string | null;
   visible: boolean;
-  renderable?: boolean;
   representation: string;
   /** Representations this item's display offers (Feature Edges where the build has it). */
   representations?: string[];
@@ -481,11 +474,6 @@ export interface ParaViewPipelineNode {
   reflect?: { origin: [number, number, number]; normal: [number, number, number]; copyInput: boolean };
   shrink?: { factor: number };
   plotOverLine?: { point1: [number, number, number]; point2: [number, number, number]; resolution: number };
-  diagnostic?: DiagnosticSettings;
-  selection?: SelectionRecipe;
-  resample?: { dimensions: [number, number, number] };
-  volume?: VolumeSettings;
-  volumeCapabilities?: { supported: boolean; scalarArrays: { name: string; association: 'CELLS' | 'POINTS'; range: [number, number] }[]; reason?: string };
   manipulatorAvailable: boolean;
   manipulatorVisible: boolean;
 }
@@ -494,7 +482,6 @@ export interface ParaViewWorkbenchState {
   caseName: string;
   version: string;
   selectedId: string;
-  dataRevision: number;
   pipeline: ParaViewPipelineNode[];
   arrays: ParaViewArrayInfo[];
   times: number[];
@@ -508,7 +495,6 @@ export interface ParaViewWorkbenchState {
   view: ParaViewViewState;
   /** Movie writers this ParaView build has ('mp4' through Media Foundation on Windows). */
   videoFormats?: VideoFormat[];
-  analysisCapabilities?: { probe: boolean; findData: boolean; cfd: boolean; resample: boolean };
 }
 
 // A persistent pvpython process owns the ParaView pipeline. The browser can
@@ -541,8 +527,6 @@ except Exception:
 case_root = os.path.realpath(os.path.dirname(marker))
 nodes = OrderedDict()
 guides = {}
-legend_bars = {}
-data_revision = 0
 selected_id = 'reader'
 current_time = 0.0
 next_filter = 1
@@ -558,7 +542,7 @@ SUPPORTED_CASE_FILE_EXTENSIONS = {
 # The display representations the workbench offers, in menu order. Each item
 # offers only those its own display lists as available (Feature Edges draws
 # the silhouette and sharp edges of a surface, as in ParaView's own menu).
-DISPLAY_REPRESENTATIONS = ('Surface', 'Surface With Edges', 'Wireframe', 'Feature Edges', 'Points', 'Outline', 'Volume')
+DISPLAY_REPRESENTATIONS = ('Surface', 'Surface With Edges', 'Wireframe', 'Feature Edges', 'Points', 'Outline')
 
 def representations_for(display):
     try:
@@ -566,7 +550,7 @@ def representations_for(display):
     except Exception:
         available = []
     offered = [name for name in DISPLAY_REPRESENTATIONS if name in available]
-    return offered or [name for name in DISPLAY_REPRESENTATIONS if name not in ('Feature Edges', 'Volume')]
+    return offered or [name for name in DISPLAY_REPRESENTATIONS if name != 'Feature Edges']
 
 BACKGROUNDS = {
     'ParaView Dark': [0.18, 0.20, 0.24],
@@ -731,354 +715,18 @@ def arrays_for(proxy):
         pass
     return result
 
-def local_data(proxy):
-    algorithm = proxy.GetClientSideObject()
-    output = algorithm.GetOutputDataObject(0) if algorithm is not None else None
-    if output is None: raise RuntimeError('This local ParaView source does not expose numerical data.')
-    return output
-
-def data_blocks(output):
-    if not output.IsA('vtkCompositeDataSet'):
-        return [(0, 'Output', output)], False
-    from vtkmodules.vtkCommonDataModel import vtkCompositeDataSet
-    iterator = output.NewIterator()
-    iterator.SkipEmptyNodesOn()
-    if hasattr(iterator, 'VisitOnlyLeavesOn'): iterator.VisitOnlyLeavesOn()
-    result = []
-    iterator.InitTraversal()
-    while not iterator.IsDoneWithTraversal():
-        block = iterator.GetCurrentDataObject()
-        if block is not None and not block.IsA('vtkCompositeDataSet'):
-            if len(result) >= 256: return result, True
-            index = int(iterator.GetCurrentFlatIndex())
-            metadata = iterator.GetCurrentMetaData()
-            name = metadata.Get(vtkCompositeDataSet.NAME()) if metadata and metadata.Has(vtkCompositeDataSet.NAME()) else None
-            result.append((index, str(name or ('Block ' + str(index)))[:120], block))
-        iterator.GoToNextItem()
-    return result, False
-
-def data_attributes(block, association):
-    if association == 'ROWS' and block.IsA('vtkTable'): return block.GetRowData(), int(block.GetNumberOfRows())
-    if association == 'POINTS' and block.IsA('vtkDataSet'): return block.GetPointData(), int(block.GetNumberOfPoints())
-    if association == 'CELLS' and block.IsA('vtkDataSet'): return block.GetCellData(), int(block.GetNumberOfCells())
-    raise RuntimeError('That data association is not available on this block.')
-
-def data_columns(block, association):
-    attributes, count = data_attributes(block, association)
-    columns = [{'index': 0, 'label': 'Row index', 'name': 'Row index', 'kind': 'index', 'component': 0}]
-    accessors = [(None, 0, 'index')]
-    if association == 'POINTS':
-        for component, axis in enumerate(('X', 'Y', 'Z')):
-            columns.append({'index': len(columns), 'label': 'Coordinate ' + axis, 'name': 'Coordinate ' + axis, 'kind': 'coordinate', 'component': component})
-            accessors.append((None, component, 'coordinate'))
-    skipped = 0
-    limited = False
-    for index in range(attributes.GetNumberOfArrays()):
-        if len(columns) >= 128:
-            limited = True
-            break
-        array = attributes.GetAbstractArray(index)
-        if array is None or not array.IsA('vtkDataArray'):
-            skipped += 1
-            continue
-        components = int(array.GetNumberOfComponents())
-        name = str(array.GetName() or ('Array ' + str(index)))[:160]
-        offered = list(range(min(components, 16))) + ([-1] if 1 < components <= 16 else [])
-        if components > 16: limited = True
-        for component in offered:
-            if len(columns) >= 128:
-                limited = True
-                break
-            label = name if components == 1 else name + (' (Magnitude)' if component == -1 else ' [' + str(component) + ']')
-            columns.append({'index': len(columns), 'label': label, 'name': name, 'kind': 'array', 'component': component})
-            accessors.append((array, component, 'array'))
-    return columns, accessors, count, limited, skipped
-
-def data_integer(value, name, maximum=2147483647):
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
-        raise RuntimeError('Invalid data ' + name + '.')
-    return value
-
-def data_table(data):
-    identifier = str(data.get('id', ''))
-    if identifier not in nodes: raise RuntimeError('The pipeline output has changed. Refresh its data.')
-    if data_integer(data.get('revision'), 'revision') != data_revision or data.get('time') != current_time:
-        raise RuntimeError('The pipeline data has changed. Refresh its data.')
-    mode = data.get('mode')
-    if mode not in ('schema', 'page', 'chart', 'export'): raise RuntimeError('Unsupported data mode.')
-    proxy = nodes[identifier]['proxy']
-    update_node_output(identifier)
-    blocks, blocks_limited = data_blocks(local_data(proxy))
-    if not blocks: raise RuntimeError('The selected output has no data blocks.')
-    requested_block = data_integer(data.get('block', blocks[0][0]), 'block')
-    chosen = next((item for item in blocks if item[0] == requested_block), None)
-    if chosen is None: raise RuntimeError('That data block is no longer available.')
-    block = chosen[2]
-    associations = ['ROWS'] if block.IsA('vtkTable') else ['POINTS', 'CELLS'] if block.IsA('vtkDataSet') else []
-    if not associations: raise RuntimeError('This block has no supported numeric table.')
-    default_association = associations[0]
-    if 'POINTS' in associations and 'CELLS' in associations:
-        point_arrays = block.GetPointData()
-        has_point_values = any(point_arrays.GetAbstractArray(i).IsA('vtkDataArray') and
-            point_arrays.GetAbstractArray(i).GetName() != 'vtkValidPointMask' for i in range(point_arrays.GetNumberOfArrays()))
-        cell_arrays = block.GetCellData()
-        has_cell_values = any(cell_arrays.GetAbstractArray(i).IsA('vtkDataArray') for i in range(cell_arrays.GetNumberOfArrays()))
-        if not has_point_values and has_cell_values: default_association = 'CELLS'
-    association = data.get('association', default_association)
-    if association not in associations: raise RuntimeError('Unsupported data association for this block.')
-    columns, accessors, total, columns_limited, skipped = data_columns(block, association)
-    requested = data.get('columns', list(range(min(12, len(columns)))))
-    if not isinstance(requested, list) or not 1 <= len(requested) <= 16: raise RuntimeError('Choose between 1 and 16 numeric columns.')
-    requested = list(dict.fromkeys(data_integer(value, 'column', len(columns)-1) for value in requested))
-    offset = data_integer(data.get('offset', 0), 'offset')
-    row_limit = 200 if mode == 'page' else 20000 if mode == 'chart' else 200000 if mode == 'export' else 0
-    row_limit = min(row_limit, 1000000 // len(requested))
-    attributes, _ = data_attributes(block, association)
-    mask = attributes.GetArray('vtkValidPointMask') if association == 'POINTS' else None
-    rows, invalid_rows, nonfinite = [], 0, 0
-    byte_count = 0
-    for index in range(min(offset, total), min(total, offset + row_limit)):
-        invalid = mask is not None and (index >= mask.GetNumberOfTuples() or mask.GetComponent(index, 0) != 1)
-        row_nonfinite = 0
-        row = []
-        for column in requested:
-            array, component, kind = accessors[column]
-            if kind == 'index': value = index
-            elif kind == 'coordinate': value = block.GetPoint(index)[component]
-            elif index >= array.GetNumberOfTuples() or (invalid and columns[column]['name'] not in ('arc_length', 'vtkValidPointMask')):
-                value = None
-            else:
-                if component == -1:
-                    value = math.hypot(*(array.GetComponent(index, i) for i in range(array.GetNumberOfComponents())))
-                else: value = array.GetComponent(index, component)
-            if value is not None and not math.isfinite(value):
-                row_nonfinite += 1
-                value = None
-            row.append(value)
-        byte_count += len(json.dumps(row, separators=(',', ':')))
-        if byte_count > 4000000: break
-        rows.append(row)
-        if invalid: invalid_rows += 1
-        nonfinite += row_nonfinite
-    return {
-        'id': identifier, 'revision': data_revision, 'time': current_time,
-        'block': chosen[0], 'blocks': [{'index': item[0], 'label': item[1]} for item in blocks], 'blocksLimited': blocks_limited,
-        'association': association, 'associations': associations, 'columns': columns,
-        'columnsLimited': columns_limited, 'nonNumericColumns': skipped, 'selectedColumns': requested,
-        'rows': rows, 'totalRows': total, 'offset': min(offset, total),
-        'limited': mode != 'schema' and (offset > 0 or len(rows) < total),
-        'invalidRows': invalid_rows, 'nonFiniteValues': nonfinite, 'rowLimit': row_limit,
-    }
-
-ANALYSIS_SCAN_LIMIT = 200000
-SELECTION_EXTRACT_LIMIT = 20000
-
-def analysis_source(data, require_selected=True):
-    identifier = data.get('id')
-    if identifier not in nodes or (require_selected and identifier != selected_id): raise RuntimeError('The selected pipeline item changed. Refresh the analysis.')
-    if data.get('revision') != data_revision or data.get('time') != current_time: raise RuntimeError('The pipeline or timestep changed. Refresh the analysis.')
-    update_node_output(identifier)
-    return identifier, nodes[identifier]['proxy']
-
-def analysis_block(proxy, index):
-    blocks, limited = data_blocks(local_data(proxy))
-    item = next((block for block in blocks if block[0] == index), None)
-    if item is None or not item[2].IsA('vtkDataSet'): raise RuntimeError('Choose a geometric data block.')
-    return item[2]
-
-def analysis_probe(data):
-    identifier, proxy = analysis_source(data)
-    block = analysis_block(proxy, data['block'])
-    association = data['association']
-    attributes, _ = data_attributes(block, association)
-    from vtkmodules.vtkCommonCore import vtkPoints
-    from vtkmodules.vtkCommonDataModel import vtkPolyData
-    from vtkmodules.vtkFiltersCore import vtkProbeFilter
-    source = block.NewInstance(); source.ShallowCopy(block)
-    # Explicitly select the interpolation semantics. Point arrays interpolate;
-    # cell arrays keep the containing cell's value, never an invented average.
-    if association == 'POINTS': source.GetCellData().Initialize()
-    else: source.GetPointData().Initialize()
-    points = vtkPoints(); points.SetDataTypeToDouble(); points.InsertNextPoint(*data['position'])
-    cloud = vtkPolyData(); cloud.SetPoints(points)
-    probe = vtkProbeFilter(); probe.SetInputData(cloud); probe.SetSourceData(source); probe.Update()
-    output = probe.GetOutput().GetPointData()
-    mask = output.GetArray('vtkValidPointMask')
-    inside = mask is not None and mask.GetNumberOfTuples() > 0 and mask.GetComponent(0, 0) == 1
-    values, limited = [], False
-    for index in range(attributes.GetNumberOfArrays()):
-        original = attributes.GetArray(index)
-        if original is None or not original.GetName() or original.GetName() == 'vtkValidPointMask': continue
-        if len(values) >= 16 or original.GetNumberOfComponents() > 16: limited = True; continue
-        array = output.GetArray(original.GetName())
-        numbers = [array.GetComponent(0, component) if inside and array is not None and array.GetNumberOfTuples() else None for component in range(original.GetNumberOfComponents())]
-        numbers = [value if value is not None and math.isfinite(value) else None for value in numbers]
-        magnitude = math.hypot(*numbers) if numbers and all(value is not None for value in numbers) else None
-        if magnitude is not None and not math.isfinite(magnitude): magnitude = None
-        values.append({'name': original.GetName(), 'components': numbers, 'magnitude': magnitude})
-    return {'id': identifier, 'revision': data_revision, 'time': current_time, 'block': data['block'], 'association': association,
-        'position': data['position'], 'inside': inside, 'values': values, 'limited': limited,
-        'note': 'Point values are interpolated within the source cell.' if association == 'POINTS' else 'Cell values belong to the containing cell; no point interpolation is applied.'}
-
-def matching_selection(proxy, settings, include_ids=False):
-    block = analysis_block(proxy, settings['block'])
-    attributes, total = data_attributes(block, settings['association'])
-    array = attributes.GetArray(settings['name'])
-    if array is None or not array.IsA('vtkDataArray'): raise RuntimeError('That numeric array is unavailable in this block.')
-    components = array.GetNumberOfComponents(); component = settings['component']
-    if component < -1 or component >= components or components > 16: raise RuntimeError('That component is unavailable.')
-    mask = attributes.GetArray('vtkValidPointMask') if settings['association'] == 'POINTS' else None
-    rows, matches, scanned, ids = [], 0, min(total, ANALYSIS_SCAN_LIMIT), []
-    for index in range(scanned):
-        if index >= array.GetNumberOfTuples() or (mask is not None and (index >= mask.GetNumberOfTuples() or mask.GetComponent(index, 0) != 1)): continue
-        value = math.hypot(*(array.GetComponent(index, i) for i in range(components))) if component == -1 else array.GetComponent(index, component)
-        if not math.isfinite(value) or value < settings['lower'] or value > settings['upper']: continue
-        matches += 1
-        if include_ids and len(ids) < SELECTION_EXTRACT_LIMIT: ids.append(index)
-        if len(rows) < 200:
-            if settings['association'] == 'POINTS': coordinate = block.GetPoint(index)
-            else:
-                # Compute only displayed cell centers, never a full CellCenters
-                # dataset for millions of input cells during a bounded scan.
-                from vtkmodules.vtkCommonCore import reference
-                cell = block.GetCell(index); parametric = [0.0, 0.0, 0.0]; coordinate = [0.0, 0.0, 0.0]
-                sub_id = reference(cell.GetParametricCenter(parametric))
-                if cell.GetNumberOfPoints() > 10000: coordinate = [None, None, None]
-                else: cell.EvaluateLocation(sub_id, parametric, coordinate, [0.0] * cell.GetNumberOfPoints())
-            coordinate = [value if value is not None and math.isfinite(value) else None for value in coordinate]
-            rows.append({'index': index, 'coordinate': coordinate, 'value': value})
-    if include_ids and (scanned < total or matches > SELECTION_EXTRACT_LIMIT): raise RuntimeError('Narrow the selection: extraction requires a complete scan of at most 200,000 tuples and at most 20,000 matches.')
-    return block, ids, {'rows': rows, 'matched': matches, 'scanned': scanned, 'total': total, 'limited': scanned < total or matches > len(rows), 'scanLimited': scanned < total}
-
-def find_data(data):
-    identifier, proxy = analysis_source(data)
-    _, _, result = matching_selection(proxy, data)
-    return dict(data, **result)
-
-def selection_output(parent_id, settings):
-    block, ids, _ = matching_selection(nodes[parent_id]['proxy'], settings, True)
-    from vtkmodules.vtkCommonCore import vtkIdTypeArray
-    from vtkmodules.vtkCommonDataModel import vtkSelection, vtkSelectionNode
-    from vtkmodules.vtkFiltersExtraction import vtkExtractSelection
-    array = vtkIdTypeArray()
-    for identifier in ids: array.InsertNextValue(identifier)
-    item = vtkSelectionNode(); item.SetContentType(vtkSelectionNode.INDICES)
-    item.SetFieldType(vtkSelectionNode.POINT if settings['association'] == 'POINTS' else vtkSelectionNode.CELL)
-    item.SetSelectionList(array); selection = vtkSelection(); selection.AddNode(item)
-    extract = vtkExtractSelection(); extract.SetInputData(0, block); extract.SetInputData(1, selection); extract.Update()
-    output = extract.GetOutput().NewInstance(); output.ShallowCopy(extract.GetOutput())
-    return output
-
-def update_node_output(identifier, visited=None):
-    if visited is None: visited = set()
-    if identifier in visited: return
-    node = nodes[identifier]
-    if node['parent'] is not None: update_node_output(node['parent'], visited)
-    if node['type'] == 'Selection': node['proxy'].GetClientSideObject().SetOutput(selection_output(node['parent'], node['selection']))
-    node['proxy'].UpdatePipeline(time=current_time)
-    visited.add(identifier)
-
-def create_selection(settings):
-    parent_id = selected_id
-    output = selection_output(parent_id, settings)
-    proxy = TrivialProducer(registrationName='Selected Data')
-    try:
-        proxy.GetClientSideObject().SetOutput(output)
-        register_filter('Selection', proxy, parent_id, {'selection': settings})
-    except Exception:
-        try: Delete(proxy)
-        except Exception: pass
-        raise
-
-def apply_diagnostic(proxy, parent_id, settings):
-    chosen = next((array for array in arrays_for(nodes[parent_id]['proxy']) if array['association'] == settings['association'] and array['name'] == settings['name'] and array['components'] == 3), None)
-    if chosen is None: raise RuntimeError('CFD diagnostics require a three-component vector from the chosen association.')
-    required = ('ScalarArray', 'ComputeGradient', 'ComputeVorticity', 'ComputeDivergence', 'ComputeQCriterion', 'ResultArrayName', 'VorticityArrayName', 'DivergenceArrayName', 'QCriterionArrayName')
-    if any(name not in proxy.ListProperties() for name in required): raise RuntimeError('This ParaView Gradient filter does not expose the requested vector diagnostics.')
-    proxy.ScalarArray = [settings['association'], settings['name']]
-    proxy.ComputeGradient = 1; proxy.ComputeVorticity = 1; proxy.ComputeDivergence = 1; proxy.ComputeQCriterion = 1
-    proxy.ResultArrayName = settings['prefix'] + 'Gradient'; proxy.VorticityArrayName = settings['prefix'] + 'Vorticity'
-    proxy.DivergenceArrayName = settings['prefix'] + 'Divergence'; proxy.QCriterionArrayName = settings['prefix'] + 'QCriterion'
-    proxy.UpdatePipeline(time=current_time)
-    names = {array['name'] for array in arrays_for(proxy)}
-    if any(settings['prefix'] + suffix not in names for suffix in ('Gradient', 'Vorticity', 'Divergence', 'QCriterion')): raise RuntimeError('ParaView could not compute all vector diagnostics for this input.')
-
-def create_diagnostic(settings):
-    parent_id = selected_id
-    proxy = make_filter(('Gradient', 'GradientOfUnstructuredDataSet'), {'registrationName': 'CFD Diagnostics', 'Input': nodes[parent_id]['proxy']})
-    try:
-        apply_diagnostic(proxy, parent_id, settings)
-        register_filter('CFDGradient', proxy, parent_id, {'diagnostic': settings})
-    except Exception:
-        try: Delete(proxy)
-        except Exception: pass
-        raise
-
-def create_resample(dimensions):
-    parent_id = selected_id
-    bounds = bounds_for(nodes[parent_id]['proxy'])
-    if any(bounds[i+1] <= bounds[i] for i in (0, 2, 4)): raise RuntimeError('Resampling requires nonzero XYZ bounds.')
-    proxy = make_filter(('ResampleToImage',), {'registrationName': 'Resample to Image', 'Input': nodes[parent_id]['proxy']})
-    try:
-        proxy.UseInputBounds = 1; proxy.SamplingDimensions = dimensions
-        register_filter('ResampleToImage', proxy, parent_id, {'resample': {'dimensions': dimensions}})
-    except Exception:
-        try: Delete(proxy)
-        except Exception: pass
-        raise
-
-def validate_volume(raw):
-    if not isinstance(raw, dict) or set(raw) != {'opacityPoints', 'unitDistance'}: raise RuntimeError('Invalid volume opacity settings.')
-    distance = raw['unitDistance']; points = raw['opacityPoints']
-    if not isinstance(distance, (float, int)) or isinstance(distance, bool) or not math.isfinite(distance) or not 1e-12 <= distance <= 1e15: raise RuntimeError('Opacity unit distance must be positive.')
-    if not isinstance(points, list) or not 2 <= len(points) <= 16: raise RuntimeError('Use between two and sixteen opacity points.')
-    last = -float('inf')
-    for point in points:
-        if not isinstance(point, list) or len(point) != 2 or any(isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) for value in point): raise RuntimeError('Invalid opacity point.')
-        if point[0] <= last or abs(point[0]) > 1e15 or not 0 <= point[1] <= 1: raise RuntimeError('Opacity points must increase with opacity between zero and one.')
-        last = point[0]
-    return raw
-
-def capture_volume(node):
-    settings = node.get('volume')
-    if settings is None: return None
-    try:
-        values = list(node['display'].ScalarOpacityFunction.Points)
-        distance = float(node['display'].ScalarOpacityUnitDistance)
-        return validate_volume({'opacityPoints': [[values[index], values[index+1]] for index in range(0, len(values), 4)], 'unitDistance': distance})
-    except Exception:
-        return settings
-
-def volume_capabilities(node):
-    scalars = [array for array in arrays_for(node['proxy']) if array['components'] == 1 and array['name'] != 'vtkValidPointMask']
-    supported = node['display'] is not None and 'Volume' in representations_for(node['display'])
-    if supported:
-        blocks, _ = data_blocks(local_data(node['proxy']))
-        supported = any(block.IsA('vtkDataSet') and any(block.GetCell(index).GetCellDimension() == 3 for index in range(min(32, block.GetNumberOfCells()))) for _, _, block in blocks)
-    return {'supported': supported, 'scalarArrays': scalars, 'reason': '' if supported else 'Volume requires a supported three-dimensional cell dataset. Try the volume mesh or Resample to Image.'}
-
-def changed_state():
-    global data_revision
-    data_revision += 1
-    return state()
-
 def node_state(identifier, node):
     state = {
         'id': identifier, 'label': node['label'], 'type': node['type'],
         'parent': node['parent'], 'visible': node['visible'],
-        'renderable': node['display'] is not None,
         'representation': node['representation'], 'opacity': node['opacity'],
         'lineWidth': node['lineWidth'], 'pointSize': node['pointSize'],
         'color': node['color'],
-        'representations': representations_for(node['display']) if node['display'] is not None else [],
+        'representations': representations_for(node['display']),
         'manipulatorAvailable': node['type'] in ('Slice', 'Clip', 'StreamTracer', 'PlotOverLine'),
         'manipulatorVisible': manipulator_visible and identifier == selected_id,
     }
     if node.get('filePath'): state['filePath'] = node['filePath']
-    for name in ('diagnostic', 'selection', 'resample'):
-        if name in node: state[name] = node[name]
-    if 'volume' in node: state['volume'] = capture_volume(node)
-    state['volumeCapabilities'] = volume_capabilities(node)
     proxy = node['proxy']
     if node['type'] == 'Slice':
         state['origin'] = list(proxy.SliceType.Origin)
@@ -1115,12 +763,10 @@ def node_state(identifier, node):
 
 def state():
     active = nodes[selected_id]['proxy']
-    update_node_output(selected_id)
-    sync_legends()
+    active.UpdatePipeline(time=current_time)
     info = active.GetDataInformation()
     return {
         'caseName': case_name, 'version': pv_version, 'selectedId': selected_id,
-        'dataRevision': data_revision,
         'pipeline': [node_state(identifier, node) for identifier, node in nodes.items()],
         'arrays': arrays_for(active), 'times': times, 'time': current_time,
         'points': int(info.GetNumberOfPoints()), 'cells': int(info.GetNumberOfCells()),
@@ -1128,34 +774,10 @@ def state():
         'availableFilters': filter_capabilities(),
         'reader': reader_metadata(), 'view': view_metadata(),
         'videoFormats': supported_video_formats,
-        'analysisCapabilities': {'probe': True, 'findData': True, 'cfd': any(globals().get(name) is not None for name in ('Gradient', 'GradientOfUnstructuredDataSet')), 'resample': globals().get('ResampleToImage') is not None},
     }
-
-def sync_legends():
-    # A colour map is shared by its displays. Keep its bar if any visible
-    # display requests it, and hide tracked bars whose arrays were replaced.
-    wanted = set()
-    for node in nodes.values():
-        color = node['color']
-        if not node['visible'] or not color['legend'] or color['association'] not in ('CELLS', 'POINTS') or not color['name']:
-            continue
-        if not any(a['association'] == color['association'] and a['name'] == color['name'] for a in arrays_for(node['proxy'])):
-            continue
-        try:
-            lut = node['display'].LookupTable
-            if lut is None: continue
-            wanted.add(lut)
-            if lut not in legend_bars:
-                node['display'].SetScalarBarVisibility(view, True)
-                legend_bars[lut] = GetScalarBar(lut, view)
-        except Exception:
-            continue
-    for lut, bar in legend_bars.items():
-        set_if_supported(bar, 'Visibility', 1 if lut in wanted else 0)
 
 def apply_display(node):
     display = node['display']
-    if display is None: return
     display.Representation = node['representation']
     display.Opacity = node['opacity']
     display.Visibility = 1 if node['visible'] else 0
@@ -1163,10 +785,6 @@ def apply_display(node):
     set_if_supported(display, 'PointSize', node['pointSize'])
     set_if_supported(display, 'EdgeColor', [0.08, 0.08, 0.08])
     color = node['color']
-    if node['representation'] == 'Volume':
-        if not volume_capabilities(node)['supported']: raise RuntimeError('Volume rendering is unavailable for this geometry.')
-        if not any(array['name'] == color['name'] and array['association'] == color['association'] and array['components'] == 1 for array in arrays_for(node['proxy'])): raise RuntimeError('Volume rendering requires an available scalar field.')
-    if 'volume' in node and not set_if_supported(display, 'UseSeparateColorMap', 1): raise RuntimeError('This ParaView display does not support independent volume transfer functions.')
     if color['association'] == 'SOLID' or not color['name']:
         # ParaView 6 raises "invalid association NONE" from ColorBy(None) for
         # OpenFOAM meshes without result arrays. Setting ColorArrayName is the
@@ -1175,29 +793,27 @@ def apply_display(node):
         except Exception:
             try: ColorBy(display, None)
             except Exception: pass
+        try: display.SetScalarBarVisibility(view, False)
+        except Exception: pass
         return
     if color['association'] == 'BLOCKS':
         try: ColorBy(display, ('FIELD', 'vtkBlockColors'))
         except Exception:
             try: display.ColorArrayName = [None, '']
             except Exception: pass
+        try: display.SetScalarBarVisibility(view, False)
+        except Exception: pass
         return
     ColorBy(display, (color['association'], color['name']))
     try:
         display.RescaleTransferFunctionToDataRange(True, False)
-        lut = display.LookupTable or GetColorTransferFunction(color['name'])
+        lut = GetColorTransferFunction(color['name'])
         if color['preset'] in available_presets: lut.ApplyPreset(color['preset'], True)
     except Exception:
         pass
-    if 'volume' in node:
-        settings = validate_volume(node['volume'])
-        opacity = GetOpacityTransferFunction(color['name'], display, separate=True)
-        opacity.Points = [value for point in settings['opacityPoints'] for value in (point[0], point[1], 0.5, 0.0)]
-        display.ScalarOpacityFunction = opacity
-        if not set_if_supported(display, 'ScalarOpacityUnitDistance', settings['unitDistance']): raise RuntimeError('This display does not support volume opacity distance.')
+    display.SetScalarBarVisibility(view, bool(color['legend']))
 
 def render(identifier, width, height, quality=92):
-    sync_legends()
     width = max(320, min(1920, int(width or 1000)))
     height = max(240, min(1200, int(height or 700)))
     quality = max(35, min(95, int(quality or 92)))
@@ -1216,10 +832,9 @@ def set_time(value):
     current_time = min(times, key=lambda item: abs(item - target))
     scene.AnimationTime = current_time
     view.ViewTime = current_time
-    visited = set()
-    for identifier in nodes: update_node_output(identifier, visited)
+    for node in nodes.values():
+        node['proxy'].UpdatePipeline(time=current_time)
     for node in nodes.values(): apply_display(node)
-    sync_legends()
 
 def refresh_reader(follow_latest=True):
     global times, current_time, raw_times
@@ -1442,7 +1057,7 @@ def register_filter(kind, proxy, parent_id, extra=None, hide_parent=True):
     if hide_parent:
         Hide(parent['proxy'], view)
         parent['visible'] = False
-        if parent['display'] is not None: parent['display'].Visibility = 0
+        parent['display'].Visibility = 0
     display = Show(proxy, view)
     line_width = 3.0 if kind in ('StreamTracer', 'PlotOverLine', 'ExtractEdges') else 1.0
     representation = 'Points' if kind in ('CellCenters', 'IntegrateVariables') else 'Surface'
@@ -1480,21 +1095,20 @@ def open_case_file(relative_path):
     try:
         proxy.UpdatePipelineInformation()
         proxy.UpdatePipeline(time=current_time)
-        table_only = local_data(proxy).IsA('vtkTable')
-        display = None if table_only else Show(proxy, view)
+        display = Show(proxy, view)
         identifier = 'source-' + str(next_filter)
         next_filter += 1
         nodes[identifier] = {
             'proxy': proxy, 'display': display, 'label': label,
             'type': 'CaseFileReader', 'parent': None, 'filePath': safe_relative,
-            'visible': not table_only, 'representation': 'Surface', 'opacity': 1.0,
+            'visible': True, 'representation': 'Surface', 'opacity': 1.0,
             'lineWidth': 1.0, 'pointSize': 3.0,
             'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
         }
         selected_id = identifier
         set_manipulator(False)
         apply_display(nodes[identifier])
-        if display is not None: ResetCamera(view)
+        ResetCamera(view)
     except Exception:
         if identifier in nodes: del nodes[identifier]
         selected_id = previous_selected
@@ -1717,18 +1331,13 @@ def delete_selected():
     del nodes[identifier]
     selected_id = parent_id or 'reader'
     parent = nodes[selected_id]
-    parent['visible'] = parent['display'] is not None
-    if parent['display'] is not None: parent['display'].Visibility = 1
+    parent['visible'] = True
+    parent['display'].Visibility = 1
     ResetCamera(view)
 
 def update_selected(data):
     node = selected_node()
     display = node['display']
-    target_representation = data.get('representation', node['representation'])
-    target_color = data.get('color', node['color'])
-    if target_representation == 'Volume':
-        if not volume_capabilities(node)['supported']: raise RuntimeError('Volume rendering is unavailable for this geometry.')
-        if not isinstance(target_color, dict) or not any(array['name'] == target_color.get('name') and array['association'] == target_color.get('association') and array['components'] == 1 for array in arrays_for(node['proxy'])): raise RuntimeError('Choose a scalar field before enabling Volume.')
     if 'representation' in data:
         if data['representation'] not in representations_for(display): raise RuntimeError('Unsupported representation.')
         node['representation'] = data['representation']
@@ -1750,14 +1359,6 @@ def update_selected(data):
             'preset': str(color.get('preset', node['color']['preset'])),
             'legend': bool(color.get('legend', node['color']['legend'])),
         }
-    if 'volume' in data: node['volume'] = validate_volume(data['volume'])
-    if node['type'] == 'CFDGradient' and 'diagnostic' in data:
-        apply_diagnostic(node['proxy'], node['parent'], data['diagnostic']); node['diagnostic'] = data['diagnostic']
-    if node['type'] == 'Selection' and 'selection' in data:
-        output = selection_output(node['parent'], data['selection'])
-        node['proxy'].GetClientSideObject().SetOutput(output); node['selection'] = data['selection']
-    if node['type'] == 'ResampleToImage' and 'resample' in data:
-        node['proxy'].SamplingDimensions = data['resample']['dimensions']; node['resample'] = data['resample']
     if node['type'] in ('Slice', 'Clip'):
         target = node['proxy'].SliceType if node['type'] == 'Slice' else node['proxy'].ClipType
         if 'origin' in data: target.Origin = vector(data['origin'], list(target.Origin))
@@ -1931,157 +1532,6 @@ VIDEO_SIZES = ((854, 480), (1280, 720), (1920, 1080), (3840, 2160))
 VIDEO_FPS = (12, 24, 25, 30, 60)
 VIDEO_MAX_FRAMES = 216001
 
-WORKSPACE_PARAMETER_SCHEMA = ${JSON.stringify(WORKSPACE_PARAMETER_SCHEMA)}
-
-def capture_workspace():
-    metadata = reader_metadata()
-    pipeline = []
-    for identifier, node in nodes.items():
-        settings = node_state(identifier, node)
-        parameters = {key: settings[key] for key in WORKSPACE_PARAMETER_SCHEMA[node['type']]}
-        parameters.update({'lineWidth': node['lineWidth'], 'pointSize': node['pointSize']})
-        if 'volume' in node: parameters['volume'] = settings['volume']
-        item = {'id': identifier, 'type': node['type'], 'parent': node['parent'], 'parameters': parameters}
-        if node['type'] == 'CaseFileReader': item['filePath'] = node['filePath']
-        pipeline.append(item)
-    return {
-        'format': 'openfoam-studio-paraview', 'version': 1, 'caseName': case_name,
-        'paraviewVersion': pv_version, 'selectedId': selected_id,
-        'reader': {'caseType': metadata['caseType'], 'regions': metadata['selectedRegions']},
-        'nodes': pipeline, 'view': capture_view(), 'centerAxes': view_metadata()['centerAxes'],
-    }
-
-def restore_workspace(workspace):
-    global nodes, reader, selected_id, next_filter, guides, times, raw_times, current_time, manipulator_visible
-    # Browser requests are validated by the shared TS parser before entering
-    # this fixed command. Recheck runtime dependencies before changing the graph.
-    if not isinstance(workspace, dict) or workspace.get('format') != 'openfoam-studio-paraview' or workspace.get('version') != 1:
-        raise RuntimeError('Unsupported workspace format or version.')
-    if workspace.get('caseName') != case_name: raise RuntimeError('Open the workspace in its original case.')
-    pipeline = workspace.get('nodes')
-    if not isinstance(pipeline, list) or not pipeline or len(pipeline) > 64: raise RuntimeError('Invalid workspace pipeline.')
-    available = filter_capabilities()
-    for item in pipeline:
-        if item['type'] == 'CaseFileReader': resolve_case_file(item['filePath'])
-        elif item['type'] not in ('OpenFOAMReader', 'Selection', 'CFDGradient', 'ResampleToImage') and item['type'] not in available:
-            raise RuntimeError('This ParaView build does not provide the workspace filter ' + item['type'] + '.')
-    for snapshot in [workspace['view']] + [segment['view'] for segment in workspace.get('video', {}).get('segments', [])]:
-        for settings in snapshot['nodes'].values():
-            preset = settings['color']['preset']
-            if preset and preset not in available_presets: raise RuntimeError('The workspace color preset is unavailable in this ParaView build: ' + preset)
-    previous = (nodes, reader, selected_id, next_filter, guides, times, raw_times, current_time, manipulator_visible)
-    old_sources = set(GetSources().values())
-    old_view = capture_view()
-    old_center = view_metadata()['centerAxes']
-    staged_reader = None
-    try:
-        # Keep the live proxies until every recreated source, filter and display
-        # has passed validation. On failure the same live graph is restored.
-        nodes = OrderedDict(); guides = {}; manipulator_visible = False
-        selected_id = 'reader'; next_filter = 100000000
-        staged_reader = OpenFOAMReader(registrationName='Workspace OpenFOAM', FileName=marker)
-        reader = staged_reader
-        set_if_supported(reader, 'SkipZeroTime', 0)
-        set_if_supported(reader, 'ReadAllFilesToDetermineStructure', 1)
-        reader.UpdatePipelineInformation()
-        mode = workspace['reader']['caseType']
-        if mode not in available_values(reader, 'CaseType'): raise RuntimeError('The saved case mode is unavailable.')
-        if mode == 'Decomposed Case' and not reader_metadata()['decomposedAvailable']: raise RuntimeError('The saved decomposed case no longer has processor directories.')
-        reader.CaseType = mode; reader.UpdatePipelineInformation()
-        regions = workspace['reader']['regions']
-        if any(region not in available_values(reader, 'MeshRegions') for region in regions): raise RuntimeError('A saved mesh region is no longer available.')
-        reader.MeshRegions = regions
-        for name in ('CellArrays', 'PointArrays'):
-            values = available_values(reader, name)
-            if values: set_if_supported(reader, name, values)
-        raw_times = [float(value) for value in list(reader.TimestepValues)]
-        times = raw_times if raw_times else [0.0]
-        requested_time = workspace['view']['time']
-        if not any(abs(value-requested_time) <= max(1.0, abs(requested_time))*1e-9 for value in times):
-            raise RuntimeError('The workspace timestep is no longer available. Import a workspace for the current results.')
-        current_time = min(times, key=lambda value: abs(value-requested_time))
-        reader.UpdatePipeline(time=current_time)
-        display = Show(reader, view)
-        nodes['reader'] = {
-            'proxy': reader, 'display': display, 'label': os.path.basename(marker), 'type': 'OpenFOAMReader',
-            'parent': None, 'visible': True, 'representation': 'Surface', 'opacity': 1.0,
-            'lineWidth': 1.0, 'pointSize': 3.0,
-            'color': {'association': 'SOLID', 'name': '', 'preset': available_presets[0] if available_presets else '', 'legend': False},
-        }
-        scene.AnimationTime = current_time; view.ViewTime = current_time
-        for item in pipeline:
-            if item['type'] == 'OpenFOAMReader': selected_id = 'reader'
-            else:
-                before = set(nodes)
-                if item['type'] == 'CaseFileReader': open_case_file(item['filePath'])
-                else:
-                    selected_id = item['parent']
-                    if item['type'] == 'Selection': create_selection(item['parameters']['selection'])
-                    elif item['type'] == 'CFDGradient': create_diagnostic(item['parameters']['diagnostic'])
-                    elif item['type'] == 'ResampleToImage': create_resample(item['parameters']['resample']['dimensions'])
-                    else: add_filter(item['type'])
-                created = set(nodes) - before
-                if len(created) != 1: raise RuntimeError('The saved filter input now requires additional conversion. Recreate that filter for the updated results.')
-                generated = selected_id
-                node = nodes.pop(generated)
-                delete_guide(generated)
-                nodes[item['id']] = node; selected_id = item['id']
-            # Volume initially has no scalar color. Restore its settings only
-            # after rebuilding geometry, then apply the saved display/color.
-            update_selected({key: value for key, value in item['parameters'].items() if key != 'volume'})
-            if 'volume' in item['parameters']: nodes[selected_id]['volume'] = item['parameters']['volume']
-            if item['type'] in ('Calculator', 'Gradient'):
-                settings = item['parameters']['calculator' if item['type'] == 'Calculator' else 'gradient']
-                if not any(array['name'] == settings['resultName'] for array in arrays_for(nodes[selected_id]['proxy'])):
-                    raise RuntimeError('The saved ' + item['type'] + ' could not produce its result array. Check the input fields and formula.')
-            nodes[selected_id]['label'] = workspace['view']['nodes'][selected_id]['label']
-            try: RenameSource(nodes[selected_id]['label'], nodes[selected_id]['proxy'])
-            except Exception: pass
-        selected_id = workspace['selectedId']
-        # Validate the entire saved display before applying any of its colors.
-        prepared = prepare_snapshot(workspace['view'])
-        apply_snapshot(prepared, True)
-        set_if_supported(view, 'CenterAxesVisibility', 1 if workspace['centerAxes'] else 0)
-        for segment in workspace.get('video', {}).get('segments', []):
-            if not any(abs(value-segment['until']) <= max(1.0, abs(segment['until']))*1e-9 for value in times):
-                raise RuntimeError('A saved video segment timestep is no longer available.')
-            prepare_snapshot(segment['view'])
-        if 'video' in workspace and not any(abs(value-workspace['video']['start']) <= max(1.0, abs(workspace['video']['start']))*1e-9 for value in times):
-            raise RuntimeError('The saved video start timestep is no longer available.')
-        # Force data information now; errors leave the old graph available.
-        state()
-    except Exception:
-        for identifier in list(guides): delete_guide(identifier)
-        for node in reversed(list(nodes.values())):
-            try: Delete(node['proxy'])
-            except Exception: pass
-        if staged_reader is not None and not any(node['proxy'] == staged_reader for node in nodes.values()):
-            try: Delete(staged_reader)
-            except Exception: pass
-        # A failed filter constructor can create conversion proxies before it
-        # registers its output. Clean those too, preserving all original sources.
-        for proxy in reversed(list(GetSources().values())):
-            if proxy not in old_sources:
-                try: Delete(proxy)
-                except Exception: pass
-        nodes, reader, selected_id, next_filter, guides, times, raw_times, current_time, manipulator_visible = previous
-        scene.AnimationTime = current_time; view.ViewTime = current_time
-        apply_snapshot(prepare_snapshot(old_view), True)
-        set_if_supported(view, 'CenterAxesVisibility', 1 if old_center else 0)
-        ensure_guide(selected_id)
-        raise
-    old_nodes, _, _, _, old_guides, _, _, _, _ = previous
-    for guide in old_guides.values():
-        try: Delete(guide['proxy'])
-        except Exception: pass
-    for node in reversed(list(old_nodes.values())):
-        try: Delete(node['proxy'])
-        except Exception: pass
-    next_filter = max([int(identifier.split('-')[-1]) for identifier in nodes if identifier != 'reader'] + [0]) + 1
-    scene.UpdateAnimationUsingDataTimeSteps()
-    scene.AnimationTime = current_time; view.ViewTime = current_time
-    sync_legends()
-
 def video_formats():
     formats = []
     try:
@@ -2096,10 +1546,9 @@ def video_formats():
         pass
     return formats
 
-def lut_range(name, display=None):
+def lut_range(name):
     try:
-        lut = display.LookupTable if display is not None else None
-        points = list((lut or GetColorTransferFunction(name)).RGBPoints)
+        points = list(GetColorTransferFunction(name).RGBPoints)
         if len(points) >= 8: return [clean_number(points[0]), clean_number(points[-4])]
     except Exception:
         pass
@@ -2110,12 +1559,11 @@ def capture_view():
     snapshot_nodes = {}
     for identifier, node in nodes.items():
         color = dict(node['color'])
-        color['range'] = lut_range(color['name'], node['display']) if color['association'] in ('CELLS', 'POINTS') and color['name'] else None
+        color['range'] = lut_range(color['name']) if color['association'] in ('CELLS', 'POINTS') and color['name'] else None
         snapshot_nodes[identifier] = {
             'label': node['label'], 'visible': node['visible'], 'representation': node['representation'],
             'opacity': node['opacity'], 'color': color,
         }
-        if 'volume' in node: snapshot_nodes[identifier]['volume'] = capture_volume(node)
     return {
         'time': current_time,
         'camera': {
@@ -2172,7 +1620,6 @@ def prepare_snapshot(raw):
                 'legend': bool(color_raw.get('legend', False)), 'range': value_range,
             },
         }
-        if 'volume' in settings: prepared_nodes[identifier]['volume'] = validate_volume(settings['volume'])
     return {
         'camera': camera, 'nodes': prepared_nodes,
         'background': background if background in BACKGROUNDS else background_name,
@@ -2197,6 +1644,11 @@ def set_camera(camera, previous=None, blend=1.0):
 
 def apply_snapshot(snapshot, lock_ranges):
     global background_name
+    # Legends belong to the colour maps being replaced: hide them first, or the
+    # previous view's bar stays on screen next to the new one.
+    for node in nodes.values():
+        try: node['display'].SetScalarBarVisibility(view, False)
+        except Exception: pass
     background_name = snapshot['background']
     set_if_supported(view, 'UseColorPaletteForBackground', 0)
     view.Background = BACKGROUNDS[background_name]
@@ -2207,17 +1659,15 @@ def apply_snapshot(snapshot, lock_ranges):
         node['representation'] = settings['representation']
         node['opacity'] = settings['opacity']
         node['color'] = {key: settings['color'][key] for key in ('association', 'name', 'preset', 'legend')}
-        if 'volume' in settings: node['volume'] = settings['volume']
         apply_display(node)
         value_range = settings['color']['range']
         if lock_ranges and value_range and node['color']['name']:
             try:
-                lut = node['display'].LookupTable or GetColorTransferFunction(node['color']['name'])
+                lut = GetColorTransferFunction(node['color']['name'])
                 set_if_supported(lut, 'AutomaticRescaleRangeMode', 'Never')
                 lut.RescaleTransferFunction(value_range[0], value_range[1])
             except Exception:
                 pass
-    sync_legends()
     set_camera(snapshot['camera'])
 
 def rescale_to_frame():
@@ -2446,20 +1896,18 @@ for line in sys.__stdin__:
         elif action == 'set_visibility':
             candidate = str(data.get('id', ''))
             if candidate not in nodes: raise RuntimeError('Pipeline item not found.')
-            if nodes[candidate]['display'] is None: raise RuntimeError('This source exposes a table. Use its Chart or Table view.')
             nodes[candidate]['visible'] = bool(data.get('visible'))
             apply_display(nodes[candidate])
             emit(identifier, True, {'state': state()})
         elif action == 'add_filter':
             add_filter(str(data.get('filter', '')))
-            emit(identifier, True, {'state': changed_state()})
+            emit(identifier, True, {'state': state()})
         elif action == 'delete':
-            delete_selected(); emit(identifier, True, {'state': changed_state()})
+            delete_selected(); emit(identifier, True, {'state': state()})
         elif action == 'update':
-            if 'revision' in data or 'id' in data or 'time' in data: analysis_source(data)
-            update_selected(data); emit(identifier, True, {'state': changed_state()})
+            update_selected(data); emit(identifier, True, {'state': state()})
         elif action == 'update_reader':
-            update_reader(data); emit(identifier, True, {'state': changed_state()})
+            update_reader(data); emit(identifier, True, {'state': state()})
         elif action == 'update_view':
             update_view(data); emit(identifier, True, {'state': state()})
         elif action == 'set_manipulator':
@@ -2467,25 +1915,11 @@ for line in sys.__stdin__:
         elif action == 'list_case_files':
             emit(identifier, True, {'files': list_case_files()})
         elif action == 'open_case_file':
-            open_case_file(data.get('path')); emit(identifier, True, {'state': changed_state()})
+            open_case_file(data.get('path')); emit(identifier, True, {'state': state()})
         elif action == 'time':
-            set_time(data.get('time')); emit(identifier, True, {'state': changed_state()})
+            set_time(data.get('time')); emit(identifier, True, {'state': state()})
         elif action == 'refresh':
-            refresh_reader(); emit(identifier, True, {'state': changed_state()})
-        elif action == 'data_table':
-            emit(identifier, True, {'table': data_table(data)})
-        elif action == 'analysis_probe':
-            emit(identifier, True, {'probe': analysis_probe(data)})
-        elif action == 'find_data':
-            emit(identifier, True, {'selection': find_data(data)})
-        elif action == 'selection_extract':
-            analysis_source(data)
-            create_selection({key: data[key] for key in ('block', 'association', 'name', 'component', 'lower', 'upper')})
-            emit(identifier, True, {'state': changed_state()})
-        elif action == 'cfd_diagnostic':
-            analysis_source(data); create_diagnostic(data['diagnostic']); emit(identifier, True, {'state': changed_state()})
-        elif action == 'resample_to_image':
-            analysis_source(data); create_resample(data['dimensions']); emit(identifier, True, {'state': changed_state()})
+            refresh_reader(); emit(identifier, True, {'state': state()})
         elif action == 'reset_camera':
             ResetCamera(view); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'standard_view':
@@ -2493,16 +1927,11 @@ for line in sys.__stdin__:
         elif action == 'camera':
             camera(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'manipulate':
-            manipulate(data); data_revision += 1
-            emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
+            manipulate(data); emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'render':
             emit(identifier, True, {'image': render(identifier, data.get('width'), data.get('height'), data.get('quality'))})
         elif action == 'capture_view':
             emit(identifier, True, {'view': capture_view()})
-        elif action == 'workspace_capture':
-            emit(identifier, True, {'workspace': capture_workspace()})
-        elif action == 'workspace_restore':
-            restore_workspace(data.get('workspace')); emit(identifier, True, {'state': changed_state()})
         elif action == 'apply_view':
             apply_snapshot(prepare_snapshot(data.get('view')), True); emit(identifier, True, {'state': state()})
         elif action == 'video_benchmark':
@@ -2528,10 +1957,6 @@ type WorkerResult = {
   image?: string;
   files?: ParaViewCaseFile[];
   view?: Record<string, unknown>;
-  workspace?: ParaViewWorkspace;
-  probe?: ProbeResult;
-  selection?: FindDataResult;
-  table?: ParaViewDataTable;
   video?: { video?: string; frames?: number; format?: string; cancelled?: boolean };
   benchmark?: { durations?: number[] };
 };
@@ -2872,19 +2297,6 @@ export async function abortParaViewStartup(): Promise<boolean> {
 export async function sendParaViewCommand(action: string, data: Record<string, unknown> = {}): Promise<WorkerResult> {
   if (!activeWorker) throw new Error('Start a ParaView session first.');
   assertNoVideoExport();
-  if (action === 'workspace_restore') data = { workspace: parseParaViewWorkspace(data.workspace) };
-  if (action === 'analysis_probe') data = { ...probeRequest(data) };
-  if (action === 'find_data' || action === 'selection_extract') data = { ...findDataRequest(data) };
-  if (action === 'cfd_diagnostic') data = { ...diagnosticRequest(data) };
-  if (action === 'resample_to_image') data = { ...resampleRequest(data) };
-  if (action === 'update' && data.volume !== undefined) data = { ...data, volume: volumeSettings(data.volume) };
-  if (action === 'update' && data.diagnostic !== undefined) data = { ...data, diagnostic: diagnosticSettings(data.diagnostic) };
-  if (action === 'update' && data.selection !== undefined) data = { ...data, selection: selectionRecipe(data.selection) };
-  if (action === 'update' && data.resample !== undefined) {
-    const value = data.resample as Record<string, unknown>;
-    if (!value || typeof value !== 'object' || Object.keys(value).some(key => key !== 'dimensions')) throw new Error('Invalid resampling settings.');
-    data = { ...data, resample: { dimensions: resampleRequest({ id: 'reader', revision: 0, time: 0, dimensions: value.dimensions }).dimensions } };
-  }
   return activeWorker.request(action, data);
 }
 

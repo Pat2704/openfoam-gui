@@ -83,8 +83,8 @@ the **OpenFOAM card in the Dashboard**.
   you leave the wizard.
 
   ![The New Case wizard, on the step where the mesh and the patch list are defined](screenshots/new-case.png)
-- **File Editor** — view, edit, create and delete case files. The tree spinner
-  appears on initial loading and manual refresh; automatic updates stay silent.
+- **File Editor** — view, edit, create and delete case files. Indexing indicators
+  appear during the initial listing and manual refresh; background updates stay quiet.
 - **Commands** — run `blockMesh`, `foamRun`, `snappyHexMesh`… with a command
   list filtered to the OpenFOAM version in use. One-click **Allrun** launches
   the case script in the background and takes you to the Monitor.
@@ -115,58 +115,9 @@ the **OpenFOAM card in the Dashboard**.
   give you a time selector instead. **Follow** re-reads every few seconds, so a
   drag coefficient can be watched while the solver is still running.
 
-  Coverage indicators distinguish retained rows from plotted points and flag
-  partial reads, skipped rows and non-finite values. Large charts retain extrema
-  and gap boundaries within a fixed point budget, reporting when that budget
-  cannot retain every feature. Screen and exported curves use straight segments
-  with gaps. Sampled profiles report a sample mean rather than temporal drift.
-
   The same panel also lists the case's **solver logs** and plots their initial
   residuals, so a convergence history is read, compared and exported the same
-  way as everything else. Choose the first, last or maximum initial residual
-  per timestep; the first is the default, also used by Monitor.
-
-  **Compare…** overlays up to six curves from datasets, solver logs, other cases
-  or different profile snapshots. Each keeps its original coordinates and gaps;
-  time series and spatial profiles cannot be mixed, and independent axis names
-  must agree. Check units and coordinate frames yourself: the files do not supply
-  reliable metadata for automatic conversion. The comparison table and CSV use
-  one row per curve sample, with case, source, snapshot and read coverage. The
-  curves are loaded snapshots, and **Save chart** exports the same comparison.
-
-  **Save analysis** remembers source references, fields, profile timesteps,
-  residual selection and display choices in **Compare…**. **Reopen** reads the
-  current results and reports missing fields or snapshots. Captured ParaView
-  curves keep their original values and capture time. Named analyses persist
-  across app restarts, scoped to the case and selected OpenFOAM installation.
-  **HTML report** exports a printable chart, retained-row sample statistics,
-  coverage and provenance, with an embedded CSV download. Read and chart limits
-  remain explicit; the basic curve summary uses sample statistics.
-
-  In **Compare → Analysis**, choose an interval and inspect sample and time-weighted
-  mean, RMS, fluctuation RMS, population standard deviation, peak-to-peak, slope
-  and temporal integral.
-  Time weighting uses actual timestep spacing and adjacent finite samples, with
-  covered duration shown separately from the requested interval. Guided recipes
-  add pressure differences, vector magnitudes, reference/pressure/force coefficients
-  and signed mass or volume flux balances. Declare operand units and reference
-  values; matching coordinates are required unless you explicitly choose bounded
-  linear interpolation onto the first operand. Gaps and extrapolation stay excluded.
-
-  **Spectrum / PSD / Strouhal** computes a bounded one-sided periodogram with an
-  explicit FFT length, Hann or rectangular window and mean removal choice.
-  **Cross-correlation delay** compares two signals over their common interval,
-  with a documented delay sign and bounded lag. Declare the time unit; irregular
-  sampling is rejected unless explicit uniform resampling is selected. Frequency
-  peaks are bin estimates, and periodic signals can have ambiguous delay peaks.
-  Numerical charts/CSV, saved analyses and HTML reports retain these settings,
-  references, source coverage and calculation limits.
-
-  Compute runs in the background with live output, elapsed time and cancellation.
-  Reopening the panel restores the latest job during the current app session.
-  Jobs belong to the case and OpenFOAM installation that started them; another
-  case stays available while they run. Output is bounded and clearly marked
-  when only its tail is retained.
+  way as everything else.
 
   **Save chart** opens the picture before it is written: pick the output size,
   the background (white, dark, transparent or your own two colours), the title,
@@ -197,7 +148,9 @@ the **OpenFOAM card in the Dashboard**.
   ![The Post-Process tab: the force history written by a cavity run, charted from forces.dat, with the results found in the case listed on the left and each series reporting its last value, tail mean, min/max and whether it has settled on the right](screenshots/postProcessing.png)
 - **ParaView** — use a ParaView-style workbench without leaving the app. A real
   background `pvpython` session owns the OpenFOAM reader, filter pipeline and
-  offscreen renderer. Select volume, patch and group regions; switch between
+  offscreen renderer. Background warm-up keeps the case-free engine ready and
+  reuses it when opening a case; disabling warm-up releases the idle engine.
+  Select volume, patch and group regions; switch between
   reconstructed and decomposed cases; and build a capability-detected catalogue
   of slicing, clipping, tracing, geometry, sampling and analysis filters. Slice,
   Clip, Stream Tracer and Plot Over Line also expose draggable 3D plane, sphere
@@ -216,48 +169,6 @@ the **OpenFOAM card in the Dashboard**.
   ask before starting. The video can be saved anywhere or into the case's
   `postProcessing/videos`. Displays also offer ParaView's **Feature Edges**
   representation.
-
-  Colour legends follow the visible pipeline: shared colour maps keep one
-  legend while any visible display needs it, and obsolete legends disappear
-  after recolouring, hiding, deletion or a switch to Solid Color. Video view
-  changes use the same visibility rules.
-
-  Switch the viewport between **3D**, **Chart** and **Table** to inspect the
-  selected pipeline output numerically. Choose point, cell or table-row data,
-  a composite block, the independent coordinate and numeric array components.
-  **Plot Over Line** exposes sampled fields against arc length; a case-local
-  CSV opens as table data. Numerical views refresh after changing the selection,
-  filter or simulation time. Tables are paged, charts have a visible point budget,
-  and CSV/chart exports report their own limits and preserve missing-value gaps.
-
-  **3D + Chart** shows the rendered geometry and a numerical plot together. The
-  chart has its own pipeline source, so a sampled line can remain plotted while
-  another filter is selected; both panes use the same simulation time. Panes sit
-  side by side on wide windows and stack on smaller ones.
-
-  The **Analysis** tab adds XYZ probes with explicit point interpolation or
-  containing-cell values, and **Find Data** selects numeric components or vector
-  magnitudes by range. Inspect original tuple IDs and coordinates, export the
-  displayed matches, or extract a bounded selection that re-evaluates at each
-  timestep. Guided CFD diagnostics compute a vector gradient, vorticity,
-  divergence and Q criterion. Spatial integrals use **Integrate Variables**;
-  input geometry and explicit flux fields determine their physical meaning.
-
-  **Volume rendering** in Properties maps a scalar to color and a configurable
-  opacity curve, with opacity unit distance in mesh coordinate units. Availability
-  follows the output's geometry and the installed engine. **Resample to Image**
-  creates a bounded regular XYZ sampling grid; this interpolates existing results
-  and preserves invalid sample masks. It does not refine the CFD simulation.
-
-  **Workspaces** saves named pipelines with case-local readers, filter parameters,
-  mesh regions, display/color and volume settings, camera, timestep, viewport
-  layout, independent chart source and video timeline.
-  Reopening rebuilds the pipeline from current case data; missing dependencies
-  leave the active pipeline intact. JSON import/export uses the app's versioned
-  workspace format. Workspaces load only when requested, preserving fast startup.
-  In **Chart**, **Send to Post-Process** captures up to six numerical curves
-  with original coordinates, gaps and coverage. Add them to a compatible comparison
-  or use them as a new analysis; captured values do not re-run the ParaView pipeline.
 
   ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
 - **Applications / Src** — browse the installed OpenFOAM sources.
@@ -398,16 +309,14 @@ the newest usable version. No fixed version or installation directory is assumed
 For a portable copy or custom directory, use the gear on the **ParaView card in
 the Dashboard**, enter the ParaView folder, `paraview.exe`, or `pvpython.exe`,
 and click **Save path**. The choice is stored locally. ParaView is not bundled;
-it runs as a separate background process for the workbench.
+it runs as a separate background process when a case is opened in its
+workbench.
 
 The first ParaView start after a reboot is slow because Windows reads several
 hundred of ParaView's libraries off the disk, scanning each one, before anything
 else can happen. So a few seconds after the app opens, it loads ParaView once in
-the background at low priority — the card shows **warming up** meanwhile. It
-keeps one engine ready, including its render context, and opening a case reuses
-that process at normal priority. Opening during warm-up continues in the same
-engine. The first case still needs to read its mesh and fields; large cases and
-the first WSL connection take longer. The switch is in the same settings.
+the background at low priority — the card shows **warming up** meanwhile — and
+the ParaView tab then starts in seconds. The switch is in the same settings.
 
 ---
 

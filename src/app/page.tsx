@@ -23,7 +23,6 @@ import OpenFoamBrowser from '@/components/openfoam/foam-browser';
 import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, patchFoamyConfig, type UiTheme } from '@/lib/foamy-store';
-import { ANALYSIS_TRANSFER_EVENT, type AnalysisTransfer } from '@/lib/analysis-transfer';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
@@ -151,15 +150,6 @@ export default function Home() {
   const wslCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const selectedCase = openCases[0] || null;
-
-  useEffect(() => {
-    const receive = (event: Event) => {
-      const transfer = (event as CustomEvent<AnalysisTransfer>).detail;
-      if (transfer?.caseName === selectedCase) setActiveTab('postprocess');
-    };
-    window.addEventListener(ANALYSIS_TRANSFER_EVENT, receive);
-    return () => window.removeEventListener(ANALYSIS_TRANSFER_EVENT, receive);
-  }, [selectedCase]);
 
   // Sync selectedCase to global context (so ChatPopup can read it)
   useEffect(() => {

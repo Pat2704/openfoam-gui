@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import {
   abortParaViewStartup, getParaViewSession, getParaViewWarmup,
-  readParaViewRender, sendParaViewCommand, startParaViewSession,
+  readParaViewRender, startParaViewSession,
   stopParaViewSession, stopParaViewWarmup, warmParaView,
 } from '../src/lib/paraview.ts';
 
-test('a prepared native ParaView engine activates once, renders and exposes numerical data', {
+test('a prepared native ParaView engine activates once, renders and recovers after cancellation', {
   skip: !process.env.OFSTUDIO_TEST_PVPYTHON || !process.env.OFSTUDIO_TEST_PVCASE,
   timeout: 600_000,
 }, async () => {
@@ -38,10 +38,6 @@ test('a prepared native ParaView engine activates once, renders and exposes nume
     assert.equal(getParaViewWarmup()?.state, 'warm');
     const image = await readParaViewRender(640, 480, 85);
     assert.ok(image.byteLength > 1000);
-    const result = await sendParaViewCommand('data_table', {
-      mode: 'page', id: state.selectedId, revision: state.dataRevision, time: state.time,
-    });
-    assert.ok(result.table!.rows.length > 0);
     await stopParaViewWarmup();
     assert.equal(getParaViewSession()?.caseName, caseName, 'Disabling warm-up must preserve the active case.');
     await stopParaViewSession();

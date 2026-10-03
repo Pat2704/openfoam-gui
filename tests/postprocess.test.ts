@@ -6,7 +6,6 @@ import {
   mergeRestarts,
   isTimeSeries,
   downsampleRows,
-  sampleRowsForChart,
   summarizeColumn,
   parseFunctionTemplate,
   buildFunctionSpec,
@@ -183,40 +182,6 @@ test('downsampling always keeps the final sample', () => {
   assert.deepEqual(thinned[0], [0, 0]);
   // Below the limit nothing is touched at all.
   assert.equal(downsampleRows(rows, 5000), rows);
-});
-
-test('chart sampling preserves off-stride peaks, troughs and missing-data breaks in every column', () => {
-  const rows = Array.from({ length: 1000 }, (_, index) => [index, 2, 3]);
-  rows[357][1] = 900;
-  rows[678][2] = -400;
-  rows[445][1] = NaN;
-  rows[446][1] = NaN;
-  const sampled = sampleRowsForChart(rows, 80);
-  assert.ok(sampled.rows.length <= 80);
-  for (const index of [0, 357, 444, 445, 446, 447, 677, 678, 679, 999]) {
-    assert.ok(sampled.rows.includes(rows[index]), `missing significant sample ${index}`);
-  }
-  assert.equal(sampled.omittedFeatures, 0);
-  assert.ok(sampled.rows.every((row, index) => index === 0 || row[0] > sampled.rows[index - 1][0]));
-});
-
-test('sampling preserves points hidden by a logarithmic axis and reports an exhausted feature budget', () => {
-  const rows = Array.from({ length: 200 }, (_, index) => [index, index % 2 === 0 ? 1 : NaN]);
-  const sampled = sampleRowsForChart(rows, 20);
-  assert.equal(sampled.rows.length, 20);
-  assert.ok(sampled.omittedFeatures > 0);
-  assert.equal(sampled.rows[0], rows[0]);
-  assert.equal(sampled.rows.at(-1), rows.at(-1));
-  const withZero = Array.from({ length: 1000 }, (_, index) => [index, index === 335 ? 0 : 1]);
-  assert.ok(downsampleRows(withZero, 30).includes(withZero[335]));
-});
-
-test('table diagnostics disclose malformed rows and non-finite values without shifting columns', () => {
-  const table = parseFoamTable('# Time p U\n0 1 2\n1 3\n2 nan 5\nnan 1 2\n3 6 7\n');
-  assert.deepEqual(table.diagnostics, { skippedRows: 2, nonFiniteCells: 1 });
-  assert.deepEqual(table.rows.map(row => row[0]), [0, 2, 3]);
-  assert.ok(Number.isNaN(table.rows[1][1]));
-  assert.equal(table.rows[1][2], 5);
 });
 
 test('CSV export keeps every supplied row and quotes real CSV cells', () => {

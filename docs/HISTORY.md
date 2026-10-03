@@ -1,100 +1,24 @@
 # HISTORY — rolling project context
 
-This informative file records project state and history; `docs/RULES.md` is the
-sole source of project rules. Keep at or below **500 lines**, adding entries at
-the top and compacting older detail into Git history, release notes or audits.
+This file records recent project state, decisions already implemented and
+historical context. It is informative only: `docs/RULES.md` is the sole source
+of project rules. Keep this file at or below **500 lines**. Add new entries at
+the top, then compact older detail into links to Git history, release notes or
+audits.
 
-## 2026-10-03 — Phase 4: advanced numerical and CFD analysis
+## 2026-10-03 — Restore the pre-phase-1 application
 
-- Compare Analysis exposes interval sample/time-weighted statistics and temporal
-  integrals, guided differences/magnitudes/coefficients and signed flux balances,
-  FFT periodograms/PSD/Strouhal and cross-correlation delay. Units, references,
-  grid alignment, sampling and numerical limits are explicit; gaps do not bridge.
-- Saved Post analyses migrate v1 to v2 with stable operand keys and advanced
-  settings. Reopening replays current sources while captured data stays frozen;
-  HTML reports carry configuration, coverage, computed charts and numerical CSV.
-- ParaView adds block/association-aware XYZ probes, bounded range selections and
-  dynamic extraction, vector gradient/vorticity/divergence/Q diagnostics, scalar
-  volume opacity curves and bounded Resample to Image grids. Fixed commands keep
-  browser Python/proxy/property names out of the worker/API.
-- 3D + Chart panes share time and allow an independent numerical pipeline source;
-  wide windows use adjacent panes, smaller ones stack. Optional workspace v1
-  fields retain layout/source and new nodes/volume settings without breaking old
-  files. Heavy analysis starts explicitly; prepared-engine startup is preserved.
-- Verification uses analytical signals/fields and disposable `_test` cases;
-  File Editor's initial/manual-only indexing indicators remain unchanged.
-- Checks: typecheck/lint and 413 tests pass (7 native checks skipped in the
-  default suite). Native ParaView 6.2 probes, solid-rotation diagnostics,
-  selection/extraction, resampling, two independent volume functions and
-  workspace/video roundtrips pass; browser QA covers saved analysis replay,
-  volume/probe/selection UI, split layout/time/source restore and breakpoints.
-
-## 2026-10-02 — Phase 3: reproducible analyses and ParaView workspaces
-
-- Compare saves named source recipes and display choices; reopening re-reads
-  current results and reports missing fields/snapshots. Frozen ParaView captures
-  retain coordinates, gaps, coverage and original capture time. Printable HTML
-  reports include gap-safe charts, retained-row sample statistics and embedded CSV.
-- ParaView saves/imports/exports versioned app JSON workspaces with reader regions,
-  case-local files, allowed filter graphs/parameters, display/colors, camera/time
-  and video timelines. Staged reconstruction preserves the live graph on failure.
-  Workspaces are loaded explicitly; prepared-engine startup remains unchanged.
-- Chart sends up to six captured curves to Post-Process without interpolation or
-  inferred units. Durable bounded atomic storage follows installation and case,
-  independently of the Electron server port; installation switches reject stale writes.
-- Checks: analysis/persistence/transfer tests, native ParaView 6.2 all-filter
-  roundtrips/rollback, browser QA and packaged persistence across port changes.
-
-## 2026-10-02 — Reuse the prepared ParaView engine
-
-- Background warm-up keeps one case-free pvpython/render context for the next
-  startup, including starts during warm-up, rather than launching a second engine.
-  Activation restores normal priority and retains cancellable lifecycle tickets.
-- Native disposable-case first-render comparison: 3.79 s with a new process,
-  0.70 s with the prepared engine; first WSL access and cold library loads vary.
-  Native activation/cancellation/recovery, rendering, table and legend tests pass.
-
-## 2026-10-02 — Phase 2: curve comparisons and ParaView numerical views
-
-- Post-Process adds a separate comparison of up to six dataset/log curves from
-  multiple cases or profile snapshots. Each curve retains its own coordinates,
-  gaps and provenance; incompatible independent axes are refused. Long-format
-  tables/CSV avoid interpolation and row-index joins; chart export shares the
-  same independent grids. Comparisons are snapshots with visible read limits.
-- ParaView adds Chart/Table views of the selected pipeline output, with explicit
-  points/cells/rows association, composite blocks, coordinates and numeric vector
-  components. Plot Over Line can chart sampled fields against arc length, and
-  CSV readers expose their table directly. Numerical requests are allowlisted,
-  bounded and revision-checked; chart sampling and export limits are explicit.
-- Initial/manual-only File Editor indexing indicators remain unchanged. Test
-  fixtures are disposable `_test` cases; no real case was modified.
-- Checks: `npm run check`, native ParaView 6.2, disposable cases and browser QA.
-
-## 2026-10-01 — Restore residual charts/tables; show File Editor indexing
-
-- Fixed a regression rejecting Foundation's `Time = 0.005s` output; numeric
-  parsing accepts seconds, rejects malformed tokens and recovered 2,000 samples
-  across five fields from the real `myCavity` log.
-  Empty logs now show an explanation instead of an empty chart and negative count.
-- File Editor separates tree indexing from file reading, preserving buffers/tree.
-  At the user's request, tree spinners now appear only before the initial listing
-  or during manual refresh; background updates and lazy folders stay silent.
-
-## 2026-10-01 — Post-Process data integrity and background Compute; ParaView legends
-
-- Post-Process exposes retained/plotted coverage, inventory/log limits, parser
-  anomalies and non-finite gaps. Bounded sampling retains extrema and boundaries,
-  reporting omissions. Screen/export use straight segments without bridging gaps;
-  spatial profiles report sample means without drift.
-- Residual events offer first/last/maximum initial values per timestep; first is
-  the Post-Process/Monitor default. Restarts replace complete recomputed timesteps.
-- Compute uses session-local, installation/case-scoped background jobs, bounded
-  output, status recovery and cancellation of token-verified Linux process groups.
-  Failed cancellation is retryable; timeouts have a bounded cleanup attempt.
-- ParaView reconciles scalar bars across visible displays sharing a LUT, including
-  time/video snapshots, preserving shared legends and hiding obsolete ones.
-- Checks cover the full suite, job lifecycle, real Foundation v14 Compute/cancel,
-  spike/gap data, partial logs and native ParaView 6.2 with a solved test case.
+- At the user's request, restore the application to `c7c8c3c`, before phase 1.
+  Remove phases 1–4, including Post-Process fixes, numerical views, saved
+  analyses/workspaces and advanced analysis. Earlier commits remain in Git.
+- Retain only File Editor indexing indicators from `58c3dfc`: initial listing
+  and manual refresh animate; background updates and lazy folders stay quiet.
+- Retain prepared ParaView engine reuse from `9b6b445`, with warm-up cancellation
+  and normal-priority case activation. Test it against the original 3D workbench.
+- Archive session-only saved analysis test documents in the ignored agent log;
+  preserve unrelated local files and existing cases.
+- Checks: typecheck/lint, 348 passing tests (2 opt-in skips), and native ParaView
+  6.2 case activation, rendering, cancellation and recovery pass.
 
 ## 2026-09-13 — v5.6.1: finished agent answers use the provider's canonical result
 
@@ -458,14 +382,88 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
   `nu 1e-05 [m^2/s]` is unverified. (The rest of this list was addressed in
   the entries above.)
 
-## 2026-09-10 in brief
+## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards
 
-Tutorial discovery/copying and separate scroll areas, File Editor/wizard data-loss
-guards, raster icon repair and low-priority ParaView warm-up are recorded in Git.
-The v14/v13 function catalogue audit covered 127 disposable-case replays; remaining
-failures required suitable physics/inputs (commit `89211cb`). The v5.3.0 direct
-release reused renamed v5.2.2 artifacts from `9d7719f`, retaining embedded 5.2.2
-resources. See `docs/releases/v5.3.0.md` for release and retention details.
+- Tutorials are listed at any depth (`listTutorialCases` in `wsl.ts`): a
+  folder with `system/` is a tutorial; one with its own `Allrun` and a case
+  below it is listed too, flagged "Allrun group", because its cases depend on
+  each other; anything else is walked through. On v14 this made the tutorials
+  under `mesh/`, `multiRegion/` and `legacy/` reachable (11 group folders → 59
+  tutorials) and `resources/` shows as empty. v9-v10 group every category by
+  solver, which this also covers; not checked locally (only 13 and 14 exist).
+- The Tutorial panel ignores out-of-order answers, clears the old list at
+  once, shows an error or an empty-folder message, reveals Copy on keyboard
+  focus and proposes the tutorial's own name for the copy. `copyTutorial`
+  creates the destination with `mkdir` (atomic) and removes a half-made copy.
+  WSL calls run synchronously in the server, so a real concurrent race was not
+  reproducible; two simultaneous copies gave one success and one "Case already
+  exists".
+- File Editor: "New file" on an existing name asks before replacing it with an
+  empty file (checked on the `test` case: confirmation shown, 0/U untouched);
+  a failed read no longer opens the file empty and marked "Saved" (nor caches
+  it); the 0/, system/ and constant/ checkboxes show their state in
+  multi-select. The wizard re-reads the case list when Create is pressed.
+  Per-process Kill confirmation was proposed and declined by the user.
+
+## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
+
+- Dashboard → Tutorial: categories and a category's tutorials scroll
+  independently, in a grid measured by `tutGridRef` to end at `main`'s bottom.
+- `electron/build/icon.ico` was repaired as a raster (airfoil dash, barb and
+  a broken streamline); smaller frames are LANCZOS downsamples, with 20, 40 and
+  96 px added for display scaling.
+
+## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
+
+- Released `v5.3.0` at the user's request; notes in `docs/releases/v5.3.0.md`.
+  It carries the two entries below: the Post-Process catalogue grounded in the
+  installed OpenFOAM, and ParaView loaded in the background at startup.
+- Direct publication flow: the `v5.2.2` pair built from commit `9d7719f` and
+  verified in the packaged server was renamed to the `v5.3.0` names, not
+  rebuilt, so the files' embedded version resource still reads 5.2.2; the app
+  shows no version of its own. Retention kept `v5.3.0` and `v5.2.2` as GitHub
+  downloads and removed the `v5.2.1` release entry; its tag stays.
+
+## 2026-09-10 — ParaView loads in the background before its tab is opened
+
+- Reported by the user: the first ParaView start takes a very long time.
+  Measured again: the tree is 11,070 files and 4 GB, 2,215 of them DLLs and
+  Python modules, with Defender real-time scanning on. `from paraview.simple
+  import *` took 36.6 s with the cache half evicted and 1.4-1.9 s straight
+  after; the 107 s cold figure from 2026-09-09 is the post-reboot case. The cost
+  is Windows meeting the files for the first time, not the app or ParaView.
+- `warmParaView()` in `src/lib/paraview.ts` runs `pvpython` with the engine's
+  own render flags (`PARAVIEW_RENDER_ARGS`, now shared with the worker spawn),
+  the same import and one offscreen render, below normal priority, with no
+  output and a ten-minute ceiling. The render matters: it is 5 s warm against
+  1.4 s for the bare import, and that difference is the rendering stack a bare
+  import would have left cold. Once per installation per app process; skipped
+  when a session is running or starting.
+- The Dashboard starts it 5 s after detection finds ParaView, shows "warming up"
+  on the ParaView card while it runs, and the ParaView settings carry the
+  switch (`paraview-warmup` in the persisted config; on unless set to `off`)
+  with the outcome. A workbench start that overlaps the warm-up says so instead
+  of the generic cold-start note.
+- It hides the cold load rather than shortening it. The other lever is a
+  Defender exclusion for the ParaView folder, which is the user's security
+  decision and was only described to them, not made.
+
+## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
+
+Audited against the v14/v13 sources, every installed template and 127 real
+replays in `cavity_test` (61 failed before the change). The Compute panel now:
+
+- carries `-solver` when the case and installed utility support it, and refuses
+  its invalid combination with `-fields`;
+- reads template comments, commented options, nesting, placeholders, examples,
+  patch/field/direction arguments and sampled lines in OpenFOAM's own idiom;
+- searches every etc directory `findConfigFile` uses, including user entries;
+- shows class-header descriptions, examples and property tables from the
+  installed source, plus output location, times and libraries.
+
+Remaining replay failures are genuine physics/case mismatches or required
+placeholders the cavity cannot supply; the panel leaves those holes visible.
+The detailed evidence is in commit `89211cb` and the v5.3.0 release history.
 
 ## 2026-09-08 – 09-09 in brief
 
