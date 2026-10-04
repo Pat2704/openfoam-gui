@@ -459,8 +459,7 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
 
-- Tutorial categories and tutorials scroll independently (`tutGridRef`);
-  `electron/build/icon.ico` was repaired as a multi-size raster.
+- Tutorial lists scroll independently (`tutGridRef`); the app icon was redrawn.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
 
