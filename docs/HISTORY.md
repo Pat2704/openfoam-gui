@@ -40,6 +40,10 @@ audits.
   `main.js`/`preload.js`, none applied. Same pass plus hardware WebGL (D3D11),
   preload and safeStorage decryption. Exe 90 → 121 MB. Not checked: native
   focus freeze, agents. No CI; `wsl.ts` 4,7k lines; sync WSL calls block.
+- The user found Claude slower: each new conversation (or model/effort/mode/case
+  change) waited ~2.4 s more on Electron 42-44 than 31, outside the app; the
+  inline 7 KB `--append-system-prompt` stalled claude.exe's start. It is now a
+  file (`systemPromptArgs`): first reply ready in ~1 s, packaged, via Explorer.
 
 ## 2026-10-03 — v5.6.2: residuals, chart controls and ParaView editing
 
@@ -455,11 +459,8 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 
 ## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
 
-- Dashboard → Tutorial: categories and a category's tutorials scroll
-  independently, in a grid measured by `tutGridRef` to end at `main`'s bottom.
-- `electron/build/icon.ico` was repaired as a raster (airfoil dash, barb and
-  a broken streamline); smaller frames are LANCZOS downsamples, with 20, 40 and
-  96 px added for display scaling.
+- Tutorial categories and tutorials scroll independently (`tutGridRef`);
+  `electron/build/icon.ico` was repaired as a multi-size raster.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
 

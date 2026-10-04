@@ -39,10 +39,10 @@
 
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readdirSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync, writeFileSync, renameSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { tmpdir, homedir } from 'os';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { expectedToken } from '@/lib/agent-token';
 import { buildCaseNotice, buildModeNotice, sanitizeUserMessage } from '@/lib/agent-prompt';
 
@@ -714,6 +714,36 @@ function handleLine(session: Session, line: string): void {
   }
 }
 
+/**
+ * The system prompt as Claude Code arguments: a file when one can be written.
+ *
+ * Passed inline, the ~7 KB prompt made every new conversation start about 2.4 s
+ * later in the packaged app. Measured on 2026-10-04: under Electron 42-44 (not
+ * 31) a claude.exe whose command line carries the prompt sits for that long
+ * with one thread and no CPU before it runs at all — the same process tree, the
+ * same binary, the same arguments minus the prompt start in ~1.5 s, and so does
+ * the prompt read from a file. The cause is outside the app (Windows process
+ * creation under newer Electron); the file avoids it.
+ *
+ * Content-addressed, so a prompt is written once and every session that uses it
+ * shares the file, and nothing has to be cleaned up when a session ends. If the
+ * file cannot be written, the prompt goes inline as before: slower, but working.
+ */
+function systemPromptArgs(prompt: string): string[] {
+  try {
+    const dir = workingDirectory();
+    const file = join(dir, `system-prompt-${createHash('sha256').update(prompt).digest('hex').slice(0, 16)}.txt`);
+    if (!existsSync(file)) {
+      const scratch = `${file}.${randomUUID()}.tmp`;
+      writeFileSync(scratch, prompt, 'utf-8');
+      renameSync(scratch, file);
+    }
+    return ['--append-system-prompt-file', file];
+  } catch {
+    return ['--append-system-prompt', prompt];
+  }
+}
+
 function spawnChild(session: Session, resume: boolean): { ok: true } | { ok: false; error: string } {
   const install = knownClaude();
   if (!install) return { ok: false, error: 'Claude Code is not installed on this machine' };
@@ -733,7 +763,7 @@ function spawnChild(session: Session, resume: boolean): { ok: true } | { ok: fal
     '--setting-sources', '',
     '--disable-slash-commands',
     '--permission-mode', 'bypassPermissions',
-    '--append-system-prompt', session.systemPrompt,
+    ...systemPromptArgs(session.systemPrompt),
   ];
   // Haiku 4.5 predates the effort control and rejects it.
   if (MODELS.find(m => m.id === session.model)?.effort) {
