@@ -46,7 +46,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.185.4",
-    "electron": "31.7.7",
+    "electron": "44.5.1",
     "electron-builder": "^25.1.8",
     "eslint": "^9",
     "eslint-config-next": "^16.3.8",

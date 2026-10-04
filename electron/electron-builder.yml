@@ -28,9 +28,10 @@ appId: com.openfoamstudio.app
 productName: OpenFOAMStudio
 copyright: Copyright © 2026 Tommaso Ferrara
 
-# Pinned to the Electron that shipped in the original 6.1.4 portable build
-# (Electron 31.7.7 / Chromium 126.0.6478.234).
-electronVersion: 31.7.7
+# Pinned, and kept equal to the `electron` devDependency in package.json.
+# 31.7.7 (the original 6.1.4 build) was replaced by 44.5.1 on 2026-10-04 because
+# 31 no longer received security fixes.
+electronVersion: 44.5.1
 
 asar: true
 
