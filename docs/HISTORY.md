@@ -6,6 +6,12 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-04 — v5.7.0: WSL injection closed, Electron 44, Node 22
+
+- Released `v5.7.0` at the user's request (notes `docs/releases/v5.7.0.md`): the
+  pair built for `4142eb6`, renamed without rebuilding (embedded 5.6.2). GitHub
+  keeps v5.7.0 and v5.6.2; the v5.6.1 release entry was removed, tag kept.
+
 ## 2026-10-04 — External review: WSL command injection closed, Host check
 
 - A remote code review (no app run) listed six findings; verified here on the
@@ -47,12 +53,9 @@ audits.
 
 ## 2026-10-03 — v5.6.2: residuals, chart controls and ParaView editing
 
-- Release `v5.6.2` at the user's request; notes in `docs/releases/v5.6.2.md`
-  cover the final changes below. Phases 1–4 remain reverted.
-- Direct publication reuses the EXE/ZIP pair built from `7d23f73`, renaming
-  both copies without rebuilding or rerunning checks. Embedded version: 5.6.1.
-- GitHub release retention keeps v5.6.2 and v5.6.1; remove the v5.6.0 release
-  entry and assets while preserving its tag, history and source archives.
+- Released `v5.6.2` (notes `docs/releases/v5.6.2.md`); phases 1–4 stay reverted.
+  The pair built from `7d23f73` was renamed without rebuilding (embedded 5.6.1).
+  GitHub kept v5.6.2 and v5.6.1; the v5.6.0 release entry was removed, tag kept.
 
 ## 2026-10-03 — Visible dropdowns and freely editable ParaView numbers
 
@@ -456,9 +459,6 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
 - File Editor: "New file" on an existing name asks first; a failed read no
   longer opens the file empty and "Saved". The wizard re-reads the case list on
   Create. Per-process Kill confirmation was proposed and declined by the user.
-
-## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
-
 - Tutorial lists scroll independently (`tutGridRef`); the app icon was redrawn.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
