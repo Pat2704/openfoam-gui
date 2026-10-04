@@ -152,13 +152,18 @@ export function residualLogDomain(
   if (!Number.isFinite(low) || !Number.isFinite(high)) {
     return { domain: [1e-8, 1], ticks: [1e-8, 1e-6, 1e-4, 1e-2, 1] };
   }
-  const bottom = Math.pow(10, Math.floor(Math.log10(low)));
-  const top = Math.max(Math.pow(10, Math.ceil(Math.log10(high))), bottom * 10);
-  const decades = Math.round(Math.log10(top / bottom));
+  // Decades come from their decimal spelling, not Math.pow: on some V8 versions
+  // Math.pow(10, -4) is 0.00009999999999999999, and that is the tick's label.
+  const decade = (exponent: number) => Number(`1e${exponent}`);
+  const bottomExponent = Math.floor(Math.log10(low));
+  const topExponent = Math.max(Math.ceil(Math.log10(high)), bottomExponent + 1);
+  const bottom = decade(bottomExponent);
+  const top = decade(topExponent);
+  const decades = topExponent - bottomExponent;
   // Label every decade while there is room, then every second or third one.
   const step = decades <= 10 ? 1 : decades <= 20 ? 2 : 3;
   const ticks: number[] = [];
-  for (let i = 0; i <= decades; i += step) ticks.push(bottom * Math.pow(10, i));
+  for (let i = 0; i <= decades; i += step) ticks.push(decade(bottomExponent + i));
   if (ticks[ticks.length - 1] !== top) ticks.push(top);
   return { domain: [bottom, top], ticks };
 }

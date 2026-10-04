@@ -24,7 +24,8 @@ test('ParaView candidate expansion maps paraview.exe to its pvpython sibling', (
   assert.ok(paraViewExecutableCandidates(executable).map(value => value.toLowerCase()).includes(expected));
 });
 
-test('ParaView candidate expansion recovers from a path one level too deep', () => {
+// Windows paths resolved with the platform's own `path`: Windows only, like the app.
+test('ParaView candidate expansion recovers from a path one level too deep', { skip: process.platform !== 'win32' }, () => {
   const share = 'C:\\Program Files\\ParaView-6.2.0\\share';
   const expected = path.resolve('C:\\Program Files\\ParaView-6.2.0\\bin\\pvpython.exe').toLowerCase();
   assert.ok(paraViewExecutableCandidates(share).map(value => value.toLowerCase()).includes(expected));
