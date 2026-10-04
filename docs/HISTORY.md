@@ -6,6 +6,37 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-04 — External review: WSL command injection closed, Host check
+
+- A remote code review (no app run) listed six findings; verified here on the
+  app. **Injection confirmed**: `wsl -- bash -c` hands the line to the distro's
+  default shell inside double quotes first, so `$(…)`, backticks and `$NAME`
+  were expanded even inside shellQuote()'s single quotes. Writing
+  `probe_$(id -u).txt` through `/api/cases` created `probe_1000.txt`; the
+  guarded agent's `write_case_file` took the same path.
+- Fix at the root: every bash spawn in `src/lib/wsl.ts` (7) builds its arguments
+  with `wslBashArgs` (`wsl --exec`), which parses the command once. Paths with
+  `# HISTORY — rolling project context
+
+This file records recent project state, decisions already implemented and
+historical context. It is informative only: `docs/RULES.md` is the sole source
+of project rules. Keep this file at or below **500 lines**. Add new entries at
+the top, then compact older detail into links to Git history, release notes or
+audits.
+
+, backticks or `"` now read, write, list and delete literally; inline
+  `$VAR` works. Validators unchanged. Checked in dev: file operations,
+  foreground and background commands, logs, validateBC.
+- `src/proxy.ts` also refuses any `Host` that is not 127.0.0.1/localhost (DNS
+  rebinding); all callers use those. `evil.example` gets 403, the app 200.
+- Residual axis decades come from `Number('1e-4')`, not `Math.pow` (inexact on
+  some V8); one Windows-path ParaView test skips off Windows. The three
+  failures were Linux/Node 22 only: on Windows all tests passed before too.
+- `next` and `eslint-config-next` 16.3.3 → 16.3.8 through npm (GHSA-vcvr-r3jv-pc5j;
+  `next/og` is unused). `npm run check`: 363 pass, 2 skipped.
+- Left to the user: Electron 31.7.7 and bundled Node 20.20.2 are out of support;
+  no upgrade was made. No CI; `wsl.ts` is 4,7k lines; sync WSL calls block.
+
 ## 2026-10-03 — v5.6.2: residuals, chart controls and ParaView editing
 
 - Release `v5.6.2` at the user's request; notes in `docs/releases/v5.6.2.md`
@@ -408,28 +439,15 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
   `nu 1e-05 [m^2/s]` is unverified. (The rest of this list was addressed in
   the entries above.)
 
-## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards
+## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards (in brief)
 
-- Tutorials are listed at any depth (`listTutorialCases` in `wsl.ts`): a
-  folder with `system/` is a tutorial; one with its own `Allrun` and a case
-  below it is listed too, flagged "Allrun group", because its cases depend on
-  each other; anything else is walked through. On v14 this made the tutorials
-  under `mesh/`, `multiRegion/` and `legacy/` reachable (11 group folders → 59
-  tutorials) and `resources/` shows as empty. v9-v10 group every category by
-  solver, which this also covers; not checked locally (only 13 and 14 exist).
-- The Tutorial panel ignores out-of-order answers, clears the old list at
-  once, shows an error or an empty-folder message, reveals Copy on keyboard
-  focus and proposes the tutorial's own name for the copy. `copyTutorial`
-  creates the destination with `mkdir` (atomic) and removes a half-made copy.
-  WSL calls run synchronously in the server, so a real concurrent race was not
-  reproducible; two simultaneous copies gave one success and one "Case already
-  exists".
-- File Editor: "New file" on an existing name asks before replacing it with an
-  empty file (checked on the `test` case: confirmation shown, 0/U untouched);
-  a failed read no longer opens the file empty and marked "Saved" (nor caches
-  it); the 0/, system/ and constant/ checkboxes show their state in
-  multi-select. The wizard re-reads the case list when Create is pressed.
-  Per-process Kill confirmation was proposed and declined by the user.
+- Tutorials are listed at any depth (`listTutorialCases`): a folder with
+  `system/` is a tutorial, one with its own `Allrun` above cases is an "Allrun
+  group". The panel ignores out-of-order answers; `copyTutorial` creates the
+  destination atomically and removes a half-made copy. v9-v10 not checked locally.
+- File Editor: "New file" on an existing name asks first; a failed read no
+  longer opens the file empty and "Saved". The wizard re-reads the case list on
+  Create. Per-process Kill confirmation was proposed and declined by the user.
 
 ## 2026-09-10 — Tutorial lists scroll separately; app icon repaired
 
@@ -439,27 +457,12 @@ From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
   a broken streamline); smaller frames are LANCZOS downsamples, with 20, 40 and
   96 px added for display scaling.
 
-## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start
+## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
 
-- Released `v5.3.0` at the user's request; notes in `docs/releases/v5.3.0.md`.
-  Reused the verified `9d7719f` pair, renamed without rebuilding (embedded 5.2.2).
-  Retained v5.3.0/v5.2.2 downloads; removed the v5.2.1 release, keeping its tag.
-
-## 2026-09-10 — ParaView loads in the background before its tab is opened
-
-- Cold imports measured 107 s after reboot, 36.6 s with a partial cache and
-  1.4–1.9 s warm; offscreen render also warms the rendering stack. Details in Git.
-- Dashboard starts below-normal-priority warm-up 5 s after detection, once per
-  installation/process, with a ten-minute ceiling and a persistent on/off setting.
-  It reports overlap with case startup; no Defender settings were changed.
-
-## 2026-09-10 — Post-Process: the function catalogue audited against OpenFOAM
-
-Audited v14/v13 sources, installed templates and 127 `cavity_test` replays.
-Compute uses supported `-solver`/`-fields` combinations, template comments and
-nested arguments; searches all `findConfigFile` etc paths; and shows installed
-class help, properties and output details. Remaining failures are physics/case
-mismatches or missing required placeholders. Evidence: `89211cb` and v5.3.0 notes.
+Released `v5.3.0` (notes in `docs/releases/v5.3.0.md`). The function catalogue
+was audited against v14/v13 sources and 127 `cavity_test` replays (`89211cb`).
+ParaView warms up in the background 5 s after detection, at low priority, with
+an on/off setting: a cold import had measured 107 s, a warm one under 2 s.
 
 ## 2026-09-08 – 09-09 in brief
 
