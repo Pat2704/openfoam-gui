@@ -35,6 +35,14 @@
  * the header — and /api/agent/tools is separately behind the agent token. The
  * check is aimed exactly at the attack it can see, and does not pretend to be
  * authentication.
+ *
+ * THE HOST CHECK
+ * --------------
+ * DNS rebinding gets round the label: a page on evil.example re-points its own
+ * name at 127.0.0.1, and its requests are then `same-origin` to the browser. The
+ * `Host` header still says evil.example, and no caller of this API uses any name
+ * but 127.0.0.1 or localhost (the window, the health checks in electron/main.js,
+ * the MCP bridge, the dev page), so any other Host is refused.
  */
 
 /*
@@ -49,6 +57,7 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
+import { isLoopbackHost } from '@/lib/local-host';
 
 export const config = { matcher: '/api/:path*' };
 
@@ -57,7 +66,7 @@ const CROSS_ORIGIN = new Set(['cross-site', 'same-site']);
 
 export function proxy(req: NextRequest) {
   const site = req.headers.get('sec-fetch-site');
-  if (site && CROSS_ORIGIN.has(site)) {
+  if ((site && CROSS_ORIGIN.has(site)) || !isLoopbackHost(req.headers.get('host'))) {
     return NextResponse.json(
       { error: 'This endpoint only answers the application itself.' },
       { status: 403 },
