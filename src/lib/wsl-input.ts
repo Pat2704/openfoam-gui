@@ -115,6 +115,25 @@ export function shellQuote(value: string): string {
 }
 
 /**
+ * The `wsl.exe` arguments that run ONE bash command line in a distro.
+ *
+ * `--exec`, never `--`. With `--`, wsl.exe hands the rest of its command line
+ * to the distro's default shell, inside double quotes, and only then does that
+ * shell start the `bash -c` asked for. The command was therefore parsed TWICE,
+ * and the first pass ignored the single quotes shellQuote() relies on:
+ * `echo '$(id -u)'` printed `1000`. A case file named `a$(…).txt` — a name the
+ * browser or a guarded agent may send — ran its command substitution, and any
+ * `$NAME` in an inline command was replaced before bash set it (the old "wsl.exe
+ * eats shell variables" trap). `--exec` starts bash directly with these exact
+ * arguments, so the command is parsed once, by the bash that runs it.
+ *
+ * Every spawn of a bash command in src/lib/wsl.ts builds its arguments here.
+ */
+export function wslBashArgs(distro: string, command: string): string[] {
+  return ['-d', distro, '--exec', 'bash', '-c', command];
+}
+
+/**
  * Files that live in 0/ but are not physical fields.
  *
  * The boundary-condition check used to validate EVERY regular file in 0/, and

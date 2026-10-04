@@ -19,6 +19,7 @@ import {
   isPhysicalFieldFile,
   looksLikePath,
   shellQuote,
+  wslBashArgs,
   validateCaseName,
   validateLogName,
   validatePathWithin,
@@ -360,5 +361,30 @@ describe('shellQuote', () => {
       });
       assert.equal(out, value, `round trip of ${JSON.stringify(value)}`);
     }
+  });
+});
+
+describe('wslBashArgs', () => {
+  test('starts bash with --exec so the command line is parsed only once', () => {
+    // `wsl -- bash -c …` goes through the distro's default shell first, which
+    // expands $(…), backticks and $NAME even inside single quotes.
+    assert.deepEqual(wslBashArgs('Ubuntu', "cat -- 'a$(id).txt'"), [
+      '-d', 'Ubuntu', '--exec', 'bash', '-c', "cat -- 'a$(id).txt'",
+    ]);
+    assert.ok(!wslBashArgs('Ubuntu', 'true').includes('--'));
+  });
+
+  test('a quoted value reaches bash in WSL untouched', async () => {
+    const { execFileSync } = await import('node:child_process');
+    // Only where WSL exists; the default distro is enough for this.
+    const run = (command: string) => execFileSync('wsl', wslBashArgs('', command).slice(2), {
+      encoding: 'utf-8', windowsHide: true, timeout: 20000,
+    });
+    try { run('true'); } catch { return; }
+
+    for (const value of ['$(id -u)', '`id -u`', '$HOME', 'a"b', "it's"]) {
+      assert.equal(run(`printf %s ${shellQuote(value)}`), value, `round trip of ${JSON.stringify(value)}`);
+    }
+    assert.equal(run('X=1; printf %s "$X"'), '1');
   });
 });

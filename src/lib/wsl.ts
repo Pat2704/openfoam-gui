@@ -8,6 +8,7 @@ import {
   boundedInteger,
   isPhysicalFieldFile,
   shellQuote,
+  wslBashArgs,
   WslInputError,
   validateCaseName,
   validateLogName,
@@ -133,7 +134,7 @@ function runInWsl(cmd: string, timeout = 30000): string {
   const distro = getDistro();
   const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; ${cmd}`;
   try {
-    return execFileSync('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+    return execFileSync('wsl', wslBashArgs(distro, wrappedCmd), {
       encoding: 'utf-8',
       timeout,
       maxBuffer: 0x3200000,
@@ -150,7 +151,7 @@ function runInWslWithInput(cmd: string, input: string, timeout = 30000): string 
   const distro = getDistro();
   const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; ${cmd}`;
   try {
-    return execFileSync('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+    return execFileSync('wsl', wslBashArgs(distro, wrappedCmd), {
       input, encoding: 'utf-8', timeout, maxBuffer: 0x3200000,
       windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
@@ -166,7 +167,7 @@ export function runInWslScript(b64: string, timeout = 30000): string {
   const distro = getDistro();
   const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; echo "${b64}" | base64 -d | bash`;
   try {
-    return execFileSync('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+    return execFileSync('wsl', wslBashArgs(distro, wrappedCmd), {
       encoding: 'utf-8', timeout, maxBuffer: 0x3200000,
       windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
@@ -191,7 +192,7 @@ export function runInWslScriptAsync(b64: string, timeout = 120000): Promise<stri
   return new Promise((resolve, reject) => {
     // windowsHide is mandatory here like everywhere else in this file — see the
     // banner at the top: a console child steals focus in the packaged app.
-    const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+    const child = spawn('wsl', wslBashArgs(distro, wrappedCmd), {
       windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
     });
@@ -239,7 +240,7 @@ export function runInWslScriptInputAsync(b64: string, timeout = 120000): Promise
   const distro = getDistro();
   const wrappedCmd = 'export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; base64 -d | bash';
   return new Promise((resolve, reject) => {
-    const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+    const child = spawn('wsl', wslBashArgs(distro, wrappedCmd), {
       windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -2080,14 +2081,10 @@ export function writeFile(caseName: string, filePath: string, content: string): 
     // rename(2) within one directory is atomic, so the file is either wholly the
     // old content or wholly the new one.
     //
-    // NO SHELL VARIABLES HERE, and that is not a style choice. `wsl.exe`
-    // substitutes `$NAME` in the command line it is GIVEN, before bash ever sees
-    // it, so a script written as `T=…; … "$T"` arrives at bash with `$T` already
-    // replaced by nothing — the redirect target is empty and the write fails.
-    // (Verified: `wsl … bash -c 'X=hello; echo "[$X]"'` prints `[]`, while the
-    // same string piped in as base64 prints `[hello]`. That is exactly why every
-    // multi-line script in this file goes through runInWslScript.) The temp name
-    // is therefore generated HERE, in JavaScript, and both paths are literals.
+    // No shell variables here: the temp name is generated in JavaScript and both
+    // paths are literals. This was written when bash was started through
+    // `wsl --`, which replaced `$NAME` before bash saw the command; wslBashArgs
+    // (src/lib/wsl-input.ts) removed that, and literals remain the simpler form.
     const scratch = `${fullPath}.tmp.${randomBytes(6).toString('hex')}`;
     const quotedDst = shellQuote(fullPath);
     const quotedTmp = shellQuote(scratch);
@@ -2168,7 +2165,7 @@ function runInWslWithInputAsync(cmd: string, input: string, timeout = 300000): P
   const distro = getDistro();
   const wrappedCmd = `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; ${cmd}`;
   return new Promise((resolve, reject) => {
-    const child = spawn('wsl', ['-d', distro, '--', 'bash', '-c', wrappedCmd], {
+    const child = spawn('wsl', wslBashArgs(distro, wrappedCmd), {
       windowsHide: true,
       env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
     });
@@ -2541,10 +2538,9 @@ find /tmp -maxdepth 1 -name 'wslgui_*' -mmin +1440 -delete 2>/dev/null || true
           // trailing command here.
           //
           // The obvious version — `bash LAUNCH; s=$?; rm LAUNCH; exit $s` —
-          // cannot work on this path: `wsl.exe` substitutes `$NAME` in the
-          // command line it is given before bash sees it, so `$?` and `$s` are
-          // gone by the time bash parses the line. Only text that goes through
-          // base64 (the launcher itself) may use shell variables.
+          // could not work when this was written: bash was started through
+          // `wsl --`, which replaced `$?` and `$s` before bash parsed the line
+          // (see wslBashArgs in src/lib/wsl-input.ts).
           //
           // Leaving the deletion to the launcher gets both properties anyway:
           // the cleanup happens on every path, including failure — which the
@@ -2559,7 +2555,7 @@ find /tmp -maxdepth 1 -name 'wslgui_*' -mmin +1440 -delete 2>/dev/null || true
         }
 
         const distro = getDistro();
-        const wslArgs = ['-d', distro, '--', 'bash', '-c',
+        const wslArgs = wslBashArgs(distro,
           // `cd … || exit 1;` and NOT `cd … && `: fullCmd begins with foamSource(),
           // which ends in a `;`, so `cd X && source …; blockMesh` grouped as
           // `(cd && source); blockMesh` — and bash ran the user's command after a
@@ -2570,7 +2566,7 @@ find /tmp -maxdepth 1 -name 'wslgui_*' -mmin +1440 -delete 2>/dev/null || true
           // The cd's own stderr is kept (no 2>/dev/null) because "no such directory"
           // is exactly what the user needs to be told here.
           `export COLUMNS=80 LINES=24 TERM=dumb 2>/dev/null; cd ${shellQuote(casePath)} || exit 1; ${fullCmd}`,
-        ];
+        );
         const proc = spawn('wsl', wslArgs, {
           env: { ...process.env, TERM: 'dumb', COLUMNS: '80', LINES: '24' },
           windowsHide: true,
