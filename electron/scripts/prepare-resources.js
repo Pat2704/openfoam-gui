@@ -21,6 +21,8 @@
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const crypto = require("crypto");
+const { execFileSync } = require("child_process");
 
 const ELECTRON_DIR = path.resolve(__dirname, "..");
 const ROOT = path.resolve(ELECTRON_DIR, "..");
@@ -29,8 +31,11 @@ const BIN_DIR = path.join(RESOURCES, "bin");
 const NODE_EXE = path.join(BIN_DIR, "node.exe");
 const STANDALONE_DST = path.join(RESOURCES, "standalone");
 
-// Node runtime bundled in the original 6.1.4 build; kept pinned since.
-const NODE_VERSION = "20.20.2";
+// Node runtime that runs the standalone server, pinned. Changing the version
+// means changing the checksum too: it is the win-x64/node.exe line of
+// https://nodejs.org/dist/v<version>/SHASUMS256.txt.
+const NODE_VERSION = "22.23.3";
+const NODE_SHA256 = "9c9245166b4a8e182e0b797da9c20136117ff24368eaff1fec8343a123c8db0e";
 const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/win-x64/node.exe`;
 
 function log(msg) {
@@ -169,14 +174,41 @@ function download(url, dest) {
   });
 }
 
+function sha256(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+// The version the node.exe on disk reports, or null when it cannot say.
+function bundledNodeVersion() {
+  try {
+    return execFileSync(NODE_EXE, ["--version"], { encoding: "utf-8", windowsHide: true }).trim().replace(/^v/, "");
+  } catch {
+    return null;
+  }
+}
+
 async function ensureNodeExe() {
+  // Present is not enough: this used to keep whatever node.exe was already
+  // there, so changing NODE_VERSION above changed nothing on a machine that had
+  // built before. The file is kept only when it IS the pinned version.
   if (fs.existsSync(NODE_EXE)) {
-    log(`node.exe already present (${(fs.statSync(NODE_EXE).size / 1048576).toFixed(1)} MB)`);
-    return;
+    const present = bundledNodeVersion();
+    if (present === NODE_VERSION) {
+      log(`node.exe ${present} already present (${(fs.statSync(NODE_EXE).size / 1048576).toFixed(1)} MB)`);
+      return;
+    }
+    log(`node.exe is ${present || "unreadable"}, the pinned version is ${NODE_VERSION} — replacing it`);
   }
   log(`Downloading Node ${NODE_VERSION} (win-x64) -> ${path.relative(ROOT, NODE_EXE)}`);
-  await download(NODE_URL, NODE_EXE);
-  log("node.exe downloaded");
+  const fresh = NODE_EXE + ".new";
+  await download(NODE_URL, fresh);
+  const digest = sha256(fresh);
+  if (digest !== NODE_SHA256) {
+    fs.rmSync(fresh, { force: true });
+    fail(`downloaded node.exe has SHA-256 ${digest}, expected ${NODE_SHA256}`);
+  }
+  fs.renameSync(fresh, NODE_EXE);
+  log("node.exe downloaded and verified");
 }
 
 function assembleStandalone() {

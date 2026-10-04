@@ -394,7 +394,7 @@ the parts where a mistake is silent: the input validators that everything reachi
 two incompatible OpenFOAM layouts (≤10 and 11+). Knowledge tests also exercise
 v9–v14 lookup behavior, structured command options and Italian tutorial retrieval.
 
-Electron `31.7.7` and the bundled Node `20.20.2` are pinned in
+Electron `31.7.7` and the bundled Node `22.23.3` are pinned in
 `electron/electron-builder.yml` and `electron/scripts/prepare-resources.js`.
 
 ### Layout

@@ -34,8 +34,11 @@ audits.
   failures were Linux/Node 22 only: on Windows all tests passed before too.
 - `next` and `eslint-config-next` 16.3.3 → 16.3.8 through npm (GHSA-vcvr-r3jv-pc5j;
   `next/og` is unused). `npm run check`: 363 pass, 2 skipped.
-- Left to the user: Electron 31.7.7 and bundled Node 20.20.2 are out of support;
-  no upgrade was made. No CI; `wsl.ts` is 4,7k lines; sync WSL calls block.
+- At the user's request the bundled Node went 20.20.2 → 22.23.3 (checksum
+  pinned; `prepare-resources.js` now replaces a node.exe of another version).
+  Checked in the packaged window: editor, commands, mesh, residuals, ParaView.
+- Left to the user: Electron 31.7.7 (out of support) is the next, riskier step.
+  No CI; `wsl.ts` is 4,7k lines; sync WSL calls block. Agents not exercised.
 
 ## 2026-10-03 — v5.6.2: residuals, chart controls and ParaView editing
 
