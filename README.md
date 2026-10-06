@@ -81,8 +81,10 @@ the **OpenFOAM card in the Dashboard**.
   holds cases and is not a case itself (one level; cases directly in the run
   directory stay as they are). Create one with **Container**, choose where a
   case goes when creating, cloning, copying a tutorial or renaming it, and
-  turn an empty case into a container (or back) from its rename dialog. A case
-  in a container is named `container/case` everywhere, the agents included.
+  turn an existing folder into a container from its rename dialog: the folders
+  inside it become its cases (a case with files of its own is moved into a
+  container instead). A case in a container is named `container/case`
+  everywhere, the agents included.
 - **New Case** — guided wizard from a template (cavity, pipe flow, airfoil,
   dam break, motorbike…). It reads the installed OpenFOAM version and writes
   the case in the layout that version actually wants, then preflights it before

@@ -76,7 +76,8 @@ export async function GET(req: NextRequest) {
 //   { action: 'createContainer', name }          → { success, name }
 //   { action: 'deleteContainer', name }          → { success } (only when empty)
 //   { action: 'renameContainer', name, newName } → { success, name: newName }
-//   { action: 'setKind', name, kind }            → { success, kind }
+//   { action: 'setKind', name, kind, confirmed? } → { success, kind } or, for a
+//       folder that holds folders, { success: false, needsConfirmation, folders }
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -111,7 +112,8 @@ export async function POST(req: NextRequest) {
       if (body.kind !== 'container' && body.kind !== 'case') {
         return NextResponse.json({ error: 'kind must be "container" or "case"' }, { status: 400 });
       }
-      return NextResponse.json({ success: true, ...setFolderKind(body.name, body.kind) });
+      const result = setFolderKind(body.name, body.kind, body.confirmed === true);
+      return NextResponse.json({ success: !result.needsConfirmation, ...result });
     }
 
     return NextResponse.json(

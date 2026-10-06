@@ -18,9 +18,9 @@ audits.
   a fresh check on create, clone, move, delete.
 - Dashboard: tree list, Container button, a location select on create, clone,
   tutorial copy and rename (which moves), container rename and delete (empty
-  only). A folder becomes a container only when it holds no folders (the three
-  empty ones of a new case are removed): a first version listed a case's own
-  0/, system/ and constant/ as cases. The wizard has the same location select.
+  only). An existing folder becomes a container unless it is a case with files
+  of its own (its 0/, system/, constant/ would be listed as cases); the folders
+  it holds become its cases, after a confirmation that names them.
 - Checked in the packaged window on `ui_grp_test`: create, copy a tutorial in,
   edit, blockMesh, solver, mesh, residuals, ParaView, move out, delete; three
   refusals. Not checked: agents on a nested case. Known: a process is matched

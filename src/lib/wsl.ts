@@ -1098,14 +1098,20 @@ export function createContainer(name: string): string {
 /**
  * Turn a folder of the run directory into a container, or back into a case.
  *
- * Either way the folder must hold no folders of its own, so nothing changes
- * what it means by being relabelled: a case's 0/, system/ and time folders
- * would be listed as cases of the new container, and a container's cases would
- * vanish from every list. The three empty folders the app gives a new case do
- * not count — they are removed — so a case made by mistake can become a
- * container. A case with files is moved into a container instead.
+ * Into a container: the folders it holds become its cases — that is the point
+ * of marking an existing folder that already groups some. What is refused is a
+ * folder that is itself a case with files (in 0/, system/ or constant/): those
+ * three would be listed as cases of the new container. The empty ones the app
+ * gives a new case are simply removed. The folders that will become cases are
+ * reported first (`needsConfirmation`), and nothing is changed until the call
+ * is repeated with `confirmed`.
+ *
+ * Back into a case: refused while it still holds folders, which would be the
+ * cases it groups and would vanish from every list.
  */
-export function setFolderKind(name: string, kind: 'container' | 'case'): { kind: 'container' | 'case' } {
+export function setFolderKind(
+  name: string, kind: 'container' | 'case', confirmed = false,
+): { kind: 'container' | 'case'; needsConfirmation?: boolean; folders?: string[] } {
   const safeName = validateFolderName(name, 'Folder name');
   const runDir = getRunDirectory();
   const b64 = Buffer.from(`
@@ -1119,8 +1125,16 @@ if [ ${kind === 'container' ? 'container' : 'case'} = container ]; then
         echo "it is a case with files in $d/. Create a container and move this case into it instead" >&2; exit 1
       fi
     done
-    n=$(find "$D" -mindepth 1 -maxdepth 1 -type d ! -name 0 ! -name system ! -name constant | wc -l)
-    if [ "$n" -gt 0 ]; then echo "it holds $n folder(s) that would be listed as cases. Create a container and move this case into it instead" >&2; exit 1; fi
+    if [ ${confirmed ? 'yes' : 'no'} = no ]; then
+      found=0
+      for sub in "$D"/*/; do
+        [ -d "$sub" ] || continue
+        b=$(basename "$sub")
+        case "$b" in 0|system|constant) continue ;; esac
+        echo "FOLDER|$b"; found=1
+      done
+      if [ "$found" = 1 ]; then echo "NEEDS_CONFIRMATION"; exit 0; fi
+    fi
     rmdir -- "$D/0" "$D/system" "$D/constant" 2>/dev/null
     : > "$M" || { echo "the folder could not be marked" >&2; exit 1; }
   fi
@@ -1131,10 +1145,15 @@ else
 fi
 echo OK
 `).toString('base64');
+  let out: string;
   try {
-    runInWslScript(b64, 30000);
+    out = runInWslScript(b64, 30000).replace(/\r/g, '');
   } catch (e: any) {
     throw new Error(`"${safeName}" was not changed: ${e.message}`);
+  }
+  if (out.includes('NEEDS_CONFIRMATION')) {
+    const folders = out.split('\n').filter(l => l.startsWith('FOLDER|')).map(l => l.slice(7));
+    return { kind: 'case', needsConfirmation: true, folders };
   }
   rememberContainerFlag(runDir, safeName, kind === 'container');
   return { kind };

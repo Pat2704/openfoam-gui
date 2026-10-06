@@ -572,7 +572,7 @@ export default function Dashboard({
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({} as Record<string, unknown>));
-    return { ok: res.ok, data: data as { error?: string; name?: string } };
+    return { ok: res.ok, data: data as { error?: string; name?: string; needsConfirmation?: boolean; folders?: string[] } };
   };
 
   const handleCreateContainer = async () => {
@@ -628,14 +628,24 @@ export default function Dashboard({
   };
 
   /**
-   * Turn a folder into a container, or a container back into a case. The server
-   * refuses a folder that holds folders of its own, and says what to do instead.
+   * Turn a folder into a container, or a container back into a case. A folder
+   * that already holds folders is asked about first: they become its cases,
+   * and the server changes nothing until told the user agreed.
    */
   const handleSetKind = async (name: string, kind: 'container' | 'case') => {
     setContainerBusy(name);
     try {
-      const { ok, data } = await postCases({ action: 'setKind', name, kind });
-      if (ok) {
+      let { ok, data } = await postCases({ action: 'setKind', name, kind });
+      if (ok && data.needsConfirmation) {
+        const folders = data.folders ?? [];
+        const listed = folders.length <= 8 ? folders.join(', ') : `${folders.slice(0, 8).join(', ')} and ${folders.length - 8} more`;
+        if (!(await confirmDialog(
+          `"${name}" becomes a container, and the ${folders.length === 1 ? 'folder' : `${folders.length} folders`} inside it ${folders.length === 1 ? 'is' : 'are'} listed as ${folders.length === 1 ? 'a case' : 'cases'}: ${listed}. Nothing is moved or deleted.`,
+          { title: 'Turn this folder into a container?', confirmLabel: 'Turn into a container' },
+        ))) { setContainerBusy(null); return; }
+        ({ ok, data } = await postCases({ action: 'setKind', name, kind, confirmed: true }));
+      }
+      if (ok && !data.needsConfirmation) {
         toast.success(kind === 'container' ? `"${name}" is now a container` : `"${name}" is now a case`);
         if (kind === 'container' && selectedCase === name) onSelectCase('');
         announceCaseListChange();
@@ -1425,7 +1435,7 @@ export default function Dashboard({
                     variant="ghost" className="mr-auto text-xs"
                     onClick={() => handleSetKind(renameDialogCase, 'container')}
                     disabled={containerBusy === renameDialogCase}
-                    title="Make this folder a container: it groups cases and is no longer a case itself. Only for a case without files"
+                    title="Make this folder a container: the folders inside it become its cases. Not for a case that has files of its own"
                   >
                     <Folder className="w-4 h-4 mr-1" /> Turn into a container
                   </Button>
