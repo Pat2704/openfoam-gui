@@ -6,8 +6,11 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-10-06 — Containers: folders of the run directory that group cases
+## 2026-10-06 — v5.8.0: containers, folders of the run directory that group cases
 
+- Released `v5.8.0` at the user's request (notes `docs/releases/v5.8.0.md`): the
+  pair built for `92f383c`, renamed without rebuilding (embedded 5.7.0). GitHub
+  keeps v5.8.0 and v5.7.0; the v5.6.2 release entry was removed, tag kept.
 - At the user's request, marked explicitly (no detection): the app writes
   `.ofstudio-container` into the folder. One level; run-folder cases unchanged.
 - A case is addressed by a reference, `case` or `container/case`
@@ -22,15 +25,13 @@ audits.
   it holds become its cases, after a confirmation that names them. A case moves
   between containers and the run folder by its Move button or by dragging.
 - Checked in the packaged window on `ui_grp_test`: create, copy a tutorial in,
-  edit, blockMesh, solver, mesh, residuals, ParaView, move, delete, refusals.
-  Not checked: agents on a nested case; a real mouse drag. Known: a process is
-  matched to a case by path tail, so `b` also matches `x/b`.
+  edit, blockMesh, solver, mesh, residuals, ParaView, move, delete. Not checked:
+  agents on a nested case, a real mouse drag. Known: `b` also matches `x/b`.
 
 ## 2026-10-04 — v5.7.0: WSL injection closed, Electron 44, Node 22
 
-- Released `v5.7.0` at the user's request (notes `docs/releases/v5.7.0.md`): the
-  pair built for `4142eb6`, renamed without rebuilding (embedded 5.6.2). GitHub
-  keeps v5.7.0 and v5.6.2; the v5.6.1 release entry was removed, tag kept.
+- Released `v5.7.0` (notes `docs/releases/v5.7.0.md`): the pair built for
+  `4142eb6`, renamed without rebuilding (embedded 5.6.2); v5.6.1 entry removed.
 
 ## 2026-10-04 — External review: WSL command injection closed, Host check
 
@@ -74,8 +75,7 @@ audits.
 ## 2026-10-03 — v5.6.2: residuals, chart controls and ParaView editing
 
 - Released `v5.6.2` (notes `docs/releases/v5.6.2.md`); phases 1–4 stay reverted.
-  The pair built from `7d23f73` was renamed without rebuilding (embedded 5.6.1).
-  GitHub kept v5.6.2 and v5.6.1; the v5.6.0 release entry was removed, tag kept.
+  Pair from `7d23f73` renamed without rebuilding (embedded 5.6.1); v5.6.0 removed.
 
 ## 2026-10-03 — Visible dropdowns and freely editable ParaView numbers
 
