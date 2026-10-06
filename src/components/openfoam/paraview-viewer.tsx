@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { caseFileStem } from '@/lib/case-name';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -843,7 +844,7 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
     if (!imageUrl) return;
     const link = document.createElement('a');
     link.href = imageUrl;
-    link.download = `${caseName}-paraview.jpg`;
+    link.download = `${caseFileStem(caseName)}-paraview.jpg`;
     link.click();
   };
 

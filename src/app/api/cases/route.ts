@@ -8,13 +8,18 @@ import {
   createCase,
   deleteCase,
   renameCase,
+  lastBatchContainers,
+  createContainer,
+  deleteContainer,
+  renameContainer,
+  setFolderKind,
 } from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
 import { validateCaseName, WslInputError } from '@/lib/wsl-input';
 
 // GET /api/cases
 //   ?action=list         → { cases: string[] }
-//   ?action=listBatch    → { cases: CaseSummary[] }
+//   ?action=listBatch    → { cases: CaseSummary[], containers: string[] }
 //   ?action=info&name=…  → getCaseInfo result
 //   ?action=timesteps&name=… → { timeSteps: string[] }
 //   ?action=runDir       → { runDir: string }
@@ -30,7 +35,7 @@ export async function GET(req: NextRequest) {
       }
       case 'listBatch': {
         const cases = listCasesBatch();
-        return NextResponse.json({ cases });
+        return NextResponse.json({ cases, containers: lastBatchContainers() });
       }
       case 'info': {
         const name = searchParams.get('name');
@@ -63,6 +68,15 @@ export async function GET(req: NextRequest) {
 //   { action: 'create', caseName } → { success, caseName }
 //   { action: 'delete', caseName } → { success }
 //   { action: 'rename', caseName, newName } → { success, caseName: newName }
+//
+// A case name is a case REFERENCE: `case`, or `container/case`. Renaming to a
+// reference in another container (or none) moves the case there.
+//
+// Containers — folders of the run directory that group cases:
+//   { action: 'createContainer', name }          → { success, name }
+//   { action: 'deleteContainer', name }          → { success } (only when empty)
+//   { action: 'renameContainer', name, newName } → { success, name: newName }
+//   { action: 'setKind', name, kind }            → { success, kind }
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -83,7 +97,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, caseName: newName });
     }
 
-    return NextResponse.json({ error: 'Invalid action. Use: create, delete, rename' }, { status: 400 });
+    if (action === 'createContainer') {
+      return NextResponse.json({ success: true, name: createContainer(body.name) });
+    }
+    if (action === 'deleteContainer') {
+      deleteContainer(body.name);
+      return NextResponse.json({ success: true });
+    }
+    if (action === 'renameContainer') {
+      return NextResponse.json({ success: true, name: renameContainer(body.name, body.newName) });
+    }
+    if (action === 'setKind') {
+      if (body.kind !== 'container' && body.kind !== 'case') {
+        return NextResponse.json({ error: 'kind must be "container" or "case"' }, { status: 400 });
+      }
+      return NextResponse.json({ success: true, ...setFolderKind(body.name, body.kind) });
+    }
+
+    return NextResponse.json(
+      { error: 'Invalid action. Use: create, delete, rename, createContainer, deleteContainer, renameContainer, setKind' },
+      { status: 400 },
+    );
   } catch (error: unknown) {
     return apiError(error);
   }

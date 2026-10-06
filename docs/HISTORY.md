@@ -6,6 +6,26 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-06 — Containers: folders of the run directory that group cases
+
+- At the user's request, who chose explicit marking over detection: a folder
+  is a container only when the app wrote `.ofstudio-container` into it. One
+  level; cases directly in the run directory are unchanged.
+- A case is addressed by a reference, `case` or `container/case`
+  (`src/lib/case-name.ts`). `validateCaseName` accepts both; `getCasePath`
+  checks the disk — the first segment must be a container, a single name must
+  not be one (so "delete case" cannot take a container), with a 15 s cache and
+  a fresh check on create, clone, move, delete.
+- Dashboard: tree list, Container button, a location select on create, clone,
+  tutorial copy and rename (which moves), container rename and delete (empty
+  only). A folder becomes a container only when it holds no folders (the three
+  empty ones of a new case are removed): a first version listed a case's own
+  0/, system/ and constant/ as cases. The wizard has the same location select.
+- Checked in the packaged window on `ui_grp_test`: create, copy a tutorial in,
+  edit, blockMesh, solver, mesh, residuals, ParaView, move out, delete; three
+  refusals. Not checked: agents on a nested case. Known: a process is matched
+  to a case by path tail, so `b` also matches `x/b`. 370 tests pass.
+
 ## 2026-10-04 — v5.7.0: WSL injection closed, Electron 44, Node 22
 
 - Released `v5.7.0` at the user's request (notes `docs/releases/v5.7.0.md`): the
@@ -376,33 +396,13 @@ From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
   not checked. A fake boundary of 400,000 wall faces plus a processor patch
   gave a 409 estimating 800,000 triangles. 219 tests, lint and typecheck pass.
 
-## 2026-09-10 — Case lifecycle: timesteps, clone, rename, create, unsaved edits
+## 2026-09-10 — Case lifecycle: timesteps, clone, rename, create, unsaved edits (in brief)
 
-From the case-lifecycle audit (`docs/agent-log/cases-audit.md`, ignored):
-
-- `deleteAllTimesteps` spares 0 and the earliest time (kivaTest starts at -180
-  and has no 0/; its initial conditions used to go), cleans `processor*/<time>`
-  by the same rule, and reports a failure instead of "Deleted 0 timesteps".
-  The File Editor and Monitor prompts say "all except the initial time".
-- `cloneCase` makes the folder with plain `mkdir` and checks every `cp`,
-  removing a half-made clone; `renameCase` and `cloneCase` write refusals to
-  stderr, so the user reads "a case with this name already exists" instead of
-  the raw `wsl … base64` command line.
-- `createCase` refuses an existing name unless the caller passes
-  `allowExisting` (the wizard, after its Overwrite confirmation, sends
-  `overwrite`); the Dashboard checks its list first and its rollback removes
-  only the optimistic row. Clone and Rename ignore Enter while in flight.
-- Unsaved edits: the File Editor publishes its unsaved file through
-  `case-context` (`unsavedFile`), and every route that remounts it — selecting
-  another case, a switcher chip, closing the active chip, renaming the open
-  case — asks first.
-- Verified through the real API on disposable cases (since removed): on a
-  case with -180/-170/-160 and processor0/-180/-170, exactly -160, -170 and
-  processor0/-170 went; create, clone and rename onto an existing name gave
-  readable refusals; a normal clone carried 0/, system/ and constant/. Lint,
-  typecheck and 214 tests pass. In the dev server, with an unsaved edit to
-  `test` 0/U, clicking the `cavity_test` chip asked "Unsaved changes"; Cancel
-  kept `test` open with the buffer intact, and 0/U on disk was untouched.
+- `deleteAllTimesteps` spares 0 and the earliest time, in `processor*/` too.
+- `cloneCase` removes a half-made clone; clone, rename and create refuse an
+  existing name readably (`allowExisting` is the wizard's confirmed Overwrite).
+- The File Editor publishes its unsaved file (`case-context`), and every route
+  that remounts it asks first. Verified on disposable cases; details in Git.
 
 ## 2026-09-10 — Honest states and dead code (in brief; details in Git)
 

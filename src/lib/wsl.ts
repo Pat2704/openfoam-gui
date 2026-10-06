@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
 import { buildInstallationId } from './foam-installation';
+import { CASE_CONTAINER_MARKER, parseCaseRef } from './case-name';
 import {
   boundedInteger,
   isPhysicalFieldFile,
@@ -11,6 +12,7 @@ import {
   wslBashArgs,
   WslInputError,
   validateCaseName,
+  validateFolderName,
   validateLogName,
   validatePathWithin,
   validatePid,
@@ -973,25 +975,214 @@ export function getTutorialDirectory(): string {
   return '';
 }
 
-// ── List case names in $FOAM_RUN ──
+// ── Containers ──
+// A container is a folder of the run directory that the user marked as one (the
+// app writes CASE_CONTAINER_MARKER into it — see src/lib/case-name.ts). It
+// groups cases and is never a case itself. Nothing is inferred from a folder's
+// contents: no marker, no container.
+//
+// Whether a folder is a container is asked on every getCasePath, which is on
+// the path of nearly every request, so the answer is remembered briefly.
+// Operations that create, move or delete a folder ask again (`fresh`).
+const CONTAINER_FLAG_TTL_MS = 15000;
+const containerFlags = new Map<string, { value: boolean; at: number }>();
+
+function containerFlagKey(runDir: string, name: string): string {
+  return `${runDir}\0${name}`;
+}
+
+function rememberContainerFlag(runDir: string, name: string, value: boolean): void {
+  containerFlags.set(containerFlagKey(runDir, name), { value, at: Date.now() });
+}
+
+function isContainerFolder(name: string, fresh = false): boolean {
+  const runDir = getRunDirectory();
+  const known = containerFlags.get(containerFlagKey(runDir, name));
+  if (!fresh && known && Date.now() - known.at < CONTAINER_FLAG_TTL_MS) return known.value;
+  const marker = `${runDir}/${name}/${CASE_CONTAINER_MARKER}`;
+  const value = runInWsl(`test -f ${shellQuote(marker)} && echo yes || echo no`, 10000).trim() === 'yes';
+  rememberContainerFlag(runDir, name, value);
+  return value;
+}
+
+/** Every case reference and container name in the run directory, in one call. */
+function scanRunDirectory(): { cases: string[]; containers: string[] } {
+  const runDir = getRunDirectory();
+  if (!runDir) return { cases: [], containers: [] };
+  const script = `RD=${shellQuote(runDir)}
+for d in "$RD"/*/; do
+  [ -d "$d" ] || continue
+  n=$(basename "$d")
+  if [ -f "$d${CASE_CONTAINER_MARKER}" ]; then
+    echo "CONT|$n"
+    for c in "$d"*/; do
+      [ -d "$c" ] || continue
+      echo "CASE|$n/$(basename "$c")"
+    done
+  else
+    echo "CASE|$n"
+  fi
+done
+`;
+  const lines = runInWslScript(Buffer.from(script).toString('base64'), 30000).replace(/\r/g, '').split('\n');
+  const byName = (a: string, b: string) => a.toLowerCase().localeCompare(b.toLowerCase());
+  const containers = lines.filter(l => l.startsWith('CONT|')).map(l => l.slice(5)).sort(byName);
+  const cases = lines.filter(l => l.startsWith('CASE|')).map(l => l.slice(5)).sort(byName);
+  const isContainer = new Set(containers);
+  for (const name of new Set([...containers, ...cases.filter(c => !c.includes('/'))])) {
+    rememberContainerFlag(runDir, name, isContainer.has(name));
+  }
+  return { cases, containers };
+}
+
+// ── List case references in $FOAM_RUN (`case`, or `container/case`) ──
 export function listCases(): string[] {
   try {
-    const runDir = getRunDirectory();
-    if (!runDir) return [];
-    return runInWsl(`find ${shellQuote(runDir)} -mindepth 1 -maxdepth 1 -type d -printf '%p\\n' 2>/dev/null`)
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map(d => d.replace(/\/+$/, '').split('/').pop() || '')
-      .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    return scanRunDirectory().cases;
   } catch {
     return [];
   }
 }
 
-function getCasePath(caseName: string): string {
-  const safeName = validateCaseName(caseName);
-  return `${getRunDirectory()}/${safeName}`;
+/**
+ * The folder of a case, from its reference.
+ *
+ * This is where a reference is checked against the disk: the first segment of
+ * `container/case` must be a marked container, and a single name must NOT be
+ * one. Without the second check a container would be taken for a case by every
+ * operation that takes a case — and "delete case" on it would remove every case
+ * inside.
+ */
+function getCasePath(caseName: string, fresh = false): string {
+  const ref = parseCaseRef(validateCaseName(caseName));
+  if (!ref) throw new WslInputError('Invalid case name');
+  const runDir = getRunDirectory();
+  if (ref.container) {
+    if (!isContainerFolder(ref.container, fresh)) {
+      throw new WslInputError(`"${ref.container}" is not a container`);
+    }
+    return `${runDir}/${ref.container}/${ref.name}`;
+  }
+  if (isContainerFolder(ref.name, fresh)) {
+    throw new WslInputError(`"${ref.name}" is a container, not a case`);
+  }
+  return `${runDir}/${ref.name}`;
+}
+
+export function listContainers(): string[] {
+  try {
+    return scanRunDirectory().containers;
+  } catch {
+    return [];
+  }
+}
+
+/** Make an empty container in the run directory. */
+export function createContainer(name: string): string {
+  const safeName = validateFolderName(name, 'Container name');
+  const runDir = getRunDirectory();
+  const dir = `${runDir}/${safeName}`;
+  try {
+    runInWsl(
+      `mkdir -p -- ${shellQuote(runDir)} && ` +
+      `{ test ! -e ${shellQuote(dir)} || { echo "a folder called ${safeName} already exists" >&2; exit 1; }; } && ` +
+      `mkdir -- ${shellQuote(dir)} && : > ${shellQuote(`${dir}/${CASE_CONTAINER_MARKER}`)} && echo OK`,
+    );
+  } catch (e: any) {
+    throw new Error(`Container creation failed: ${e.message}`);
+  }
+  rememberContainerFlag(runDir, safeName, true);
+  return safeName;
+}
+
+/**
+ * Turn a folder of the run directory into a container, or back into a case.
+ *
+ * Either way the folder must hold no folders of its own, so nothing changes
+ * what it means by being relabelled: a case's 0/, system/ and time folders
+ * would be listed as cases of the new container, and a container's cases would
+ * vanish from every list. The three empty folders the app gives a new case do
+ * not count — they are removed — so a case made by mistake can become a
+ * container. A case with files is moved into a container instead.
+ */
+export function setFolderKind(name: string, kind: 'container' | 'case'): { kind: 'container' | 'case' } {
+  const safeName = validateFolderName(name, 'Folder name');
+  const runDir = getRunDirectory();
+  const b64 = Buffer.from(`
+D=${shellQuote(`${runDir}/${safeName}`)}
+M="$D/${CASE_CONTAINER_MARKER}"
+[ -d "$D" ] || { echo "the folder was not found" >&2; exit 1; }
+if [ ${kind === 'container' ? 'container' : 'case'} = container ]; then
+  if [ ! -f "$M" ]; then
+    for d in 0 system constant; do
+      if [ -d "$D/$d" ] && [ -n "$(find "$D/$d" -mindepth 1 -print -quit)" ]; then
+        echo "it is a case with files in $d/. Create a container and move this case into it instead" >&2; exit 1
+      fi
+    done
+    n=$(find "$D" -mindepth 1 -maxdepth 1 -type d ! -name 0 ! -name system ! -name constant | wc -l)
+    if [ "$n" -gt 0 ]; then echo "it holds $n folder(s) that would be listed as cases. Create a container and move this case into it instead" >&2; exit 1; fi
+    rmdir -- "$D/0" "$D/system" "$D/constant" 2>/dev/null
+    : > "$M" || { echo "the folder could not be marked" >&2; exit 1; }
+  fi
+else
+  n=$(find "$D" -mindepth 1 -maxdepth 1 -type d | wc -l)
+  if [ "$n" -gt 0 ] && [ -f "$M" ]; then echo "it still holds $n case(s); move or delete them first" >&2; exit 1; fi
+  rm -f -- "$M"
+fi
+echo OK
+`).toString('base64');
+  try {
+    runInWslScript(b64, 30000);
+  } catch (e: any) {
+    throw new Error(`"${safeName}" was not changed: ${e.message}`);
+  }
+  rememberContainerFlag(runDir, safeName, kind === 'container');
+  return { kind };
+}
+
+/** Delete a container, only when it holds nothing but its marker. */
+export function deleteContainer(name: string): void {
+  const safeName = validateFolderName(name, 'Container name');
+  const runDir = getRunDirectory();
+  const b64 = Buffer.from(`
+D=${shellQuote(`${runDir}/${safeName}`)}
+M="$D/${CASE_CONTAINER_MARKER}"
+[ -f "$M" ] || { echo "it is not a container" >&2; exit 1; }
+n=$(find "$D" -mindepth 1 -maxdepth 1 ! -name ${shellQuote(CASE_CONTAINER_MARKER)} | wc -l)
+if [ "$n" -gt 0 ]; then echo "it is not empty; move or delete its $n item(s) first" >&2; exit 1; fi
+rm -f -- "$M" && rmdir -- "$D" || { echo "the folder could not be removed" >&2; exit 1; }
+echo OK
+`).toString('base64');
+  try {
+    runInWslScript(b64, 30000);
+  } catch (e: any) {
+    throw new Error(`Unable to delete "${safeName}": ${e.message}`);
+  }
+  containerFlags.delete(containerFlagKey(runDir, safeName));
+}
+
+/** Rename a container; the cases inside keep their own names. */
+export function renameContainer(oldName: string, newName: string): string {
+  const safeOld = validateFolderName(oldName, 'Container name');
+  const safeNew = validateFolderName(newName, 'Container name');
+  if (safeOld === safeNew) return safeNew;
+  const runDir = getRunDirectory();
+  const b64 = Buffer.from(`
+SRC=${shellQuote(`${runDir}/${safeOld}`)}
+DST=${shellQuote(`${runDir}/${safeNew}`)}
+[ -f "$SRC/${CASE_CONTAINER_MARKER}" ] || { echo "it is not a container" >&2; exit 1; }
+if [ -e "$DST" ]; then echo "a folder with this name already exists" >&2; exit 1; fi
+mv -- "$SRC" "$DST" || { echo "the folder could not be moved" >&2; exit 1; }
+echo OK
+`).toString('base64');
+  try {
+    runInWslScript(b64, 30000);
+  } catch (e: any) {
+    throw new Error(`Rename failed: ${e.message}`);
+  }
+  containerFlags.delete(containerFlagKey(runDir, safeOld));
+  rememberContainerFlag(runDir, safeNew, true);
+  return safeNew;
 }
 
 // ── OpenFOAM install layout (general, not hard-coded to /opt/openfoam13) ──
@@ -1576,8 +1767,8 @@ export function runFoamHelp(command: string, maxBytes = 6000): string {
   }
 }
 
-// ── Batch: info of all cases in a SINGLE WSL call ──
-export function listCasesBatch(): {
+export interface CaseBatchSummary {
+  /** The case reference: `case`, or `container/case`. */
   name: string;
   dirs: string[];
   fileCount: Record<string, number>;
@@ -1586,7 +1777,18 @@ export function listCasesBatch(): {
   hasLog: boolean;
   logFiles: string[];
   wizard: boolean;
-}[] {
+}
+
+/** The containers seen by the last listCasesBatch(), which lists them in the same call. */
+let lastListedContainers: string[] = [];
+
+/** Containers of the run directory, as of the most recent batch listing. */
+export function lastBatchContainers(): string[] {
+  return lastListedContainers;
+}
+
+// ── Batch: info of all cases in a SINGLE WSL call ──
+export function listCasesBatch(): CaseBatchSummary[] {
   const runDir = getRunDirectory();
   if (!runDir) return [];
 
@@ -1596,9 +1798,8 @@ export function listCasesBatch(): {
     const script = `
 RD=${shellQuote(runDir)}
 if [ -d "$RD" ]; then echo "DBG:dir_exists=yes"; else echo "DBG:dir_exists=no"; fi
-for casedir in "$RD"/*/; do
-  [ -d "$casedir" ] || continue
-  name=$(basename "$casedir")
+emit_case() {
+  casedir="$1"; name="$2"
   fc0=0; fcsys=0; fccon=0
   [ -d "$casedir/0" ] && fc0=$(find "$casedir/0" -maxdepth 1 -type f 2>/dev/null | wc -l)
   [ -d "$casedir/system" ] && fcsys=$(find "$casedir/system" -maxdepth 1 -type f 2>/dev/null | wc -l)
@@ -1616,6 +1817,19 @@ for casedir in "$RD"/*/; do
   hlog="no"; [ -n "$logs" ] && hlog="yes"
   wz="no"; [ -f "$casedir/${WIZARD_MARKER_PATH}" ] && wz="yes"
   echo "CASE|$name|0:$fc0 system:$fcsys constant:$fccon|$tsc|\${lastts:- }|$hlog|$logs|$wz"
+}
+for top in "$RD"/*/; do
+  [ -d "$top" ] || continue
+  topname=$(basename "$top")
+  if [ -f "$top${CASE_CONTAINER_MARKER}" ]; then
+    echo "CONT|$topname"
+    for sub in "$top"*/; do
+      [ -d "$sub" ] || continue
+      emit_case "$sub" "$topname/$(basename "$sub")"
+    done
+  else
+    emit_case "$top" "$topname"
+  fi
 done
 echo "DBG:done"
 `;
@@ -1632,8 +1846,12 @@ echo "DBG:done"
     }
     const caseLines = output.split('\n').filter(l => l.startsWith('CASE|'));
     debug.push(`case_lines=${caseLines.length}`);
+    const containers = output.split('\n').filter(l => l.startsWith('CONT|')).map(l => l.slice(5).trim())
+      .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    lastListedContainers = containers;
+    for (const name of containers) rememberContainerFlag(runDir, name, true);
 
-    if (caseLines.length === 0) {
+    if (caseLines.length === 0 && containers.length === 0) {
       debug.push('fallback=trying_find');
       try {
         const findOut = runInWsl(`find ${shellQuote(runDir)} -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null`).trim();
@@ -1695,7 +1913,7 @@ echo "DBG:done"
  */
 export function createCase(caseName: string, options: { allowExisting?: boolean } = {}): string {
   const safeName = validateCaseName(caseName);
-  const casePath = getCasePath(safeName);
+  const casePath = getCasePath(safeName, true);
   const refuseExisting = options.allowExisting
     ? ''
     : `{ test ! -e ${shellQuote(casePath)} || { echo "A case called ${safeName} already exists" >&2; exit 1; }; mkdir -- ${shellQuote(casePath)}; } && `;
@@ -1711,7 +1929,7 @@ export function createCase(caseName: string, options: { allowExisting?: boolean 
 }
 
 export function deleteCase(caseName: string): void {
-  const casePath = getCasePath(caseName);
+  const casePath = getCasePath(caseName, true);
   try {
     runInWsl(`rm -rf -- ${shellQuote(casePath)}`);
   } catch (e: any) {
@@ -1828,7 +2046,7 @@ export function copyTutorial(tutorialPath: string, newCaseName: string): string 
   const runDir = getRunDirectory();
   const sourcePath = validatePathWithin(getTutorialDirectory(), tutorialPath, 'Tutorial path');
   const safeName = validateCaseName(newCaseName);
-  const destinationPath = `${runDir}/${safeName}`;
+  const destinationPath = getCasePath(safeName, true);
   try {
     // `mkdir` is the existence check that counts: it fails atomically if the
     // name exists. `test` alone left a gap — two quick copies (Enter pressed
@@ -2801,8 +3019,8 @@ export function listLogFiles(caseName: string): string[] {
 
 // ── Clone a case (only 0/, system/, constant/ — no timesteps, no logs) ──
 export function cloneCase(sourceName: string, newName: string): string {
-  const srcPath = getCasePath(sourceName);
-  const dstPath = getCasePath(newName);
+  const srcPath = getCasePath(sourceName, true);
+  const dstPath = getCasePath(newName, true);
   // Errors go to stderr: runInWslScript reports only that, so an "ERROR: …"
   // echoed to stdout used to reach the user as the raw wsl command line. The
   // folder is made with plain `mkdir` (atomic, fails if it exists) and every
@@ -2837,8 +3055,8 @@ export function renameCase(oldName: string, newName: string): string {
   const safeOld = validateCaseName(oldName);
   const safeNew = validateCaseName(newName);
   if (safeOld === safeNew) return safeNew;
-  const oldPath = `${getRunDirectory()}/${safeOld}`;
-  const newPath = `${getRunDirectory()}/${safeNew}`;
+  const oldPath = getCasePath(safeOld, true);
+  const newPath = getCasePath(safeNew, true);
   const b64 = Buffer.from(`
 SRC=${shellQuote(oldPath)}
 DST=${shellQuote(newPath)}
@@ -3612,6 +3830,8 @@ export function getQuickStatus(): {
   tutorialDir: string;
   envSnippet: string;
   cases: { name: string; dirs: string[]; fileCount: Record<string, number>; timeStepCount: number; lastTimeStep: string; hasLog: boolean; logFiles: string[] }[];
+  /** Folders of the run directory marked as containers, empty ones included. */
+  containers: string[];
 } {
   try {
     if (cachedFoamEnv && cachedVersion && cachedVersion !== 'Unknown' && cachedRunDir) {
@@ -3626,6 +3846,7 @@ export function getQuickStatus(): {
         tutorialDir: cachedTutDir || '',
         envSnippet,
         cases,
+        containers: lastBatchContainers(),
       };
     }
 
@@ -3659,9 +3880,9 @@ echo CASES_MARKER`;
     persistCache();
 
     const cases = listCasesBatch();
-    return { version, runDir, tutorialDir: tutDir, envSnippet, cases };
+    return { version, runDir, tutorialDir: tutDir, envSnippet, cases, containers: lastBatchContainers() };
   } catch {
-    return { version: 'N/A', runDir: 'N/A', tutorialDir: 'N/A', envSnippet: '', cases: [] };
+    return { version: 'N/A', runDir: 'N/A', tutorialDir: 'N/A', envSnippet: '', cases: [], containers: [] };
   }
 }
 

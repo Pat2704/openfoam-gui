@@ -12,21 +12,56 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useCaseContext } from '@/lib/case-context';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
   Box, Trash2, FolderOpen, RefreshCw, Settings, Play, Terminal as TerminalIcon,
   CheckCircle2, XCircle, Activity, Terminal, ChevronRight,
   AlertTriangle, Copy, BookOpen, FolderTree, HardDrive, Clock,
-  FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch, Wand2
+  FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch, Wand2,
+  Folder, FolderPlus, ChevronDown
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
+import { joinCaseRef, parseCaseRef } from '@/lib/case-name';
 
 interface WslStatus {
   running: boolean; name: string; error?: string;
   version?: string; runDir?: string; tutorialDir?: string; env?: string; processes?: string; distros?: string[];
   cases?: CaseSummary[];
+  containers?: string[];
 }
+
+/** The Select value that stands for "directly in the run directory". */
+const RUN_FOLDER = '__run__';
+
+/**
+ * Where a case goes: directly in the run directory, or in one of the
+ * containers. `value` is the container's name, or '' for the run directory.
+ * Rendered only when there is a container to choose.
+ */
+function LocationSelect({ value, onChange, containers, label }: {
+  value: string; onChange: (container: string) => void; containers: string[]; label: string;
+}) {
+  if (containers.length === 0) return null;
+  return (
+    <Select value={value || RUN_FOLDER} onValueChange={v => onChange(v === RUN_FOLDER ? '' : v)}>
+      <SelectTrigger className="h-8 text-xs font-mono w-auto min-w-[9rem]" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={RUN_FOLDER} className="text-xs">Run folder</SelectItem>
+        {containers.map(c => (
+          <SelectItem key={c} value={c} className="text-xs font-mono">{c}/</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** The folder name of a case reference, and the container it is in ('' for none). */
+function caseLeaf(ref: string): string { return parseCaseRef(ref)?.name ?? ref; }
+function caseContainer(ref: string): string { return parseCaseRef(ref)?.container ?? ''; }
 
 interface CaseSummary {
   name: string;
@@ -86,6 +121,15 @@ export default function Dashboard({
 }) {
   const [status, setStatus] = useState<WslStatus | null>(null);
   const [cases, setCases] = useState<CaseSummary[]>([]);
+  // Containers: folders of the run directory that group cases (see
+  // src/lib/case-name.ts). Listed even when empty, which the case list alone
+  // could not show.
+  const [containers, setContainers] = useState<string[]>([]);
+  const [collapsedContainers, setCollapsedContainers] = useState<Set<string>>(new Set());
+  const [newCaseLocation, setNewCaseLocation] = useState('');
+  const [containerBusy, setContainerBusy] = useState<string | null>(null);
+  const [containerDialog, setContainerDialog] = useState<string | null>(null);
+  const [containerNewName, setContainerNewName] = useState('');
   const [loading, setLoading] = useState(true);
   const [distroInput, setDistroInput] = useState('');
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings>(null);
@@ -124,6 +168,7 @@ export default function Dashboard({
   const [copyingTut, setCopyingTut] = useState<string | null>(null);
   const [copyDialogCase, setCopyDialogCase] = useState<TutorialCase | null>(null);
   const [copyNewName, setCopyNewName] = useState('');
+  const [copyLocation, setCopyLocation] = useState('');
   /**
    * Height that ends the tutorials grid at the bottom of `main`, so the two
    * lists scroll on their own without the page scrolling as well. Measured, not
@@ -152,11 +197,13 @@ export default function Dashboard({
   // Clone case state
   const [cloneDialogCase, setCloneDialogCase] = useState<string | null>(null);
   const [cloneNewName, setCloneNewName] = useState('');
+  const [cloneLocation, setCloneLocation] = useState('');
   const [cloningCase, setCloningCase] = useState<string | null>(null);
 
   // Rename case state
   const [renameDialogCase, setRenameDialogCase] = useState<string | null>(null);
   const [renameNewName, setRenameNewName] = useState('');
+  const [renameLocation, setRenameLocation] = useState('');
   const [renamingCase, setRenamingCase] = useState<string | null>(null);
 
   // Cache to avoid unnecessary re-fetches — stores the last fetch timestamp
@@ -178,6 +225,7 @@ export default function Dashboard({
         ? statusData.cases
         : []) as CaseSummary[];
       setCases(casesList);
+      setContainers(Array.isArray(statusData.containers) ? statusData.containers as string[] : []);
       if (statusData.name) setDistroInput(statusData.name);
     } catch {
       setStatus({ running: false, name: '', error: 'Cannot connect to WSL' });
@@ -480,7 +528,11 @@ export default function Dashboard({
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) { toast.error('Enter a name'); return; }
     if (newCaseName.includes(' ')) { toast.error('No spaces in the name'); return; }
-    const name = newCaseName.trim();
+    if (newCaseName.includes('/')) { toast.error('A name is one folder: choose the container beside it'); return; }
+    // A container that has since been removed must not be used silently.
+    const location = containers.includes(newCaseLocation) ? newCaseLocation : '';
+    const name = joinCaseRef(location, newCaseName.trim());
+    if (containers.includes(name)) { toast.error(`"${name}" is a container`); return; }
     // The server refuses an existing name; say so before the optimistic row
     // below would show the case twice.
     if (cases.some(c => c.name === name)) { toast.error(`A case called "${name}" already exists`); return; }
@@ -512,6 +564,86 @@ export default function Dashboard({
       toast.error('WSL error');
     }
     setCreating(false);
+  };
+
+  // ── Containers ──
+  const postCases = async (body: Record<string, unknown>) => {
+    const res = await fetch('/api/cases', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({} as Record<string, unknown>));
+    return { ok: res.ok, data: data as { error?: string; name?: string } };
+  };
+
+  const handleCreateContainer = async () => {
+    const name = newCaseName.trim();
+    if (!name) { toast.error('Enter a name for the container'); return; }
+    if (/[\s/]/.test(name)) { toast.error('No spaces or slashes in the name'); return; }
+    setCreating(true);
+    try {
+      const { ok, data } = await postCases({ action: 'createContainer', name });
+      if (ok) {
+        toast.success(`Container "${name}" created`);
+        setNewCaseName(''); setNewCaseLocation(name);
+        await fetchAll(true); onRefresh();
+      } else toast.error(data.error || 'The container could not be created');
+    } catch { toast.error('WSL error'); }
+    setCreating(false);
+  };
+
+  const handleDeleteContainer = async (name: string) => {
+    setContainerBusy(name);
+    try {
+      const { ok, data } = await postCases({ action: 'deleteContainer', name });
+      if (ok) { toast.success(`Container "${name}" deleted`); await fetchAll(true); onRefresh(); }
+      else toast.error(data.error || `Could not delete "${name}"`);
+    } catch { toast.error('WSL error'); }
+    setContainerBusy(null);
+  };
+
+  const handleRenameContainer = async (oldName: string, newName: string) => {
+    const name = newName.trim();
+    if (!name) { toast.error('Enter a name'); return; }
+    if (name === oldName) { setContainerDialog(null); return; }
+    const openInside = !!selectedCase && caseContainer(selectedCase) === oldName;
+    if (openInside && unsavedFile && !(await confirmDialog(
+      `"${unsavedFile}" has unsaved changes. Renaming the container reopens the open case and discards them.`,
+      { title: 'Unsaved changes', confirmLabel: 'Discard and rename', destructive: true },
+    ))) return;
+    setContainerBusy(oldName);
+    try {
+      const { ok, data } = await postCases({ action: 'renameContainer', name: oldName, newName: name });
+      if (ok) {
+        toast.success(`Container "${oldName}" renamed to "${data.name}"`);
+        if (openInside && selectedCase) {
+          if (unsavedFile) setUnsavedFile(null);
+          onSelectCase(joinCaseRef(data.name, caseLeaf(selectedCase)));
+        }
+        announceCaseListChange();
+        setContainerDialog(null);
+        await fetchAll(true); onRefresh();
+      } else toast.error(data.error || 'Rename error');
+    } catch { toast.error('WSL error'); }
+    setContainerBusy(null);
+  };
+
+  /**
+   * Turn a folder into a container, or a container back into a case. The server
+   * refuses a folder that holds folders of its own, and says what to do instead.
+   */
+  const handleSetKind = async (name: string, kind: 'container' | 'case') => {
+    setContainerBusy(name);
+    try {
+      const { ok, data } = await postCases({ action: 'setKind', name, kind });
+      if (ok) {
+        toast.success(kind === 'container' ? `"${name}" is now a container` : `"${name}" is now a case`);
+        if (kind === 'container' && selectedCase === name) onSelectCase('');
+        announceCaseListChange();
+        setRenameDialogCase(null); setContainerDialog(null);
+        await fetchAll(true); onRefresh();
+      } else toast.error(data.error || `"${name}" was not changed`);
+    } catch { toast.error('WSL error'); }
+    setContainerBusy(null);
   };
 
   /**
@@ -555,9 +687,10 @@ export default function Dashboard({
     setDeleting(null);
   };
 
-  const handleCopyTutorial = async (tutorialPath: string, newName: string) => {
-    if (!newName.trim()) { toast.error('Enter a name'); return; }
-    if (newName.includes(' ')) { toast.error('No spaces in the name'); return; }
+  const handleCopyTutorial = async (tutorialPath: string, typedName: string) => {
+    if (!typedName.trim()) { toast.error('Enter a name'); return; }
+    if (/[\s/]/.test(typedName.trim())) { toast.error('No spaces or slashes in the name'); return; }
+    const newName = joinCaseRef(containers.includes(copyLocation) ? copyLocation : '', typedName.trim());
     setCopyingTut(tutorialPath);
     try {
       const res = await fetch('/api/tutorials', {
@@ -576,9 +709,10 @@ export default function Dashboard({
     setCopyingTut(null);
   };
 
-  const handleCloneCase = async (sourceName: string, newName: string) => {
-    if (!newName.trim()) { toast.error('Enter a name'); return; }
-    if (newName.includes(' ')) { toast.error('No spaces in the name'); return; }
+  const handleCloneCase = async (sourceName: string, typedName: string) => {
+    if (!typedName.trim()) { toast.error('Enter a name'); return; }
+    if (/[\s/]/.test(typedName.trim())) { toast.error('No spaces or slashes in the name'); return; }
+    const newName = joinCaseRef(containers.includes(cloneLocation) ? cloneLocation : '', typedName.trim());
     setCloningCase(sourceName);
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(sourceName)}`, {
@@ -599,9 +733,10 @@ export default function Dashboard({
 
   // Rename a case: atomic mv on the server side. If the renamed case was the
   // currently-selected one, update the selection so the editor/monitor follow.
-  const handleRenameCase = async (oldName: string, newName: string) => {
-    if (!newName.trim()) { toast.error('Enter a name'); return; }
-    if (newName.includes(' ')) { toast.error('No spaces in the name'); return; }
+  const handleRenameCase = async (oldName: string, typedName: string) => {
+    if (!typedName.trim()) { toast.error('Enter a name'); return; }
+    if (/[\s/]/.test(typedName.trim())) { toast.error('No spaces or slashes in the name'); return; }
+    const newName = joinCaseRef(containers.includes(renameLocation) ? renameLocation : '', typedName.trim());
     if (newName.trim() === oldName) { setRenameDialogCase(null); return; }
     const discardsEdits = selectedCase === oldName && !!unsavedFile;
     if (discardsEdits && !(await confirmDialog(
@@ -632,6 +767,23 @@ export default function Dashboard({
     } catch { toast.error('WSL error'); }
     setRenamingCase(null);
   };
+
+  /**
+   * The list as shown: each container followed by its cases (unless
+   * collapsed), then the cases that sit directly in the run directory.
+   */
+  const listEntries: (
+    | { kind: 'container'; name: string; count: number }
+    | { kind: 'case'; c: CaseSummary; nested: boolean }
+  )[] = [];
+  for (const name of containers) {
+    const inside = cases.filter(c => caseContainer(c.name) === name);
+    listEntries.push({ kind: 'container', name, count: inside.length });
+    if (!collapsedContainers.has(name)) for (const c of inside) listEntries.push({ kind: 'case', c, nested: true });
+  }
+  for (const c of cases) {
+    if (!containers.includes(caseContainer(c.name))) listEntries.push({ kind: 'case', c, nested: false });
+  }
 
   const handleRefresh = async () => {
     setLoading(true);
@@ -864,19 +1016,77 @@ export default function Dashboard({
                 placeholder="New case..." className="flex-1 font-mono h-8 text-xs"
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateCase()}
               />
+              <LocationSelect
+                value={containers.includes(newCaseLocation) ? newCaseLocation : ''}
+                onChange={setNewCaseLocation} containers={containers} label="Where to create the case"
+              />
               <Button onClick={handleCreateCase} disabled={creating || !newCaseName.trim()} size="sm" className="h-8 text-xs">
                 <FolderOpen className="w-3 h-3 mr-1" /> Create
               </Button>
+              <Button
+                onClick={handleCreateContainer} disabled={creating || !newCaseName.trim()} size="sm" variant="outline" className="h-8 text-xs"
+                title="Create a container with this name: a folder that groups cases and is not a case itself"
+              >
+                <FolderPlus className="w-3 h-3 mr-1" /> Container
+              </Button>
             </div>
 
-            {cases.length === 0 ? (
+            {cases.length === 0 && containers.length === 0 ? (
               <Card className="p-6 text-center text-muted-foreground">
                 <FolderOpen className="w-10 h-10 mx-auto mb-2 opacity-30" />
                 <p className="text-sm">No cases in $FOAM_RUN</p>
               </Card>
             ) : (
               <div className="space-y-1">
-                {cases.map(c => (
+                {listEntries.map(entry => entry.kind === 'container' ? (
+                  <div
+                    key={`container:${entry.name}`}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/40"
+                  >
+                    <button
+                      type="button"
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                      aria-expanded={!collapsedContainers.has(entry.name)}
+                      aria-label={`${collapsedContainers.has(entry.name) ? 'Expand' : 'Collapse'} container ${entry.name}`}
+                      onClick={() => setCollapsedContainers(prev => {
+                        const next = new Set(prev);
+                        if (next.has(entry.name)) next.delete(entry.name); else next.add(entry.name);
+                        return next;
+                      })}
+                    >
+                      {collapsedContainers.has(entry.name)
+                        ? <ChevronRight className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                        : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
+                      <Folder className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                      <span className="font-mono text-sm font-medium truncate">{entry.name}</span>
+                      <Badge variant="secondary" className="h-5 px-1.5 text-[9px] font-medium flex-shrink-0">
+                        {entry.count} {entry.count === 1 ? 'case' : 'cases'}
+                      </Badge>
+                    </button>
+                    <div className="flex gap-0.5 flex-shrink-0">
+                      <Button
+                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-amber-600 hover:text-amber-500 hover:bg-amber-500/10"
+                        onClick={() => { setContainerDialog(entry.name); setContainerNewName(entry.name); }}
+                        title="Rename container, or turn it into a case"
+                        aria-label={`Rename container ${entry.name}`}
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </Button>
+                      <Button
+                        size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-500 hover:text-red-600 hover:bg-destructive/10"
+                        onClick={async () => {
+                          if (entry.count > 0) { toast.error(`"${entry.name}" still holds ${entry.count} ${entry.count === 1 ? 'case' : 'cases'}: move or delete them first`); return; }
+                          if (await confirmDialog(`Delete the empty container "${entry.name}"?`, { title: 'Delete container', confirmLabel: 'Delete', destructive: true })) handleDeleteContainer(entry.name);
+                        }}
+                        disabled={containerBusy === entry.name}
+                        title={entry.count > 0 ? 'Delete container (only when it is empty)' : 'Delete container'}
+                        aria-label={`Delete container ${entry.name}`}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : ((c: CaseSummary) => (
                   // Opening a case is the app's primary action and was reachable
                   // only with a mouse: a bare <div onClick>, absent from the tab
                   // order and announced as nothing. It cannot become a <button>
@@ -891,7 +1101,7 @@ export default function Dashboard({
                     aria-label={`Open case ${c.name}`}
                     className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       selectedCase === c.name ? 'bg-accent ring-1 ring-primary/50' : ''
-                    }`}
+                    } ${entry.nested ? 'ml-6' : ''}`}
                     onClick={() => onSelectCase(c.name)}
                     onKeyDown={(e) => {
                       // Space must not scroll the list, and neither key should
@@ -905,7 +1115,7 @@ export default function Dashboard({
                   >
                     {/* Icon + Name */}
                     <Box className="w-4 h-4 text-primary flex-shrink-0" />
-                    <span className="font-mono text-sm font-medium truncate flex-1 min-w-0">{c.name}</span>
+                    <span className="font-mono text-sm font-medium truncate flex-1 min-w-0" title={c.name}>{caseLeaf(c.name)}</span>
 
                     {/* Badges: file counts */}
                     <div className="hidden sm:flex items-center gap-1.5 flex-shrink-0">
@@ -977,7 +1187,7 @@ export default function Dashboard({
                         // this button flashed in dark mode. A translucent tint of
                         // the icon's own colour reads correctly in both themes.
                         size="sm" variant="ghost" className="h-7 w-7 p-0 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10"
-                        onClick={(e) => { e.stopPropagation(); setCloneDialogCase(c.name); setCloneNewName(c.name + '_copy'); }}
+                        onClick={(e) => { e.stopPropagation(); setCloneDialogCase(c.name); setCloneNewName(caseLeaf(c.name) + '_copy'); setCloneLocation(caseContainer(c.name)); }}
                         title="Clone case"
                         aria-label={`Clone case ${c.name}`}
                       >
@@ -985,8 +1195,8 @@ export default function Dashboard({
                       </Button>
                       <Button
                         size="sm" variant="ghost" className="h-7 w-7 p-0 text-amber-600 hover:text-amber-500 hover:bg-amber-500/10"
-                        onClick={(e) => { e.stopPropagation(); setRenameDialogCase(c.name); setRenameNewName(c.name); }}
-                        title="Rename case"
+                        onClick={(e) => { e.stopPropagation(); setRenameDialogCase(c.name); setRenameNewName(caseLeaf(c.name)); setRenameLocation(caseContainer(c.name)); }}
+                        title="Rename or move case"
                         aria-label={`Rename case ${c.name}`}
                       >
                         <Pencil className="w-3 h-3" />
@@ -1002,7 +1212,7 @@ export default function Dashboard({
                       </Button>
                     </div>
                   </div>
-                ))}
+                ))(entry.c))}
               </div>
             )}
           </TabsContent>
@@ -1121,11 +1331,14 @@ export default function Dashboard({
               </div>
               <div>
                 <label className="text-sm font-medium mb-1 block">New case name</label>
-                <Input
-                  value={copyNewName} onChange={(e) => setCopyNewName(e.target.value)}
-                  placeholder="e.g. myCavityTest" className="font-mono"
-                  onKeyDown={(e) => { if (e.key === 'Enter' && copyingTut !== copyDialogCase.fullPath) handleCopyTutorial(copyDialogCase.fullPath, copyNewName); }}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={copyNewName} onChange={(e) => setCopyNewName(e.target.value)}
+                    placeholder="e.g. myCavityTest" className="font-mono flex-1"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && copyingTut !== copyDialogCase.fullPath) handleCopyTutorial(copyDialogCase.fullPath, copyNewName); }}
+                  />
+                  <LocationSelect value={containers.includes(copyLocation) ? copyLocation : ''} onChange={setCopyLocation} containers={containers} label="Where to copy the tutorial" />
+                </div>
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setCopyDialogCase(null)}>Cancel</Button>
@@ -1156,11 +1369,14 @@ export default function Dashboard({
               </div>
               <div>
                 <label className="text-sm font-medium mb-1 block">New case name</label>
-                <Input
-                  value={cloneNewName} onChange={(e) => setCloneNewName(e.target.value)}
-                  placeholder="e.g. cavity_variant1" className="font-mono"
-                  onKeyDown={(e) => { if (e.key === 'Enter' && cloningCase !== cloneDialogCase) handleCloneCase(cloneDialogCase, cloneNewName); }}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={cloneNewName} onChange={(e) => setCloneNewName(e.target.value)}
+                    placeholder="e.g. cavity_variant1" className="font-mono flex-1"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && cloningCase !== cloneDialogCase) handleCloneCase(cloneDialogCase, cloneNewName); }}
+                  />
+                  <LocationSelect value={containers.includes(cloneLocation) ? cloneLocation : ''} onChange={setCloneLocation} containers={containers} label="Where to put the clone" />
+                </div>
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setCloneDialogCase(null)}>Cancel</Button>
@@ -1179,7 +1395,7 @@ export default function Dashboard({
       {/* Rename Case Dialog */}
       <Dialog open={!!renameDialogCase} onOpenChange={(open) => { if (!open) setRenameDialogCase(null); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Rename Case</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Rename or move case</DialogTitle></DialogHeader>
           {renameDialogCase && (
             <div className="space-y-4 pt-2">
               <div>
@@ -1190,21 +1406,79 @@ export default function Dashboard({
                 </div>
               </div>
               <div>
-                <label className="text-sm font-medium mb-1 block">New name</label>
-                <Input
-                  value={renameNewName} onChange={(e) => setRenameNewName(e.target.value)}
-                  placeholder="e.g. cavity_v2" className="font-mono"
-                  onKeyDown={(e) => { if (e.key === 'Enter' && renamingCase !== renameDialogCase) handleRenameCase(renameDialogCase, renameNewName); }}
-                  autoFocus
-                />
+                <label className="text-sm font-medium mb-1 block">New name{containers.length > 0 ? ' and location' : ''}</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={renameNewName} onChange={(e) => setRenameNewName(e.target.value)}
+                    placeholder="e.g. cavity_v2" className="font-mono flex-1"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && renamingCase !== renameDialogCase) handleRenameCase(renameDialogCase, renameNewName); }}
+                    autoFocus
+                  />
+                  <LocationSelect value={containers.includes(renameLocation) ? renameLocation : ''} onChange={setRenameLocation} containers={containers} label="Where the case is kept" />
+                </div>
               </div>
               <div className="flex justify-end gap-2">
+                {/* Only a folder directly in the run directory can become a
+                    container: containers are one level deep. */}
+                {!caseContainer(renameDialogCase) && (
+                  <Button
+                    variant="ghost" className="mr-auto text-xs"
+                    onClick={() => handleSetKind(renameDialogCase, 'container')}
+                    disabled={containerBusy === renameDialogCase}
+                    title="Make this folder a container: it groups cases and is no longer a case itself. Only for a case without files"
+                  >
+                    <Folder className="w-4 h-4 mr-1" /> Turn into a container
+                  </Button>
+                )}
                 <Button variant="outline" onClick={() => setRenameDialogCase(null)}>Cancel</Button>
                 <Button
                   onClick={() => handleRenameCase(renameDialogCase, renameNewName)}
-                  disabled={!renameNewName.trim() || renameNewName.trim() === renameDialogCase || renamingCase === renameDialogCase}
+                  disabled={!renameNewName.trim() || joinCaseRef(containers.includes(renameLocation) ? renameLocation : '', renameNewName.trim()) === renameDialogCase || renamingCase === renameDialogCase}
                 >
                   {renamingCase === renameDialogCase ? '...' : <><Pencil className="w-4 h-4 mr-1" /> Rename</>}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Container Dialog: rename it, or turn it back into a case */}
+      <Dialog open={!!containerDialog} onOpenChange={(open) => { if (!open) setContainerDialog(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Rename container</DialogTitle></DialogHeader>
+          {containerDialog && (
+            <div className="space-y-4 pt-2">
+              <div>
+                <div className="text-xs text-muted-foreground">Current name</div>
+                <div className="font-mono text-sm bg-muted/50 px-2 py-1 rounded">{containerDialog}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  A container groups cases and is not a case itself. The cases inside keep their names.
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-1 block">New name</label>
+                <Input
+                  value={containerNewName} onChange={(e) => setContainerNewName(e.target.value)}
+                  className="font-mono" autoFocus
+                  onKeyDown={(e) => { if (e.key === 'Enter' && containerBusy !== containerDialog) handleRenameContainer(containerDialog, containerNewName); }}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost" className="mr-auto text-xs"
+                  onClick={() => handleSetKind(containerDialog, 'case')}
+                  disabled={containerBusy === containerDialog}
+                  title="Make this folder a case again (only when it holds no cases)"
+                >
+                  <Box className="w-4 h-4 mr-1" /> Turn into a case
+                </Button>
+                <Button variant="outline" onClick={() => setContainerDialog(null)}>Cancel</Button>
+                <Button
+                  onClick={() => handleRenameContainer(containerDialog, containerNewName)}
+                  disabled={!containerNewName.trim() || containerNewName.trim() === containerDialog || containerBusy === containerDialog}
+                >
+                  {containerBusy === containerDialog ? '...' : <><Pencil className="w-4 h-4 mr-1" /> Rename</>}
                 </Button>
               </div>
             </div>

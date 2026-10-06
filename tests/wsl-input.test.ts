@@ -21,6 +21,7 @@ import {
   shellQuote,
   wslBashArgs,
   validateCaseName,
+  validateFolderName,
   validateLogName,
   validatePathWithin,
   validatePid,
@@ -42,12 +43,30 @@ describe('validateCaseName', () => {
     assert.equal(validateCaseName('模型'), '模型');
   });
 
-  test('rejects anything that is not a single path segment', () => {
-    rejects(() => validateCaseName('a/b'), 'a slash');
+  test('accepts a case in a container, one level deep', () => {
+    assert.equal(validateCaseName('wing/cavity'), 'wing/cavity');
+    assert.equal(validateCaseName('ala/café'), 'ala/café');
+  });
+
+  test('rejects anything that is not a folder name or container/case', () => {
+    rejects(() => validateCaseName('a/b/c'), 'a third level');
     rejects(() => validateCaseName('a\\b'), 'a backslash');
     rejects(() => validateCaseName('..'), 'the parent directory');
     rejects(() => validateCaseName('.'), 'the current directory');
     rejects(() => validateCaseName('/abs'), 'an absolute path');
+    rejects(() => validateCaseName('a/'), 'a trailing slash');
+    rejects(() => validateCaseName('a//b'), 'an empty segment');
+    rejects(() => validateCaseName('../a'), 'a parent segment first');
+    rejects(() => validateCaseName('a/..'), 'a parent segment last');
+    rejects(() => validateCaseName('a/.hidden'), 'a hidden case in a container');
+    rejects(() => validateCaseName('-rf/a'), 'a container read as an option');
+  });
+
+  test('a container name is exactly one folder name', () => {
+    assert.equal(validateFolderName('wing'), 'wing');
+    for (const bad of ['', 'a/b', '..', '.', '.hidden', '-rf', 'a b', '$(id)']) {
+      rejects(() => validateFolderName(bad), JSON.stringify(bad));
+    }
   });
 
   test('rejects a leading dot, dash or underscore', () => {

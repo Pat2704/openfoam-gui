@@ -1,5 +1,5 @@
 import path from 'path';
-import { CASE_NAME_PATTERN } from './case-name';
+import { CASE_NAME_PATTERN, parseCaseRef } from './case-name';
 
 export class WslInputError extends Error {
   constructor(message: string) {
@@ -8,6 +8,15 @@ export class WslInputError extends Error {
   }
 }
 
+/**
+ * A case REFERENCE: `cavity`, or `container/cavity` for a case in a container
+ * (see ./case-name). One or two segments, each a valid folder name — so no
+ * empty segment, no `.` or `..`, no leading slash and no third level can pass.
+ *
+ * This says the reference is well formed, not that it names a case: whether a
+ * folder is a container is on disk, and `getCasePath` in src/lib/wsl.ts is what
+ * checks it before any operation.
+ */
 export function validateCaseName(value: string): string {
   if (typeof value !== 'string' || !value) {
     throw new WslInputError('Case name required');
@@ -16,8 +25,22 @@ export function validateCaseName(value: string): string {
   // this rule in the browser; it used to carry a looser one of its own and
   // approved names the server then refused. (`.` and `..` cannot match it — both
   // start with a dot — but the check is kept as a guard that reads locally.)
+  const ref = parseCaseRef(value);
+  if (!ref || [ref.container, ref.name].some(segment => segment === '.' || segment === '..')) {
+    throw new WslInputError(
+      'Invalid case name: use letters, numbers, dot, dash or underscore (a case in a container is container/case)',
+    );
+  }
+  return value;
+}
+
+/** One folder name in the run directory: a container's name, or a case's own. */
+export function validateFolderName(value: string, label = 'Name'): string {
+  if (typeof value !== 'string' || !value) {
+    throw new WslInputError(`${label} required`);
+  }
   if (!CASE_NAME_PATTERN.test(value) || value === '.' || value === '..') {
-    throw new WslInputError('Invalid case name: use letters, numbers, dot, dash or underscore');
+    throw new WslInputError(`Invalid ${label.toLowerCase()}: use letters, numbers, dot, dash or underscore`);
   }
   return value;
 }

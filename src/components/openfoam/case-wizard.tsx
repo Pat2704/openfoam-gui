@@ -43,7 +43,7 @@ import {
   Wind, Check, AlertTriangle, RefreshCw, Info, Wand2, X, FolderOpen, Loader2,
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
-import { caseNameProblem } from '@/lib/case-name';
+import { caseNameProblem, joinCaseRef, parseCaseRef } from '@/lib/case-name';
 import {
   DEFAULT_MESH, TURBULENCE_MODELS,
   buildField, defaultBC, defaultBoxPatches, estimateTurbulence, findSolver,
@@ -226,7 +226,12 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
   const [snappySupport, setSnappySupport] = useState<SnappySupport | null>(null);
   const [catalog, setCatalog] = useState<WizardCatalog | null>(null);
 
+  // The case's own folder name, and the container it goes in ('' for the run
+  // directory). Together they make the case reference (src/lib/case-name.ts).
   const [caseName, setCaseName] = useState('');
+  const [caseLocation, setCaseLocation] = useState('');
+  const [containers, setContainers] = useState<string[]>([]);
+  const caseRef = joinCaseRef(containers.includes(caseLocation) ? caseLocation : '', caseName.trim());
   const [existingCases, setExistingCases] = useState<string[]>([]);
   const [caseListLoaded, setCaseListLoaded] = useState(false);
   /** Cases carrying the wizard's record, which can be reopened here. */
@@ -419,6 +424,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
         const rows = data.cases as { name: string; wizard?: boolean }[];
         const names = rows.map(c => c.name);
         setExistingCases(names);
+        setContainers(Array.isArray(data.containers) ? data.containers as string[] : []);
         setWizardCases(rows.filter(c => c.wizard).map(c => c.name));
         setCaseListLoaded(true);
         return names;
@@ -535,7 +541,8 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       }
       applySettings(parsed.marker.settings);
       appliedTier.current = recordedTier;
-      setCaseName(name);
+      setCaseName(parseCaseRef(name)?.name ?? name);
+      setCaseLocation(parseCaseRef(name)?.container ?? '');
       setUpdateTarget({ caseName: name, marker: parsed.marker });
       setResult(null); setReview(null); setStep(0);
       setNameProblems([]); setSyntaxProblems([]);
@@ -909,7 +916,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     const name = caseName.trim();
     const nameProblem = caseNameProblem(name);
     if (nameProblem) out.push(nameProblem);
-    else if (!updateTarget && existingCases.includes(name)) out.push(`A case called "${name}" already exists — creating will overwrite its files.`);
+    else if (!updateTarget && existingCases.includes(caseRef)) out.push(`A case called "${caseRef}" already exists — creating will overwrite its files.`);
 
     if (!blockMeshDict.trim()) out.push('system/blockMeshDict is empty, so blockMesh has nothing to build.');
     out.push(...meshProblems(mesh));
@@ -956,7 +963,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
       out.push(`${p.path}: OpenFOAM cannot parse this file — ${p.message}${p.line ? ` (line ${p.line})` : ''}.`);
     }
     return out;
-  }, [tier, detectedVersion, caseName, existingCases, updateTarget, blockMeshDict, mesh, snappy, insideCheck, snappySupport, geometry,
+  }, [tier, detectedVersion, caseName, caseRef, existingCases, updateTarget, blockMeshDict, mesh, snappy, insideCheck, snappySupport, geometry,
       fullCase, full, catalog, mentions, fields, patches, isFull, turbulence, staleTurbulenceFields, nameProblems, syntaxProblems]);
 
   const filesToWrite = useMemo(() => {
@@ -1032,8 +1039,8 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
     writeCaseFile(name, WIZARD_MARKER_PATH, serializeMarker(marker));
 
   const handleCreate = async () => {
-    const c = caseName.trim();
-    if (!c) { toast.error('Enter a case name'); setStep(0); return; }
+    if (!caseName.trim()) { toast.error('Enter a case name'); setStep(0); return; }
+    const c = caseRef;
     if (tier === 'none') { toast.error(guideDescription('none', detectedVersion)); return; }
 
     // The API creates directories with `mkdir -p`, so writing into a name that
@@ -1307,13 +1314,29 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
             <div>
               <div className="space-y-2">
                 <Label>Case name *</Label>
-                <Input
-                  value={caseName}
-                  onChange={(e) => setCaseName(e.target.value.replace(/\s/g, ''))}
-                  placeholder="e.g. pipeFlow, airfoilTest, myCavity"
-                  className="font-mono"
-                  disabled={!!updateTarget}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={caseName}
+                    onChange={(e) => setCaseName(e.target.value.replace(/\s/g, ''))}
+                    placeholder="e.g. pipeFlow, airfoilTest, myCavity"
+                    className="font-mono flex-1"
+                    disabled={!!updateTarget}
+                  />
+                  {/* Where the case goes: the run directory, or a container made in the Dashboard. */}
+                  {containers.length > 0 && (
+                    <Select
+                      value={containers.includes(caseLocation) ? caseLocation : '__run__'}
+                      onValueChange={v => setCaseLocation(v === '__run__' ? '' : v)}
+                      disabled={!!updateTarget}
+                    >
+                      <SelectTrigger className="w-auto min-w-[9rem] font-mono text-sm" aria-label="Where to create the case"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__run__">Run folder</SelectItem>
+                        {containers.map(c => <SelectItem key={c} value={c} className="font-mono">{c}/</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 {updateTarget
@@ -1325,11 +1348,11 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
                   <AlertTriangle className="w-3 h-3" /> {caseNameProblem(caseName.trim())}
                 </p>
               )}
-              {!updateTarget && caseName.trim() && existingCases.includes(caseName.trim()) && (
+              {!updateTarget && caseName.trim() && existingCases.includes(caseRef) && (
                 <p className="text-xs text-amber-600 mt-1 flex items-center gap-1 flex-wrap">
                   <AlertTriangle className="w-3 h-3" /> A case with this name already exists.
-                  {wizardCases.includes(caseName.trim()) && (
-                    <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadCaseForUpdate(caseName.trim())}>
+                  {wizardCases.includes(caseRef) && (
+                    <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadCaseForUpdate(caseRef)}>
                       It was made by the wizard: load it to update it instead.
                     </Button>
                   )}
@@ -1546,7 +1569,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
-                ['Case name', caseName || '—'],
+                ['Case name', caseName ? caseRef : '—'],
                 [isFull ? 'Solver module' : flavour === 'modular' ? 'Solver module' : 'Application', solver],
                 ['OpenFOAM', detectedVersion ? `${detectedVersion} (${isFull ? 'complete guide' : 'shorter guide'})` : '—'],
                 ['Time', transient ? 'Transient' : 'Steady-state'],
@@ -1612,7 +1635,7 @@ export default function CaseWizard({ onCreated, openRequest, onOpenCase, onShowM
               </Button>
             ) : (
               <Button className="w-full py-6 text-base" onClick={handleCreate} disabled={creating || !caseName.trim() || tier === 'none' || tier === null}>
-                {creating ? <><span className="animate-spin mr-2">⟳</span> Creating…</> : <><CheckCircle2 className="w-5 h-5 mr-2" /> Create case &quot;{caseName || '…'}&quot;</>}
+                {creating ? <><span className="animate-spin mr-2">⟳</span> Creating…</> : <><CheckCircle2 className="w-5 h-5 mr-2" /> Create case &quot;{caseName ? caseRef : '…'}&quot;</>}
               </Button>
             )}
           </CardContent>

@@ -21,6 +21,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { caseFileStem } from '@/lib/case-name';
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -937,8 +938,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   const exportSource: ChartExportSource | null = useMemo(() => {
     if (!data || !visibleSeries.length || !selected) return null;
     const label = selected.kind === 'log'
-      ? `${caseName}-${residualKind}-residuals-${selected.log}`
-      : `${caseName}-${describeDatasetName(selected.dataset).base}`;
+      ? `${caseFileStem(caseName)}-${residualKind}-residuals-${selected.log}`
+      : `${caseFileStem(caseName)}-${describeDatasetName(selected.dataset).base}`;
     return {
       columns: data.columns,
       rows: data.rows,

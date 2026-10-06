@@ -13,6 +13,7 @@ import {
   killProcessesForCase,
   resetCache,
   getQuickStatus,
+  lastBatchContainers,
   findOpenFOAMVersions,
   setOpenFOAMVersion,
   getSelectedBashrc,
@@ -214,11 +215,11 @@ export async function GET(req: NextRequest) {
           cases = quickResult.cases;
           processes = processesResult;
 
-          return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros: distrosResult, cases });
+          return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros: distrosResult, cases, containers: lastBatchContainers() });
         }
 
         const distros = wslListDistros();
-        return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros, cases });
+        return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros, cases, containers: status.running ? lastBatchContainers() : [] });
       }
       default:
         return NextResponse.json(
@@ -269,7 +270,7 @@ export async function POST(req: NextRequest) {
       }
 
       const distros = wslListDistros();
-      return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros, cases });
+      return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros, cases, containers: status.running ? lastBatchContainers() : [] });
     }
 
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });

@@ -12,10 +12,13 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CASE_NAME_MAX_LENGTH,
+  caseFileStem,
   caseNameProblem,
   isValidCaseName,
+  joinCaseRef,
+  parseCaseRef,
 } from '../src/lib/case-name.ts';
-import { WslInputError, validateCaseName } from '../src/lib/wsl-input.ts';
+import { WslInputError, validateCaseName, validateFolderName } from '../src/lib/wsl-input.ts';
 
 const ACCEPTED = ['cavity', 'nozzleFlow2D', 'claude_test', 'a', '1', 'case-1', 'v2.3.1', 'café', '模型'];
 const REJECTED = [
@@ -71,7 +74,9 @@ describe('the wizard and the server agree', () => {
   // The whole reason src/lib/case-name.ts exists. If these two ever diverge
   // again, the wizard will approve a name that creation then refuses — which is
   // what happened with ".hidden", "-rf", "_tmp", "café" and long names.
-  test('isValidCaseName accepts exactly what validateCaseName accepts', () => {
+  // A folder name is what the wizard checks; the server's rule for one folder
+  // is validateFolderName (validateCaseName also takes `container/case`).
+  test('isValidCaseName accepts exactly what validateFolderName accepts', () => {
     const probes = [
       ...ACCEPTED, ...REJECTED,
       'a'.repeat(CASE_NAME_MAX_LENGTH), 'a'.repeat(CASE_NAME_MAX_LENGTH + 1),
@@ -80,7 +85,7 @@ describe('the wizard and the server agree', () => {
     ];
     for (const name of probes) {
       let serverAccepts = true;
-      try { validateCaseName(name); } catch (e) {
+      try { validateFolderName(name); } catch (e) {
         assert.ok(e instanceof WslInputError, `unexpected error type for ${JSON.stringify(name)}`);
         serverAccepts = false;
       }
@@ -95,7 +100,50 @@ describe('the wizard and the server agree', () => {
   test('a name the client reports a problem for is one the server refuses', () => {
     for (const name of REJECTED) {
       assert.ok(caseNameProblem(name), `client accepted ${JSON.stringify(name)}`);
-      assert.throws(() => validateCaseName(name), WslInputError, `server accepted ${JSON.stringify(name)}`);
+      assert.throws(() => validateFolderName(name), WslInputError, `server accepted ${JSON.stringify(name)}`);
     }
+  });
+});
+
+describe('case references', () => {
+  test('a case in the run directory is one segment, a case in a container two', () => {
+    assert.deepEqual(parseCaseRef('cavity'), { container: null, name: 'cavity' });
+    assert.deepEqual(parseCaseRef('wing/cavity'), { container: 'wing', name: 'cavity' });
+    assert.deepEqual(parseCaseRef('ala/café'), { container: 'ala', name: 'café' });
+  });
+
+  test('containers are one level deep, and every segment obeys the folder rule', () => {
+    for (const bad of [
+      '', '/', 'a/', '/a', 'a//b', 'a/b/c', '../a', 'a/..', './a', 'a/.', '.hidden/a', 'a/-rf',
+      'a b/c', 'a/b c', 'a\\b', '$(id)/a', 'a/`id`', 'a/b\nc', null, undefined, 42,
+    ]) {
+      assert.equal(parseCaseRef(bad), null, `should reject ${JSON.stringify(bad)}`);
+    }
+  });
+
+  test('the server accepts exactly the references the parser does', () => {
+    for (const ref of ['cavity', 'wing/cavity', 'a/b/c', 'a/..', '../a', 'a//b', '/a', 'a/', 'a b/c', '']) {
+      let serverAccepts = true;
+      try { validateCaseName(ref); } catch (e) {
+        assert.ok(e instanceof WslInputError);
+        serverAccepts = false;
+      }
+      assert.equal(parseCaseRef(ref) !== null, serverAccepts, JSON.stringify(ref));
+    }
+  });
+
+  test('joining and splitting are inverse', () => {
+    assert.equal(joinCaseRef('', 'cavity'), 'cavity');
+    assert.equal(joinCaseRef(null, 'cavity'), 'cavity');
+    assert.equal(joinCaseRef('wing', 'cavity'), 'wing/cavity');
+    for (const ref of ['cavity', 'wing/cavity']) {
+      const parts = parseCaseRef(ref)!;
+      assert.equal(joinCaseRef(parts.container, parts.name), ref);
+    }
+  });
+
+  test('a reference used in a file name carries no slash', () => {
+    assert.equal(caseFileStem('cavity'), 'cavity');
+    assert.equal(caseFileStem('wing/cavity'), 'wing-cavity');
   });
 });

@@ -77,6 +77,12 @@ the **OpenFOAM card in the Dashboard**.
 
 - **Dashboard** — browse cases in `$FOAM_RUN`, switch WSL distro or OpenFOAM
   version, copy official tutorials.
+  Cases can be grouped in **containers**: a folder of the run directory that
+  holds cases and is not a case itself (one level; cases directly in the run
+  directory stay as they are). Create one with **Container**, choose where a
+  case goes when creating, cloning, copying a tutorial or renaming it, and
+  turn an empty case into a container (or back) from its rename dialog. A case
+  in a container is named `container/case` everywhere, the agents included.
 - **New Case** — guided wizard from a template (cavity, pipe flow, airfoil,
   dam break, motorbike…). It reads the installed OpenFOAM version and writes
   the case in the layout that version actually wants, then preflights it before

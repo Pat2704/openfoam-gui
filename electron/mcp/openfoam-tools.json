@@ -1,7 +1,7 @@
 [
   {
     "name": "list_cases",
-    "description": "List the OpenFOAM cases in the run directory ($FOAM_RUN).",
+    "description": "List the OpenFOAM cases in the run directory ($FOAM_RUN). A case kept in a container folder is listed as container/case: pass that whole name wherever a case is asked for.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -15,7 +15,7 @@
       "properties": {
         "case": {
           "type": "string",
-          "description": "Case name"
+          "description": "Case name, as listed by list_cases (container/case for a case in a container)"
         }
       },
       "required": [
