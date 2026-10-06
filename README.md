@@ -80,7 +80,8 @@ the **OpenFOAM card in the Dashboard**.
   Cases can be grouped in **containers**: a folder of the run directory that
   holds cases and is not a case itself (one level; cases directly in the run
   directory stay as they are). Create one with **Container**, choose where a
-  case goes when creating, cloning, copying a tutorial or renaming it, and
+  case goes when creating, cloning or copying a tutorial, move a case with its
+  **Move** button or by dragging it onto a container or the run folder, and
   turn an existing folder into a container from its rename dialog: the folders
   inside it become its cases (a case with files of its own is moved into a
   container instead). A case in a container is named `container/case`

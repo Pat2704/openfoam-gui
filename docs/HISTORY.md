@@ -8,9 +8,8 @@ audits.
 
 ## 2026-10-06 — Containers: folders of the run directory that group cases
 
-- At the user's request, who chose explicit marking over detection: a folder
-  is a container only when the app wrote `.ofstudio-container` into it. One
-  level; cases directly in the run directory are unchanged.
+- At the user's request, marked explicitly (no detection): the app writes
+  `.ofstudio-container` into the folder. One level; run-folder cases unchanged.
 - A case is addressed by a reference, `case` or `container/case`
   (`src/lib/case-name.ts`). `validateCaseName` accepts both; `getCasePath`
   checks the disk — the first segment must be a container, a single name must
@@ -20,11 +19,12 @@ audits.
   tutorial copy and rename (which moves), container rename and delete (empty
   only). An existing folder becomes a container unless it is a case with files
   of its own (its 0/, system/, constant/ would be listed as cases); the folders
-  it holds become its cases, after a confirmation that names them.
+  it holds become its cases, after a confirmation that names them. A case moves
+  between containers and the run folder by its Move button or by dragging.
 - Checked in the packaged window on `ui_grp_test`: create, copy a tutorial in,
-  edit, blockMesh, solver, mesh, residuals, ParaView, move out, delete; three
-  refusals. Not checked: agents on a nested case. Known: a process is matched
-  to a case by path tail, so `b` also matches `x/b`. 370 tests pass.
+  edit, blockMesh, solver, mesh, residuals, ParaView, move, delete, refusals.
+  Not checked: agents on a nested case; a real mouse drag. Known: a process is
+  matched to a case by path tail, so `b` also matches `x/b`.
 
 ## 2026-10-04 — v5.7.0: WSL injection closed, Electron 44, Node 22
 

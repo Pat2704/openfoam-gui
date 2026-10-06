@@ -19,7 +19,7 @@ import {
   CheckCircle2, XCircle, Activity, Terminal, ChevronRight,
   AlertTriangle, Copy, BookOpen, FolderTree, HardDrive, Clock,
   FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch, Wand2,
-  Folder, FolderPlus, ChevronDown
+  Folder, FolderPlus, FolderInput, ChevronDown
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
@@ -130,6 +130,11 @@ export default function Dashboard({
   const [containerBusy, setContainerBusy] = useState<string | null>(null);
   const [containerDialog, setContainerDialog] = useState<string | null>(null);
   const [containerNewName, setContainerNewName] = useState('');
+  // Moving a case: the dialog's case, and the case being dragged over the list
+  // with the place it is currently over ('' is the run directory).
+  const [moveDialogCase, setMoveDialogCase] = useState<string | null>(null);
+  const [draggedCase, setDraggedCase] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [distroInput, setDistroInput] = useState('');
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings>(null);
@@ -748,10 +753,28 @@ export default function Dashboard({
     if (/[\s/]/.test(typedName.trim())) { toast.error('No spaces or slashes in the name'); return; }
     const newName = joinCaseRef(containers.includes(renameLocation) ? renameLocation : '', typedName.trim());
     if (newName.trim() === oldName) { setRenameDialogCase(null); return; }
+    await renameCaseTo(oldName, newName, 'rename');
+  };
+
+  /**
+   * Move a case to another container, or to the run directory (''), keeping
+   * its name. The same atomic `mv` as a rename — a move IS a rename of the
+   * reference — so everything a rename guards, a move guards too.
+   */
+  const handleMoveCase = async (caseRef: string, container: string) => {
+    if (caseContainer(caseRef) === container) return;
+    await renameCaseTo(caseRef, joinCaseRef(container, caseLeaf(caseRef)), 'move');
+  };
+
+  const renameCaseTo = async (oldName: string, newName: string, verb: 'rename' | 'move') => {
+    if (cases.some(c => c.name === newName)) {
+      toast.error(`A case called "${caseLeaf(newName)}" already exists ${caseContainer(newName) ? `in "${caseContainer(newName)}"` : 'in the run folder'}`);
+      return;
+    }
     const discardsEdits = selectedCase === oldName && !!unsavedFile;
     if (discardsEdits && !(await confirmDialog(
-      `"${unsavedFile}" has unsaved changes. Renaming the open case reopens it and discards them.`,
-      { title: 'Unsaved changes', confirmLabel: 'Discard and rename', destructive: true },
+      `"${unsavedFile}" has unsaved changes. ${verb === 'move' ? 'Moving' : 'Renaming'} the open case reopens it and discards them.`,
+      { title: 'Unsaved changes', confirmLabel: `Discard and ${verb}`, destructive: true },
     ))) return;
     setRenamingCase(oldName);
     try {
@@ -761,21 +784,42 @@ export default function Dashboard({
       });
       if (res.ok) {
         const data = await res.json();
-        toast.success(`"${oldName}" renamed to "${data.caseName}"`);
+        toast.success(verb === 'move'
+          ? `"${caseLeaf(oldName)}" moved to ${caseContainer(data.caseName) ? `"${caseContainer(data.caseName)}"` : 'the run folder'}`
+          : `"${oldName}" renamed to "${data.caseName}"`);
         // If the renamed case was open, switch the selection to the new name.
         // The user already agreed to lose the buffer above; clearing the flag
         // keeps the switch from asking a second time.
         if (discardsEdits) setUnsavedFile(null);
         if (selectedCase === oldName) onSelectCase(data.caseName);
         announceCaseListChange();
-        setRenameDialogCase(null);
+        setRenameDialogCase(null); setMoveDialogCase(null);
         await fetchAll(true); onRefresh();
       } else {
         const data = await res.json();
-        toast.error(data.error || 'Rename error');
+        toast.error(data.error || (verb === 'move' ? 'Move error' : 'Rename error'));
       }
     } catch { toast.error('WSL error'); }
     setRenamingCase(null);
+  };
+
+  // ── Dragging a case onto a container, or onto the run folder strip ──
+  // A drop target answers only while a case is being dragged and only when the
+  // case is not already there, so nothing else on the page reacts to the drag.
+  const acceptsDrop = (container: string) => draggedCase !== null && caseContainer(draggedCase) !== container;
+  const handleDragOver = (e: React.DragEvent, container: string) => {
+    if (!acceptsDrop(container)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dropTarget !== container) setDropTarget(container);
+  };
+  const handleDragLeave = (container: string) => { if (dropTarget === container) setDropTarget(null); };
+  const handleDrop = (e: React.DragEvent, container: string) => {
+    if (!acceptsDrop(container) || !draggedCase) return;
+    e.preventDefault();
+    const moved = draggedCase;
+    setDraggedCase(null); setDropTarget(null);
+    void handleMoveCase(moved, container);
   };
 
   /**
@@ -1048,10 +1092,27 @@ export default function Dashboard({
               </Card>
             ) : (
               <div className="space-y-1">
+                {draggedCase !== null && caseContainer(draggedCase) !== '' && (
+                  <div
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed text-xs text-muted-foreground ${
+                      dropTarget === '' ? 'ring-2 ring-primary bg-primary/10 text-foreground' : ''
+                    }`}
+                    onDragOver={(e) => handleDragOver(e, '')}
+                    onDragLeave={() => handleDragLeave('')}
+                    onDrop={(e) => handleDrop(e, '')}
+                  >
+                    <FolderInput className="w-4 h-4" /> Drop here to move the case to the run folder
+                  </div>
+                )}
                 {listEntries.map(entry => entry.kind === 'container' ? (
                   <div
                     key={`container:${entry.name}`}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/40"
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/40 ${
+                      dropTarget === entry.name ? 'ring-2 ring-primary bg-primary/10' : ''
+                    }`}
+                    onDragOver={(e) => handleDragOver(e, entry.name)}
+                    onDragLeave={() => handleDragLeave(entry.name)}
+                    onDrop={(e) => handleDrop(e, entry.name)}
                   >
                     <button
                       type="button"
@@ -1109,6 +1170,11 @@ export default function Dashboard({
                     tabIndex={0}
                     aria-current={selectedCase === c.name ? 'true' : undefined}
                     aria-label={`Open case ${c.name}`}
+                    // Draggable onto a container, or onto the run folder strip
+                    // that appears above the list. Only useful with containers.
+                    draggable={containers.length > 0}
+                    onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.name); setDraggedCase(c.name); }}
+                    onDragEnd={() => { setDraggedCase(null); setDropTarget(null); }}
                     className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       selectedCase === c.name ? 'bg-accent ring-1 ring-primary/50' : ''
                     } ${entry.nested ? 'ml-6' : ''}`}
@@ -1203,6 +1269,16 @@ export default function Dashboard({
                       >
                         <GitBranch className="w-3 h-3" />
                       </Button>
+                      {containers.length > 0 && (
+                        <Button
+                          size="sm" variant="ghost" className="h-7 w-7 p-0 text-teal-600 hover:text-teal-500 hover:bg-teal-500/10"
+                          onClick={(e) => { e.stopPropagation(); setMoveDialogCase(c.name); }}
+                          title="Move case to a container or to the run folder (or drag it there)"
+                          aria-label={`Move case ${c.name}`}
+                        >
+                          <FolderInput className="w-3 h-3" />
+                        </Button>
+                      )}
                       <Button
                         size="sm" variant="ghost" className="h-7 w-7 p-0 text-amber-600 hover:text-amber-500 hover:bg-amber-500/10"
                         onClick={(e) => { e.stopPropagation(); setRenameDialogCase(c.name); setRenameNewName(caseLeaf(c.name)); setRenameLocation(caseContainer(c.name)); }}
@@ -1447,6 +1523,48 @@ export default function Dashboard({
                 >
                   {renamingCase === renameDialogCase ? '...' : <><Pencil className="w-4 h-4 mr-1" /> Rename</>}
                 </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Move Case Dialog: one click on the destination */}
+      <Dialog open={!!moveDialogCase} onOpenChange={(open) => { if (!open) setMoveDialogCase(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Move case</DialogTitle></DialogHeader>
+          {moveDialogCase && (
+            <div className="space-y-4 pt-2">
+              <div>
+                <div className="text-xs text-muted-foreground">Case</div>
+                <div className="font-mono text-sm bg-muted/50 px-2 py-1 rounded">{moveDialogCase}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  The folder is moved as it is (mv), with its results and logs. Its name does not change.
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Move to</div>
+                <div className="space-y-1 max-h-64 overflow-y-auto">
+                  {['', ...containers].map(destination => {
+                    const here = caseContainer(moveDialogCase) === destination;
+                    return (
+                      <Button
+                        key={destination || RUN_FOLDER}
+                        variant="outline" className="w-full justify-start font-mono text-sm"
+                        disabled={here || renamingCase === moveDialogCase}
+                        onClick={() => handleMoveCase(moveDialogCase, destination)}
+                        aria-label={destination ? `Move to container ${destination}` : 'Move to the run folder'}
+                      >
+                        {destination ? <Folder className="w-4 h-4 mr-2 text-amber-500" /> : <HardDrive className="w-4 h-4 mr-2" />}
+                        {destination ? `${destination}/` : 'Run folder'}
+                        {here && <span className="ml-auto text-xs font-sans text-muted-foreground">it is here</span>}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => setMoveDialogCase(null)}>Cancel</Button>
               </div>
             </div>
           )}
