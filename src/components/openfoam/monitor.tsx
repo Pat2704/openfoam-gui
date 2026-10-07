@@ -878,7 +878,7 @@ export default function Monitor({ caseName, active = true }: {
                   </SelectTrigger>
                   <SelectContent>
                     {availableLogs.map((l: string) => (
-                      <SelectItem key={l} value={l}>{l === 'foamRun' ? 'foamRun (v13)' : l}</SelectItem>
+                      <SelectItem key={l} value={l}>{l}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -1060,7 +1060,7 @@ export default function Monitor({ caseName, active = true }: {
                   <SelectContent>
                     <SelectItem value="__none__">— No log —</SelectItem>
                     {availableLogs.length > 0 ? availableLogs.map((l: string) => (
-                      <SelectItem key={l} value={l}>{l === 'foamRun' ? 'foamRun (v13)' : l}</SelectItem>
+                      <SelectItem key={l} value={l}>{l}</SelectItem>
                     )) : null}
                   </SelectContent>
                 </Select>

@@ -14,8 +14,8 @@ audits.
 - Fixed beside it: Show Chart with no log chosen took the first log, usually
   `blockMesh`, and said "No residuals found"; it now takes the first log that
   has residuals. Refresh re-reads the plotted log instead of reverting to it.
-- Removed Monitor's two unused pre-correction log parsers. Not changed: the
-  `foamRun (v13)` label, shown on v14 too.
+- Removed Monitor's two unused pre-correction log parsers. The log selects
+  said `foamRun (v13)` on every version; they now show the plain log name.
 
 ## 2026-10-06 — v5.8.0: containers, folders of the run directory that group cases
 
