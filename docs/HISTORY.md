@@ -6,16 +6,17 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-10-07 — Monitor residual plot opens on the solver log
+## 2026-10-07 — v5.8.1: Monitor residual plot opens on the solver log
 
-- Asked whether Monitor had the Post-Process residual correction: it had. On
-  `cavity_test` (v14, 2000 steps) all 10,000 Initial and 10,000 Final values,
-  and the drawn curve points, match `log.foamRun`.
+- Released `v5.8.1` at the user's request (notes `docs/releases/v5.8.1.md`): the
+  pair built for `7650ff6`, renamed without rebuilding (embedded 5.8.0). GitHub
+  keeps v5.8.1 and v5.8.0; the v5.7.0 release entry was removed, tag kept.
+- Monitor already had the Post-Process residual correction: on `cavity_test`
+  (v14) all 10,000 Initial and 10,000 Final values match `log.foamRun`.
 - Fixed beside it: Show Chart with no log chosen took the first log, usually
-  `blockMesh`, and said "No residuals found"; it now takes the first log that
-  has residuals. Refresh re-reads the plotted log instead of reverting to it.
-- Removed Monitor's two unused pre-correction log parsers. The log selects
-  said `foamRun (v13)` on every version; they now show the plain log name.
+  `blockMesh`, and said "No residuals found"; it now takes the first log with
+  residuals, and Refresh re-reads the plotted log. Two unused pre-correction
+  parsers removed; the log selects no longer say `foamRun (v13)`.
 
 ## 2026-10-06 — v5.8.0: containers, folders of the run directory that group cases
 
@@ -484,9 +485,8 @@ be restored. The packaged standalone still carries the unused `tests/` folder.
 
 ## Earlier history
 
-- Release notes from v1.0.0 on are in `docs/releases/`; the 2026 security,
-  correctness and frontend review is `docs/audit-2026-09-03.md`.
-- Git history is the authoritative record of implementation chronology.
+- Release notes from v1.0.0 on are in `docs/releases/`; the 2026 review is
+  `docs/audit-2026-09-03.md`. Git history is the authoritative chronology.
 
 ## Stable project context
 
