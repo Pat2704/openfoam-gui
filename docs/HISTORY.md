@@ -6,6 +6,17 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-07 — Monitor residual plot opens on the solver log
+
+- Asked whether Monitor had the Post-Process residual correction: it had. On
+  `cavity_test` (v14, 2000 steps) all 10,000 Initial and 10,000 Final values,
+  and the drawn curve points, match `log.foamRun`.
+- Fixed beside it: Show Chart with no log chosen took the first log, usually
+  `blockMesh`, and said "No residuals found"; it now takes the first log that
+  has residuals. Refresh re-reads the plotted log instead of reverting to it.
+- Removed Monitor's two unused pre-correction log parsers. Not changed: the
+  `foamRun (v13)` label, shown on v14 too.
+
 ## 2026-10-06 — v5.8.0: containers, folders of the run directory that group cases
 
 - Released `v5.8.0` at the user's request (notes `docs/releases/v5.8.0.md`): the
@@ -437,18 +448,11 @@ From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
 - Accessibility: file-tree hover-only actions appear on keyboard focus; the
   File Editor's icon-only buttons and selection boxes, the Commands Send
   button and the wizard's remove-condition button have accessible names.
-- Verified with 7 new unit tests in `tests/case-templates.test.ts` (211 in
-  all, none failing) and in the dev server on v14: the wizard's solver step
-  lists incompressibleFluid with the tutorial pointer; switching k-epsilon to
-  Spalart-Allmaras turned nut's wall condition into nutUSpaldingWallFunction
-  and left inlet/outlet/empty alone; the quick commands still read foamRun.
+- Verified with 7 unit tests in `tests/case-templates.test.ts` and in the dev
+  server on v14 (solver step, nut wall function swap, foamRun quick commands).
 - Still open from the audits: per-process Kill has no confirmation (declined
-  by the user); Undo reverts all edits without asking; folder creation and
-  batch delete fail silently; the Monitor log reads "Loading..." forever when
-  empty; wizard name errors surface only at the last step and the summary says
-  "Everything checks out" while validation is pending; the v11 reading of
-  `nu 1e-05 [m^2/s]` is unverified. (The rest of this list was addressed in
-  the entries above.)
+  by the user); Undo reverts all edits without asking; the v11 reading of
+  `nu 1e-05 [m^2/s]` is unverified. The rest was addressed in entries above.
 
 ## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards (in brief)
 
@@ -458,8 +462,7 @@ From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
   destination atomically and removes a half-made copy. v9-v10 not checked locally.
 - File Editor: "New file" on an existing name asks first; a failed read no
   longer opens the file empty and "Saved". The wizard re-reads the case list on
-  Create. Per-process Kill confirmation was proposed and declined by the user.
-- Tutorial lists scroll independently (`tutGridRef`); the app icon was redrawn.
+  Create. Tutorial lists scroll independently; the app icon was redrawn.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
 
@@ -475,17 +478,14 @@ period introduced Post-Process; installation-aware agent/command/help data;
 the persistent theme; ParaView discovery, startup phases and recovery; honest
 residual and Post-Process charts; and synchronized case-switcher chips.
 
-The same history records the app's `<openfoam-studio>` control notices, guarded
-detached-run semantics, and the project rules governing build artifacts and
-direct release publication. The temporary detach button was reverted and must
-not be restored. The packaged standalone still carries the unused `tests/`
-directory; that observation was intentionally left unchanged.
+It also records the `<openfoam-studio>` control notices and guarded
+detached-run semantics. The temporary detach button was reverted and must not
+be restored. The packaged standalone still carries the unused `tests/` folder.
 
 ## Earlier history
 
-- Prior release notes from v1.0.0 through v5.0.0 remain in `docs/releases/`.
-- The detailed 2026 security, correctness, robustness and frontend review is
-  `docs/audit-2026-09-03.md`.
+- Release notes from v1.0.0 on are in `docs/releases/`; the 2026 security,
+  correctness and frontend review is `docs/audit-2026-09-03.md`.
 - Git history is the authoritative record of implementation chronology.
 
 ## Stable project context

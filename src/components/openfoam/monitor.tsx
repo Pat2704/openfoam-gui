@@ -40,47 +40,6 @@ function caseFromCwd(cwd?: string): string {
   return seg;
 }
 
-// Parse residuals from log content (last timestep only — used for inline display)
-function parseResiduals(log: string): { time: string; values: { field: string; iters: string; residual: string }[] } | null {
-  const lines = log.split('\n');
-  let lastTimeIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].match(/Time\s*=\s*/)) {
-      lastTimeIdx = i;
-      break;
-    }
-  }
-  if (lastTimeIdx < 0) return null;
-
-  const timeMatch = lines[lastTimeIdx].match(/Time\s*=\s*([^\s\n]+)/);
-  const time = timeMatch ? timeMatch[1] : '';
-
-  const values: { field: string; iters: string; residual: string }[] = [];
-  for (let i = lastTimeIdx + 1; i < lines.length && i < lastTimeIdx + 30; i++) {
-    const line = lines[i];
-    // Format 1 (most common): "solverName:  Solving for FIELD, Initial residual = X, ... No Iterations N"
-    const m0 = line.match(/\bSolving\s+for\s+(\S+),\s+Initial\s+residual\s*=\s*(\S+),.*No\s+Iterations\s+(\d+)/i);
-    if (m0) {
-      values.push({ field: m0[1], iters: m0[3], residual: m0[2] });
-      continue;
-    }
-    // Format 2: "field: iter = N residual = VALUE"
-    const m = line.match(/^(\S+)\s*:\s*iter\s*=\s*(\d+)\s*residual\s*=\s*(\S+)/);
-    if (m) {
-      values.push({ field: m[1], iters: m[2], residual: m[3] });
-      continue;
-    }
-    // Format 3: "field  iters  residual" (legacy tabular)
-    const m2 = line.match(/^([A-Za-z_][\w.]*)\s+(\d+)\s+([\d.eE+\-]+)/);
-    if (m2 && !line.includes('Time') && !line.includes('PIMPLE') && !line.includes('SIMPLE')) {
-      values.push({ field: m2[1], iters: m2[2], residual: m2[3] });
-    }
-  }
-
-  if (values.length === 0) return null;
-  return { time, values };
-}
-
 // ── Residual chart colours ──
 // The parser itself now lives in src/lib/residuals.ts, shared with the
 // Post-Process tab, which charts and exports the same numbers.
@@ -95,20 +54,6 @@ function getLastSimTime(log: string): string {
   const last = matches[matches.length - 1];
   const m = last.match(/Time\s*=\s*([^\s\n]+)/);
   return m ? m[1] : '';
-}
-
-function getLastResidualLine(log: string): string {
-  const lines = log.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i];
-    if (l.match(/^(Ux|Uy|Uz|p|k|epsilon|omega|nuTilda|p_rgh|alpha\.water|T)\s/) && !l.includes('Time =')) {
-      return l.trim();
-    }
-    if (l.match(/^\S+\s*:\s*iter\s*=/) && !l.includes('Time')) {
-      return l.trim();
-    }
-  }
-  return '';
 }
 
 function formatElapsed(totalSeconds: number): string {
@@ -175,6 +120,7 @@ export default function Monitor({ caseName, active = true }: {
   useEffect(() => {
     residualRequestRef.current += 1;
     setResidualContent('');
+    setResidualLog('');
     setResidualError(null);
     setResidualChartLoading(false);
   }, [caseName]);
@@ -223,28 +169,42 @@ export default function Monitor({ caseName, active = true }: {
   // ── Fetch full log for residual chart ──
   const fetchResidualChart = useCallback(async (logOverride?: string) => {
     if (!caseName) return;
-    // Priority: explicit override > dropdown selectedLog > first available log > abort
-    const logFile = logOverride || selectedLog || availableLogs[0] || '';
-    if (!logFile) {
+    // Priority: explicit override > the log already plotted > the Log Viewer's
+    // log > whichever available log has residuals. The plotted log comes before
+    // the rest so Refresh re-reads the curves on screen; and with nothing chosen
+    // the list is searched, because its first entry is usually a meshing log
+    // (blockMesh sorts before every solver) and the chart opened on "No
+    // residuals found" for a case that had them.
+    const chosen = logOverride || residualLog || selectedLog;
+    const candidates = chosen ? [chosen] : availableLogs;
+    if (candidates.length === 0) {
       toast.error('No log file available for this case');
       return;
     }
-    setResidualLog(logFile);
     const request = ++residualRequestRef.current;
     setResidualChartLoading(true);
     setResidualError(null);
     try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(logFile)}&maxLines=50000`);
-      const data = await res.json().catch(() => ({}));
-      if (request !== residualRequestRef.current) return;
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const content = data.content || '';
-      if (content.startsWith('Log not found')) {
-        setResidualContent('');
-        toast.error(`Log not found: ${logFile}`);
-      } else {
-        setResidualContent(content);
+      let shown: { log: string; content: string } | null = null;
+      for (const logFile of candidates) {
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=residuals&log=${encodeURIComponent(logFile)}&maxLines=50000`);
+        const data = await res.json().catch(() => ({}));
+        if (request !== residualRequestRef.current) return;
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const content: string = data.content || '';
+        if (content.startsWith('Log not found')) {
+          if (chosen) toast.error(`Log not found: ${logFile}`);
+          continue;
+        }
+        // Without residuals anywhere, the first readable log is what is shown.
+        shown ??= { log: logFile, content };
+        if (chosen || parseAllResiduals(content).fields.length > 0) {
+          shown = { log: logFile, content };
+          break;
+        }
       }
+      setResidualLog(shown?.log ?? candidates[0]);
+      setResidualContent(shown?.content ?? '');
     } catch (e) {
       if (request !== residualRequestRef.current) return;
       // A failed read is not a log without residuals, which is what it said.
@@ -252,7 +212,7 @@ export default function Monitor({ caseName, active = true }: {
       setResidualError(e instanceof Error ? e.message : String(e));
     }
     setResidualChartLoading(false);
-  }, [caseName, selectedLog, availableLogs]);
+  }, [caseName, selectedLog, availableLogs, residualLog]);
 
   // Keep the residual chart on the log the user is actually looking at.
   // Opening a different log used to leave the chart showing the previous
@@ -610,8 +570,6 @@ export default function Monitor({ caseName, active = true }: {
   }), [residualData]);
 
   const simTime = useMemo(() => getLastSimTime(logContent), [logContent]);
-  const lastTimestepResidual = useMemo(() => parseResiduals(logContent), [logContent]);
-  const lastResLine = useMemo(() => getLastResidualLine(logContent), [logContent]);
 
   const getFilteredLog = () => {
     if (!logSearch.trim()) return logContent;
