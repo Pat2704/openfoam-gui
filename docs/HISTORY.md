@@ -6,15 +6,17 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
-## 2026-10-20 — Containers open closed; installation search in /home and chosen folders
+## 2026-10-20 — v5.8.2: containers open closed; OpenFOAM search in /home and chosen folders
 
+- Released `v5.8.2` at the user's request (notes `docs/releases/v5.8.2.md`): the
+  pair built for `82ebd2c`, renamed without rebuilding (embedded 5.8.1). GitHub
+  keeps v5.8.2 and v5.8.1; the v5.8.0 release entry was removed, tag kept.
 - Dashboard: containers start closed and show their cases when clicked. One
   that receives a case (create, tutorial copy, clone, move) opens, and a
   renamed container keeps its state.
-- The installation scan (`scanFoamInstallations`, `src/lib/wsl.ts`) also
-  globs `/home/*` and `/root` up to three levels (source builds such as
-  `~/OpenFOAM/OpenFOAM-12`); hidden folders are not matched, so it stays fast
-  (0.06 s here).
+- The scan (`scanFoamInstallations`, `src/lib/wsl.ts`) also globs `/home/*`
+  and `/root` three levels deep (`~/OpenFOAM/OpenFOAM-12`); hidden folders are
+  not matched, so it stays fast (0.06 s here).
 - OpenFOAM settings → **Search folders**: the user names a Linux folder;
   `validateFoamSearchFolder` refuses relative paths, `.`/`..`, control
   characters, `|`, `/`, `/mnt` and the pseudo filesystems. It is saved only
@@ -22,9 +24,8 @@ audits.
   `~/.wslgui-foam-search.json` (not the cache file `resetCache()` deletes).
   Add and remove are POST, since a saved folder widens what `setFoamVersion`
   accepts; removing the folder of the active installation is refused.
-- Checked in the dev server with a fake install in `/tmp/foam_test` (since
-  removed): containers closed on load, add, list, remove, error messages.
-  Unit tests for the validator; typecheck and lint pass.
+- Checked in the dev server (fake install in `/tmp/foam_test`, since removed):
+  closed containers, add, list, remove, errors. Validator unit tests pass.
 
 ## 2026-10-07 — v5.8.1: Monitor residual plot opens on the solver log
 
