@@ -84,7 +84,8 @@ the **OpenFOAM card in the Dashboard**.
   **Move** button or by dragging it onto a container or the run folder, and
   turn an existing folder into a container from its rename dialog: the folders
   inside it become its cases (a case with files of its own is moved into a
-  container instead). A case in a container is named `container/case`
+  container instead). Containers open closed and show their cases when
+  clicked. A case in a container is named `container/case`
   everywhere, the agents included.
 - **New Case** — guided wizard from a template (cavity, pipe flow, airfoil,
   dam break, motorbike…). It reads the installed OpenFOAM version and writes

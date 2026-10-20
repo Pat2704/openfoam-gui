@@ -125,7 +125,14 @@ export default function Dashboard({
   // src/lib/case-name.ts). Listed even when empty, which the case list alone
   // could not show.
   const [containers, setContainers] = useState<string[]>([]);
-  const [collapsedContainers, setCollapsedContainers] = useState<Set<string>>(new Set());
+  // Containers start closed: the app opens on the list of containers, and a
+  // container shows its cases only once the user opens it (or a case is put
+  // into it, see revealContainer).
+  const [expandedContainers, setExpandedContainers] = useState<Set<string>>(new Set());
+  const revealContainer = (name: string) => {
+    if (!name) return;
+    setExpandedContainers(prev => prev.has(name) ? prev : new Set(prev).add(name));
+  };
   const [newCaseLocation, setNewCaseLocation] = useState('');
   const [containerBusy, setContainerBusy] = useState<string | null>(null);
   const [containerDialog, setContainerDialog] = useState<string | null>(null);
@@ -549,6 +556,7 @@ export default function Dashboard({
     };
     setCases(prev => [...prev, optimisticCase]);
     setNewCaseName('');
+    revealContainer(location);
     try {
       const res = await fetch('/api/cases', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -620,6 +628,13 @@ export default function Dashboard({
       const { ok, data } = await postCases({ action: 'renameContainer', name: oldName, newName: name });
       if (ok) {
         toast.success(`Container "${oldName}" renamed to "${data.name}"`);
+        const renamedTo = data.name ?? name;
+        setExpandedContainers(prev => {
+          if (!prev.has(oldName)) return prev;
+          const next = new Set(prev);
+          next.delete(oldName);
+          return next.add(renamedTo);
+        });
         if (openInside && selectedCase) {
           if (unsavedFile) setUnsavedFile(null);
           onSelectCase(joinCaseRef(data.name, caseLeaf(selectedCase)));
@@ -715,6 +730,7 @@ export default function Dashboard({
       if (res.ok) {
         toast.success(`Tutorial copied as "${newName.trim()}"`);
         setCopyDialogCase(null);
+        revealContainer(caseContainer(newName));
         await fetchAll(true); onRefresh();
       } else {
         const data = await res.json();
@@ -737,6 +753,7 @@ export default function Dashboard({
       if (res.ok) {
         toast.success(`"${sourceName}" cloned as "${newName.trim()}"`);
         setCloneDialogCase(null);
+        revealContainer(caseContainer(newName));
         await fetchAll(true); onRefresh();
       } else {
         const data = await res.json();
@@ -792,6 +809,7 @@ export default function Dashboard({
         // keeps the switch from asking a second time.
         if (discardsEdits) setUnsavedFile(null);
         if (selectedCase === oldName) onSelectCase(data.caseName);
+        revealContainer(caseContainer(data.caseName));
         announceCaseListChange();
         setRenameDialogCase(null); setMoveDialogCase(null);
         await fetchAll(true); onRefresh();
@@ -823,8 +841,8 @@ export default function Dashboard({
   };
 
   /**
-   * The list as shown: each container followed by its cases (unless
-   * collapsed), then the cases that sit directly in the run directory.
+   * The list as shown: each container followed by its cases (when
+   * expanded), then the cases that sit directly in the run directory.
    */
   const listEntries: (
     | { kind: 'container'; name: string; count: number }
@@ -833,7 +851,7 @@ export default function Dashboard({
   for (const name of containers) {
     const inside = cases.filter(c => caseContainer(c.name) === name);
     listEntries.push({ kind: 'container', name, count: inside.length });
-    if (!collapsedContainers.has(name)) for (const c of inside) listEntries.push({ kind: 'case', c, nested: true });
+    if (expandedContainers.has(name)) for (const c of inside) listEntries.push({ kind: 'case', c, nested: true });
   }
   for (const c of cases) {
     if (!containers.includes(caseContainer(c.name))) listEntries.push({ kind: 'case', c, nested: false });
@@ -1117,17 +1135,17 @@ export default function Dashboard({
                     <button
                       type="button"
                       className="flex items-center gap-2 flex-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-                      aria-expanded={!collapsedContainers.has(entry.name)}
-                      aria-label={`${collapsedContainers.has(entry.name) ? 'Expand' : 'Collapse'} container ${entry.name}`}
-                      onClick={() => setCollapsedContainers(prev => {
+                      aria-expanded={expandedContainers.has(entry.name)}
+                      aria-label={`${expandedContainers.has(entry.name) ? 'Collapse' : 'Expand'} container ${entry.name}`}
+                      onClick={() => setExpandedContainers(prev => {
                         const next = new Set(prev);
                         if (next.has(entry.name)) next.delete(entry.name); else next.add(entry.name);
                         return next;
                       })}
                     >
-                      {collapsedContainers.has(entry.name)
-                        ? <ChevronRight className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-                        : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
+                      {expandedContainers.has(entry.name)
+                        ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                        : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
                       <Folder className="w-4 h-4 text-amber-500 flex-shrink-0" />
                       <span className="font-mono text-sm font-medium truncate">{entry.name}</span>
                       <Badge variant="secondary" className="h-5 px-1.5 text-[9px] font-medium flex-shrink-0">
