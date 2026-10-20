@@ -22,6 +22,7 @@ import {
   wslBashArgs,
   validateCaseName,
   validateFolderName,
+  validateFoamSearchFolder,
   validateLogName,
   validatePathWithin,
   validatePid,
@@ -180,6 +181,29 @@ describe('validatePathWithin', () => {
 
   test('tolerates a trailing slash on the base', () => {
     assert.equal(validatePathWithin(`${base}/`, `${base}/a`, 'Tutorial'), `${base}/a`);
+  });
+});
+
+describe('validateFoamSearchFolder', () => {
+  test('accepts absolute Linux folders and normalises their slashes', () => {
+    assert.equal(validateFoamSearchFolder('/data/OpenFOAM'), '/data/OpenFOAM');
+    assert.equal(validateFoamSearchFolder('  /home/user/OpenFOAM/ '), '/home/user/OpenFOAM');
+    assert.equal(validateFoamSearchFolder('/srv//foam///'), '/srv/foam');
+    assert.equal(validateFoamSearchFolder("/data/it's here"), "/data/it's here");
+  });
+
+  test('refuses relative, traversing, control-character and non-string input', () => {
+    for (const value of ['', '   ', 'data/foam', '~/OpenFOAM', '/data/../etc', '/data/./foam', '/data/a\nb', '/data/\0', '/data/a|b', 42, null]) {
+      assert.throws(() => validateFoamSearchFolder(value), WslInputError, JSON.stringify(value));
+    }
+  });
+
+  test('refuses the root, the Windows drives and the pseudo filesystems', () => {
+    for (const value of ['/', '//', '/mnt', '/mnt/c/OpenFOAM', '/proc', '/sys/x', '/dev', '/run/foam']) {
+      assert.throws(() => validateFoamSearchFolder(value), WslInputError, value);
+    }
+    // Only the first segment matters: a folder merely named like one is fine.
+    assert.equal(validateFoamSearchFolder('/home/user/mnt'), '/home/user/mnt');
   });
 });
 

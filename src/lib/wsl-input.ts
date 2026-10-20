@@ -77,6 +77,36 @@ export function validatePathWithin(basePath: string, candidatePath: string, labe
   return normalizedCandidate;
 }
 
+/**
+ * A Linux folder the user asks the OpenFOAM detector to search, e.g.
+ * `/data/foam` for an installation outside /opt and /home. Only a scan root:
+ * nothing found there is selectable unless its etc/bashrc is a real OpenFOAM
+ * one. `/` and the pseudo filesystems are refused because a scan below them
+ * walks the whole machine, and `/mnt` because it is the Windows drives (an
+ * OpenFOAM build there is not supported; see RULES on Windows-mounted paths).
+ */
+export function validateFoamSearchFolder(value: unknown): string {
+  if (typeof value !== 'string') throw new WslInputError('Folder invalid');
+  const trimmed = value.trim();
+  // `|` separates the fields of the scan's output, so it cannot be in a path.
+  if (!trimmed || trimmed.length > 1024 || /[\0-\x1f\x7f|]/.test(trimmed)) {
+    throw new WslInputError('Folder invalid');
+  }
+  if (!trimmed.startsWith('/')) {
+    throw new WslInputError('Enter an absolute Linux path, such as /home/user/OpenFOAM');
+  }
+  const segments = trimmed.split('/').filter(Boolean);
+  if (segments.some(segment => segment === '.' || segment === '..')) {
+    throw new WslInputError('The folder may not contain "." or ".." segments');
+  }
+  if (segments.length === 0) throw new WslInputError('Choose a folder below /, not the whole file system');
+  if (segments[0] === 'mnt') throw new WslInputError('Windows drives under /mnt are not searched: install OpenFOAM inside WSL');
+  if (['proc', 'sys', 'dev', 'run'].includes(segments[0])) {
+    throw new WslInputError(`/${segments[0]} cannot hold an OpenFOAM installation`);
+  }
+  return `/${segments.join('/')}`;
+}
+
 export function validateLogName(value: string): string {
   if (value === 'log') return value;
   if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]{0,127}$/u.test(value)) {

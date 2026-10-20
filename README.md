@@ -67,9 +67,11 @@ sudo add-apt-repository http://dl.openfoam.org/ubuntu
 sudo apt update && sudo apt install openfoam14
 ```
 
-The app auto-detects every version in `/opt/openfoam*`, `/usr/lib/openfoam/*`
-and `/usr/local/OpenFOAM-*`, and you can switch between them from the gear on
-the **OpenFOAM card in the Dashboard**.
+The app auto-detects every version in `/opt/openfoam*`, `/usr/lib/openfoam/*`,
+`/usr/local/OpenFOAM-*` and the home folders (a source build in
+`~/OpenFOAM/OpenFOAM-X`), and you can switch between them from the gear on
+the **OpenFOAM card in the Dashboard**. An installation kept anywhere else is
+found once you add its folder under **Search folders** in the same dialog.
 
 ---
 
@@ -340,8 +342,9 @@ the ParaView tab then starts in seconds. The switch is in the same settings.
 **The WSL2 badge is red** — run `wsl --status`; if the distro hangs, `wsl --shutdown`
 and reopen. Multiple distros? Dashboard → ⚙️ → change distro.
 
-**"No OpenFOAM version found"** — it isn't in a standard path. Symlink it:
-`sudo ln -s /yourpath/OpenFOAM-X /opt/openfoam/OpenFOAM-X`.
+**"No OpenFOAM version found"** — it isn't in a standard path or in `/home`.
+Dashboard → OpenFOAM ⚙️ → **Search folders**, enter the Linux folder that holds
+it (for example `/data/OpenFOAM`) and press **Search folder**.
 
 **Blank window / "Server did not start"** — launch the `.exe` from a terminal;
 the bundled server's output is printed there with a `[server]` prefix.

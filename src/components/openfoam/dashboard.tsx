@@ -19,7 +19,7 @@ import {
   CheckCircle2, XCircle, Activity, Terminal, ChevronRight,
   AlertTriangle, Copy, BookOpen, FolderTree, HardDrive, Clock,
   FileText, Zap, GitBranch, Pencil, Loader2, Cuboid, FolderSearch, Wand2,
-  Folder, FolderPlus, FolderInput, ChevronDown
+  Folder, FolderPlus, FolderInput, ChevronDown, X
 } from 'lucide-react';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
@@ -152,6 +152,10 @@ export default function Dashboard({
   const [switchingFoamBashrc, setSwitchingFoamBashrc] = useState<string | null>(null);
   const [loadingFoamVersions, setLoadingFoamVersions] = useState(false);
   const [foamVersionsError, setFoamVersionsError] = useState<string | null>(null);
+  // Extra Linux folders the installation search looks in (saved server side).
+  const [foamSearchFolders, setFoamSearchFolders] = useState<string[]>([]);
+  const [foamFolderInput, setFoamFolderInput] = useState('');
+  const [foamFolderBusy, setFoamFolderBusy] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newCaseName, setNewCaseName] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -483,6 +487,7 @@ export default function Dashboard({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (requestId !== foamVersionsRequestRef.current) return;
+      if (Array.isArray(data.searchFolders)) setFoamSearchFolders(data.searchFolders);
       const detected = Array.isArray(data.versions) ? data.versions : [];
       if (detected.length === 0 && foamVersions.length > 0) {
         setFoamVersionsError('The latest scan returned no installations. Keeping the previously detected versions; use Look again to retry.');
@@ -500,6 +505,39 @@ export default function Dashboard({
       if (requestId === foamVersionsRequestRef.current) setLoadingFoamVersions(false);
     }
   }, [foamVersions]);
+
+  // Add or remove an extra folder of the installation search. The server scans
+  // it before saving, so the answer already carries the refreshed version list.
+  const handleFoamSearchFolder = async (action: 'addFoamSearchFolder' | 'removeFoamSearchFolder', folder: string) => {
+    if (!folder.trim()) { toast.error('Enter a Linux folder, such as /home/user/OpenFOAM'); return; }
+    setFoamFolderBusy(folder);
+    // A list request still in flight must not land on top of this answer.
+    foamVersionsRequestRef.current++;
+    try {
+      const res = await fetch('/api/wsl', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, folder: folder.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (Array.isArray(data.searchFolders)) setFoamSearchFolders(data.searchFolders);
+      if (Array.isArray(data.versions)) setFoamVersions(data.versions);
+      setSelectedFoamBashrc(data.selectedBashrc || null);
+      setFoamVersionsError(null);
+      if (action === 'addFoamSearchFolder') {
+        const count = Array.isArray(data.found) ? data.found.length : 0;
+        toast.success(`${count === 1 ? 'One installation' : `${count} installations`} found in ${data.folder}`);
+        setFoamFolderInput('');
+      } else {
+        toast.success(`${folder} removed from the search`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'The folder could not be searched');
+    } finally {
+      setFoamFolderBusy(null);
+      setLoadingFoamVersions(false);
+    }
+  };
 
   // Select an OpenFOAM version — resets all server caches and refreshes.
   const handleSetFoamVersion = async (bashrcPath: string, versionLabel: string) => {
@@ -1010,10 +1048,54 @@ export default function Dashboard({
             </div>
             {foamVersions.length === 0 && !loadingFoamVersions && (
               <p className="text-xs text-muted-foreground italic">
-                No OpenFOAM version found. Verify that OpenFOAM is installed in /opt, /usr/lib or /usr/local.
+                No OpenFOAM version found in /opt, /usr/local, /usr/lib or /home. If it is installed elsewhere, add its folder below.
               </p>
             )}
             {foamVersionsError && <p className="text-xs text-danger">{foamVersionsError}</p>}
+            <div className="space-y-2 border-t pt-3">
+              <div>
+                <h3 className="text-sm font-semibold">Search folders</h3>
+                <p className="text-xs text-muted-foreground">
+                  /opt, /usr/local, /usr/lib and /home are searched automatically. Add a Linux folder to search an installation kept anywhere else.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative min-w-[280px] flex-1">
+                  <FolderSearch className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={foamFolderInput}
+                    onChange={event => setFoamFolderInput(event.target.value)}
+                    onKeyDown={event => { if (event.key === 'Enter' && !foamFolderBusy) void handleFoamSearchFolder('addFoamSearchFolder', foamFolderInput); }}
+                    className="pl-9 font-mono text-xs"
+                    placeholder="/data/OpenFOAM"
+                    spellCheck={false}
+                    aria-label="Linux folder to search for OpenFOAM"
+                  />
+                </div>
+                <Button variant="outline" size="sm" disabled={!!foamFolderBusy || switchingFoam || !foamFolderInput.trim()} onClick={() => void handleFoamSearchFolder('addFoamSearchFolder', foamFolderInput)}>
+                  {foamFolderBusy && foamFolderBusy === foamFolderInput ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderPlus className="h-3.5 w-3.5" />} Search folder
+                </Button>
+              </div>
+              {foamSearchFolders.length > 0 && (
+                <ul className="space-y-1">
+                  {foamSearchFolders.map(folder => (
+                    <li key={folder} className="flex items-center gap-2 rounded-md border px-2 py-1">
+                      <Folder className="h-3.5 w-3.5 flex-shrink-0 text-amber-500" />
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs" title={folder}>{folder}</span>
+                      <Button
+                        variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground hover:text-danger"
+                        disabled={!!foamFolderBusy || switchingFoam}
+                        aria-label={`Stop searching ${folder}`}
+                        title="Stop searching this folder"
+                        onClick={() => void handleFoamSearchFolder('removeFoamSearchFolder', folder)}
+                      >
+                        {foamFolderBusy === folder ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             </div>}
 
             {runtimeSettings === 'paraview' && <div className="space-y-3">

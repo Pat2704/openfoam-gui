@@ -6,6 +6,26 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-10-20 — Containers open closed; installation search in /home and chosen folders
+
+- Dashboard: containers start closed and show their cases when clicked. One
+  that receives a case (create, tutorial copy, clone, move) opens, and a
+  renamed container keeps its state.
+- The installation scan (`scanFoamInstallations`, `src/lib/wsl.ts`) also
+  globs `/home/*` and `/root` up to three levels (source builds such as
+  `~/OpenFOAM/OpenFOAM-12`); hidden folders are not matched, so it stays fast
+  (0.06 s here).
+- OpenFOAM settings → **Search folders**: the user names a Linux folder;
+  `validateFoamSearchFolder` refuses relative paths, `.`/`..`, control
+  characters, `|`, `/`, `/mnt` and the pseudo filesystems. It is saved only
+  if it exists and holds an installation, per distro, in
+  `~/.wslgui-foam-search.json` (not the cache file `resetCache()` deletes).
+  Add and remove are POST, since a saved folder widens what `setFoamVersion`
+  accepts; removing the folder of the active installation is refused.
+- Checked in the dev server with a fake install in `/tmp/foam_test` (since
+  removed): containers closed on load, add, list, remove, error messages.
+  Unit tests for the validator; typecheck and lint pass.
+
 ## 2026-10-07 — v5.8.1: Monitor residual plot opens on the solver log
 
 - Released `v5.8.1` at the user's request (notes `docs/releases/v5.8.1.md`): the
@@ -418,42 +438,21 @@ From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
 
 ## 2026-09-10 — Honest states and dead code (in brief; details in Git)
 
-- Failures no longer read as normal states: the file browser, Commands list,
-  Monitor residuals and log, File Editor Undo, folder creation and batch delete
-  ("Deleted N of M") each say what failed. The wizard's name rule blocks Next
-  on the first step, and "Everything checks out" waits for the installation
-  check. File Editor "Clean TS" refuses while a process of the case runs
-  (`src/lib/case-processes.ts`). Tutorials follow an installation or distro
-  change.
-- `CASE_TEMPLATES`, `FILE_TEMPLATES` and `STANDALONE_FILE_TEMPLATES` were
-  deleted from `src/lib/openfoam-data.ts` (unused, 1378 lines); clipboard
-  refusals are reported instead of a success toast.
+- Failures no longer read as normal states (file browser, Commands, Monitor,
+  Undo, folder creation, batch delete); File Editor "Clean TS" refuses while a
+  case process runs. Unused `CASE_TEMPLATES` and file templates were deleted
+  from `src/lib/openfoam-data.ts` (1378 lines).
 
-## 2026-09-10 — Wizard writes only runnable cases; accessibility pass
+## 2026-09-10 — Wizard writes only runnable cases; accessibility pass (in brief)
 
-- From the OpenFOAM audit (Foundation sources and the v13/v14 tutorials,
-  read-only): the wizard lists only incompressibleFluid (11+) and simpleFoam,
-  pimpleFoam, pisoFoam and icoFoam (<=10), with a pointer to the tutorials. It
-  wrote U, a kinematic p and a nu-only properties file for 13 other solvers
-  that need T and a thermoType, alpha fields and phaseProperties, or D; it also
-  listed sonicFoam (absent on 9-10) and buoyantSimpleFoam (gone on 10).
-- fvSchemes always carries `wallDist { method meshWave; }`: kOmegaSST and
-  Spalart-Allmaras stop without it on 13/14 (v9-v12 not checked). Legacy
-  icoFoam and pisoFoam get a PISO dictionary; icoFoam on v10 gets
-  physicalProperties (from its source; no v10 install here). Spalart-Allmaras
-  walls get nutUSpaldingWallFunction, because nutkWallFunction leaves nut at 0
-  when k is zero; changing the model swaps only the wizard's own default.
-- Commands: on <=10 the two run quick commands use `application` from the
-  case's controlDict and are hidden if it cannot be read; an unknown version
-  keeps foamRun. The legacy path cannot be exercised here.
-- Accessibility: file-tree hover-only actions appear on keyboard focus; the
-  File Editor's icon-only buttons and selection boxes, the Commands Send
-  button and the wizard's remove-condition button have accessible names.
-- Verified with 7 unit tests in `tests/case-templates.test.ts` and in the dev
-  server on v14 (solver step, nut wall function swap, foamRun quick commands).
-- Still open from the audits: per-process Kill has no confirmation (declined
-  by the user); Undo reverts all edits without asking; the v11 reading of
-  `nu 1e-05 [m^2/s]` is unverified. The rest was addressed in entries above.
+- From the OpenFOAM audit, the wizard lists only incompressibleFluid (11+) and
+  simpleFoam, pimpleFoam, pisoFoam, icoFoam (<=10); fvSchemes always carries
+  `wallDist { method meshWave; }`; Spalart-Allmaras walls get
+  nutUSpaldingWallFunction. On <=10 the run quick commands use the case's
+  `application`. Icon-only buttons gained accessible names. Details in Git.
+- Still open: per-process Kill has no confirmation (declined by the user); Undo
+  reverts all edits without asking; the v11 reading of `nu 1e-05 [m^2/s]` is
+  unverified.
 
 ## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards (in brief)
 

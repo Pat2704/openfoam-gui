@@ -15,6 +15,9 @@ import {
   getQuickStatus,
   lastBatchContainers,
   findOpenFOAMVersions,
+  getFoamSearchFolders,
+  addFoamSearchFolder,
+  removeFoamSearchFolder,
   setOpenFOAMVersion,
   getSelectedBashrc,
   getSnappySupport,
@@ -49,10 +52,11 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ success: status.running, distro: selected, current: selected, ...status });
       }
       case 'foamVersions': {
-        // List all installed OpenFOAM versions (auto-detected from /opt, /usr/lib, /usr/local).
+        // List all installed OpenFOAM versions (auto-detected from /opt, /usr/lib,
+        // /usr/local, /home and the user's extra search folders).
         const versions = findOpenFOAMVersions(searchParams.get('refresh') === '1');
         const selected = getSelectedBashrc();
-        return NextResponse.json({ versions, selectedBashrc: selected });
+        return NextResponse.json({ versions, selectedBashrc: selected, searchFolders: getFoamSearchFolders() });
       }
       case 'setFoamVersion': {
         // Select which OpenFOAM version to use. Resets all caches so the new
@@ -271,6 +275,17 @@ export async function POST(req: NextRequest) {
 
       const distros = wslListDistros();
       return NextResponse.json({ ...status, version, runDir, tutorialDir, env, processes, distros, cases, containers: status.running ? lastBatchContainers() : [] });
+    }
+
+    // Extra folders for the installation search. POST, not GET like the other
+    // version actions: a saved folder widens what setFoamVersion will accept.
+    if (body.action === 'addFoamSearchFolder') {
+      const result = addFoamSearchFolder(body.folder);
+      return NextResponse.json({ ...result, selectedBashrc: getSelectedBashrc(), searchFolders: getFoamSearchFolders() });
+    }
+    if (body.action === 'removeFoamSearchFolder') {
+      const result = removeFoamSearchFolder(body.folder);
+      return NextResponse.json({ ...result, selectedBashrc: getSelectedBashrc(), searchFolders: getFoamSearchFolders() });
     }
 
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });

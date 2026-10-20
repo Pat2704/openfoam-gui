@@ -13,6 +13,7 @@ import {
   WslInputError,
   validateCaseName,
   validateFolderName,
+  validateFoamSearchFolder,
   validateLogName,
   validatePathWithin,
   validatePid,
@@ -485,22 +486,71 @@ export function findBashrc(): string {
   return '';
 }
 
-// ── Detect ALL installed OpenFOAM versions ──
-// Scans /opt, /usr/lib, /usr/local for every etc/bashrc belonging to an
-// OpenFOAM install. Returns { version, bashrcPath, installDir }[] so the
-// dashboard can show version buttons and let the user pick which one to use.
-let cachedFoamVersions: { version: string; bashrcPath: string; installDir: string }[] | null = null;
-let foamVersionsFailedAt = 0;
+// ── Folders the user added to the installation search ──
+// An OpenFOAM built or unpacked somewhere unusual (/data/foam, a second disk)
+// is found only if the user names the folder. The list belongs to a distro —
+// the same path means nothing in another one — and lives in its own file,
+// not in ~/.wslgui-cache.json, because resetCache() deletes that file on every
+// manual refresh and a user's setting must not go with it.
+const FOAM_SEARCH_PATH = path.join(os.homedir(), '.wslgui-foam-search.json');
 
-export function findOpenFOAMVersions(refresh = false): { version: string; bashrcPath: string; installDir: string }[] {
-  const previous = cachedFoamVersions;
-  if (refresh) foamVersionsFailedAt = 0;
-  if (!refresh && cachedFoamVersions !== null) return cachedFoamVersions;
-  // An empty result can mean "nothing is installed", but it can equally mean
-  // WSL was restarting or briefly busy. Never turn that transient state into a
-  // session-long empty version picker; retain it only long enough to stop a
-  // burst of UI requests from repeating the same scan.
-  if (foamVersionsFailedAt && Date.now() - foamVersionsFailedAt < NEGATIVE_CACHE_MS) return [];
+function readFoamSearchFile(): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(FOAM_SEARCH_PATH, 'utf-8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+/** The extra search folders of the current distro, re-validated on read. */
+export function getFoamSearchFolders(): string[] {
+  const stored = readFoamSearchFile()[getDistro()];
+  if (!Array.isArray(stored)) return [];
+  const folders: string[] = [];
+  for (const entry of stored) {
+    try {
+      const folder = validateFoamSearchFolder(entry);
+      if (!folders.includes(folder)) folders.push(folder);
+    } catch { /* a hand-edited entry that no longer validates is skipped */ }
+  }
+  return folders;
+}
+
+function writeFoamSearchFolders(folders: string[]): void {
+  const data = readFoamSearchFile();
+  if (folders.length > 0) data[getDistro()] = folders;
+  else delete data[getDistro()];
+  try {
+    fs.writeFileSync(FOAM_SEARCH_PATH, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e: any) {
+    throw new Error(`The search folder could not be saved: ${e?.message || 'write failed'}`);
+  }
+}
+
+type FoamInstallation = { version: string; bashrcPath: string; installDir: string };
+
+/**
+ * One WSL call that lists the OpenFOAM installations below the default roots
+ * (when `includeDefaults`) and below each extra root. Throws when WSL fails, so
+ * the caller can tell "nothing found" from "could not look".
+ */
+function scanFoamInstallations(extraRoots: string[], includeDefaults: boolean): FoamInstallation[] {
+  // The quoted root is taken literally and only the unquoted /* that follows
+  // is a glob, so a folder name can never be read as shell syntax.
+  const extra = extraRoots.map(root => {
+    const q = shellQuote(root);
+    return `  ${q}/etc/bashrc ${q}/*/etc/bashrc ${q}/*/*/etc/bashrc ${q}/*/*/*/etc/bashrc`;
+  });
+  const defaults = includeDefaults ? [
+    '  /opt/*/etc/bashrc /opt/*/*/etc/bashrc /opt/*/*/*/etc/bashrc',
+    '  /usr/local/*/etc/bashrc /usr/local/*/*/etc/bashrc /usr/local/*/*/*/etc/bashrc',
+    '  /usr/lib/openfoam*/etc/bashrc /usr/lib/openfoam*/*/etc/bashrc /usr/lib/openfoam*/*/*/etc/bashrc',
+    '  /usr/lib/OpenFOAM*/etc/bashrc /usr/lib/OpenFOAM*/*/etc/bashrc /usr/lib/OpenFOAM*/*/*/etc/bashrc',
+    // A source build sits in the user's home, typically ~/OpenFOAM/OpenFOAM-12.
+    // Hidden folders (~/.cache, ~/.local) are not matched by * without dotglob,
+    // which keeps the home scan as quick as the system one.
+    '  /home/*/*/etc/bashrc /home/*/*/*/etc/bashrc /home/*/*/*/*/etc/bashrc',
+    '  /root/*/etc/bashrc /root/*/*/etc/bashrc /root/*/*/*/etc/bashrc',
+  ] : [];
   const script = `#!/bin/bash
 # Shell globs visit only the shallow directory levels where an OpenFOAM
 # installation can contain etc/bashrc. The old recursive find over all of
@@ -509,10 +559,7 @@ export function findOpenFOAMVersions(refresh = false): { version: string; bashrc
 # narrowed only to its documented OpenFOAM branches.
 shopt -s nullglob
 candidates=(
-  /opt/*/etc/bashrc /opt/*/*/etc/bashrc /opt/*/*/*/etc/bashrc
-  /usr/local/*/etc/bashrc /usr/local/*/*/etc/bashrc /usr/local/*/*/*/etc/bashrc
-  /usr/lib/openfoam*/etc/bashrc /usr/lib/openfoam*/*/etc/bashrc /usr/lib/openfoam*/*/*/etc/bashrc
-  /usr/lib/OpenFOAM*/etc/bashrc /usr/lib/OpenFOAM*/*/etc/bashrc /usr/lib/OpenFOAM*/*/*/etc/bashrc
+${[...defaults, ...extra].join('\n')}
 )
 for f in "\${candidates[@]}"; do
   [ -f "$f" ] || continue
@@ -529,21 +576,38 @@ for f in "\${candidates[@]}"; do
   echo "$ver|$f|$installDir"
 done | sort -u
 `;
+  const out = runInWslScript(Buffer.from(script).toString('base64'), 20000).trim();
+  const versions: FoamInstallation[] = [];
+  for (const line of out.split('\n')) {
+    const parts = line.split('|');
+    if (parts.length >= 3 && parts[1].startsWith('/')) {
+      versions.push({ version: parts[0], bashrcPath: parts[1], installDir: parts[2] });
+    }
+  }
+  return versions;
+}
+
+// ── Detect ALL installed OpenFOAM versions ──
+// Scans /opt, /usr/lib, /usr/local, the home folders and the user's extra
+// search folders for every etc/bashrc belonging to an OpenFOAM install.
+// Returns { version, bashrcPath, installDir }[] so the dashboard can show
+// version buttons and let the user pick which one to use.
+let cachedFoamVersions: FoamInstallation[] | null = null;
+let foamVersionsFailedAt = 0;
+
+export function findOpenFOAMVersions(refresh = false): FoamInstallation[] {
+  const previous = cachedFoamVersions;
+  if (refresh) foamVersionsFailedAt = 0;
+  if (!refresh && cachedFoamVersions !== null) return cachedFoamVersions;
+  // An empty result can mean "nothing is installed", but it can equally mean
+  // WSL was restarting or briefly busy. Never turn that transient state into a
+  // session-long empty version picker; retain it only long enough to stop a
+  // burst of UI requests from repeating the same scan.
+  if (foamVersionsFailedAt && Date.now() - foamVersionsFailedAt < NEGATIVE_CACHE_MS) return [];
   try {
-    const out = runInWslScript(Buffer.from(script).toString('base64'), 15000).trim();
-    if (!out) {
-      cachedFoamVersions = null;
-      foamVersionsFailedAt = Date.now();
-      return [];
-    }
-    const versions: { version: string; bashrcPath: string; installDir: string }[] = [];
-    for (const line of out.split('\n')) {
-      const parts = line.split('|');
-      if (parts.length >= 3 && parts[1].startsWith('/')) {
-        versions.push({ version: parts[0], bashrcPath: parts[1], installDir: parts[2] });
-      }
-    }
+    const versions = scanFoamInstallations(getFoamSearchFolders(), true);
     if (versions.length === 0) {
+      cachedFoamVersions = null;
       foamVersionsFailedAt = Date.now();
       return [];
     }
@@ -557,6 +621,48 @@ done | sort -u
     foamVersionsFailedAt = Date.now();
     return previous || [];
   }
+}
+
+/**
+ * Add a folder to the installation search. It is saved only if it exists and
+ * holds at least one OpenFOAM installation, so the list cannot fill with typos;
+ * the answer is the refreshed list of every detected installation.
+ */
+export function addFoamSearchFolder(input: unknown): { folder: string; found: FoamInstallation[]; versions: FoamInstallation[] } {
+  const folder = validateFoamSearchFolder(input);
+  // `|| echo NO`: a failed test must answer, not exit 1 — runInWsl would turn
+  // that into a server error instead of "does not exist".
+  if (runInWsl(`[ -d ${shellQuote(folder)} ] && echo OK || echo NO`, 10000).trim() !== 'OK') {
+    throw new WslInputError(`${folder} does not exist in ${getDistro()}`);
+  }
+  const found = scanFoamInstallations([folder], false);
+  if (found.length === 0) {
+    throw new WslInputError(`No OpenFOAM installation found in ${folder}: it must contain etc/bashrc, at most three folders down`);
+  }
+  const folders = getFoamSearchFolders();
+  if (!folders.includes(folder)) writeFoamSearchFolders([...folders, folder]);
+  return { folder, found, versions: findOpenFOAMVersions(true) };
+}
+
+/**
+ * Remove a folder from the installation search. Refused while the active
+ * installation would no longer be detected without it: that would leave a
+ * selection the detector cannot vouch for, and setOpenFOAMVersion only accepts
+ * detected paths. The scan runs before the write, so a WSL failure changes
+ * nothing.
+ */
+export function removeFoamSearchFolder(input: unknown): { versions: FoamInstallation[] } {
+  const folder = validateFoamSearchFolder(input);
+  const remaining = getFoamSearchFolders().filter(f => f !== folder);
+  const versions = scanFoamInstallations(remaining, true);
+  const active = selectedBashrc || cachedBashrc || '';
+  if (active.startsWith(`${folder}/`) && !versions.some(v => v.bashrcPath === active)) {
+    throw new WslInputError(`The active OpenFOAM is in ${folder}: select another version before removing the folder`);
+  }
+  writeFoamSearchFolders(remaining);
+  cachedFoamVersions = versions.length > 0 ? versions : null;
+  foamVersionsFailedAt = 0;
+  return { versions };
 }
 
 // ── Select which OpenFOAM version to use ──
