@@ -776,7 +776,19 @@ def state():
         'videoFormats': supported_video_formats,
     }
 
+def hide_unused_legends():
+    # A legend belongs to an array's colour map, not to a display: when a
+    # display switches from p to U, the bar of p stays on screen next to the
+    # new one unless something hides it. ParaView's own rule, that a bar is in
+    # use while a visible display colours by its map, is exactly the one wanted.
+    try: HideUnusedScalarBars(view)
+    except Exception: pass
+
 def apply_display(node):
+    try: apply_display_settings(node)
+    finally: hide_unused_legends()
+
+def apply_display_settings(node):
     display = node['display']
     display.Representation = node['representation']
     display.Opacity = node['opacity']
