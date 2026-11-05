@@ -1159,7 +1159,7 @@ export function listCases(): string[] {
  * operation that takes a case — and "delete case" on it would remove every case
  * inside.
  */
-function getCasePath(caseName: string, fresh = false): string {
+export function getCasePath(caseName: string, fresh = false): string {
   const ref = parseCaseRef(validateCaseName(caseName));
   if (!ref) throw new WslInputError('Invalid case name');
   const runDir = getRunDirectory();
@@ -2344,6 +2344,26 @@ export function readFile(caseName: string, filePath: string): string {
   const safePath = validateRelativePath(filePath, 'File path');
   try {
     return runInWsl(`cat -- ${shellQuote(`${getCasePath(caseName)}/${safePath}`)}`, 10000);
+  } catch (e: any) {
+    throw new Error(`Unable to read ${filePath}: ${e.message}`);
+  }
+}
+
+/**
+ * The first `maxBytes` of a case file, and its whole size.
+ *
+ * For the agent's read_case_file: `cat` of a 300 MB log would fill its context
+ * (and pass runInWsl's 50 MiB buffer), so it reads a bounded head and is told
+ * the size, which is what lets it say "use the log digest instead".
+ */
+export function readFileHead(caseName: string, filePath: string, maxBytes: number): { size: number; text: string } {
+  const safePath = validateRelativePath(filePath, 'File path');
+  const limit = boundedInteger(maxBytes, 4096, 1, 64 * 1024 * 1024);
+  const target = shellQuote(`${getCasePath(caseName)}/${safePath}`);
+  try {
+    const out = runInWsl(`stat -L -c %s -- ${target} && head -c ${limit} -- ${target}`, 10000);
+    const newline = out.indexOf('\n');
+    return { size: Number(out.slice(0, newline)) || 0, text: out.slice(newline + 1) };
   } catch (e: any) {
     throw new Error(`Unable to read ${filePath}: ${e.message}`);
   }

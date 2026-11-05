@@ -24,8 +24,9 @@ import { flushSync } from 'react-dom';
 import {
   X, Send, Trash2, Loader2, GripHorizontal, Check, Copy, ChevronDown, ChevronRight,
   Square, AlertCircle, ExternalLink, LogOut, LogIn, UserRound, Sparkles, Wrench, FolderOpen,
-  Shield, ShieldOff,
+  Shield, ShieldOff, Grid3x3, Activity,
 } from 'lucide-react';
+import { buildMeshAnalysisRequest, buildResultsAnalysisRequest } from '@/lib/agent-analysis';
 import type { CodexModel } from '@/lib/codex-protocol';
 import { Button } from '@/components/ui/button';
 import { KnowledgeStatus } from '@/components/knowledge-status';
@@ -365,12 +366,14 @@ export default function CodexPanel() {
   }, []);
 
   // ── Send ──
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
+  // `prepared` is a message from one of the analysis buttons; the draft in the
+  // composer is left alone when one is sent.
+  const sendMessage = useCallback(async (prepared?: string) => {
+    const text = (prepared ?? input).trim();
     if (!text || running) return;
 
     setTurns(prev => [...prev, { role: 'user', text }, { role: 'assistant', blocks: [] }]);
-    setInput('');
+    if (prepared === undefined) setInput('');
     setRunning(true);
     stickToBottom.current = true;
 
@@ -916,6 +919,27 @@ export default function CodexPanel() {
                     {unrestricted ? 'No limits' : 'Guarded'}
                   </button>
 
+                  {/* One-click analyses of the open case. They send a prepared
+                      request that uses only the read-only digest tools (see
+                      src/lib/agent-analysis.ts), so they work in either mode. */}
+                  {([
+                    { label: 'Mesh', Icon: Grid3x3, build: buildMeshAnalysisRequest,
+                      title: 'Analyse the mesh of the open case: size, patches, zones, decomposition and checkMesh quality' },
+                    { label: 'Results', Icon: Activity, build: buildResultsAnalysisRequest,
+                      title: 'Analyse the run of the open case: log, time directories (processor ones included) and postProcessing' },
+                  ] as const).map(({ label, Icon, build, title }) => (
+                    <button
+                      key={label}
+                      onClick={() => { if (caseName) void sendMessage(build(caseName, navigator.language)); }}
+                      disabled={!caseName || running}
+                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors duration-150 text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15 disabled:opacity-40 disabled:pointer-events-none"
+                      title={caseName ? title : 'Open a case first'}
+                    >
+                      <Icon className="w-3 h-3" />
+                      {label}
+                    </button>
+                  ))}
+
                   <div className="flex-1" />
 
                   {running ? (
@@ -928,7 +952,7 @@ export default function CodexPanel() {
                     </button>
                   ) : (
                     <button
-                      onClick={sendMessage}
+                      onClick={() => void sendMessage()}
                       disabled={!input.trim()}
                       className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#10A37F] text-white hover:bg-[#0D8C6D] active:bg-[#08785F] disabled:opacity-30 disabled:pointer-events-none transition-colors duration-150"
                       title="Send"

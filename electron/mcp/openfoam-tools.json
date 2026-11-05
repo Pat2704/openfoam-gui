@@ -44,7 +44,7 @@
   },
   {
     "name": "read_case_file",
-    "description": "Read one file from a case, e.g. 0/U or system/controlDict.",
+    "description": "Read one file from a case, e.g. 0/U or system/controlDict. Returns at most 256 KB: for a larger file it says the size and shows its first 4 KB. Never use it for logs, fields in time directories, constant/polyMesh or postProcessing — the digest tools read those in WSL and return a short summary.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -185,6 +185,137 @@
       },
       "required": [
         "query"
+      ]
+    }
+  },
+  {
+    "name": "analyze_log",
+    "description": "Digest of a solver log, computed in WSL in one streaming pass whatever its size: whether the run finished, crashed (FOAM FATAL, signal) or is still running; time steps and time reached; initial residual per field (first/last/min/max and a history of evenly spaced steps); linear-solver iterations; continuity errors; Courant number; deltaT; outer-loop convergence; bounding; warnings; and the last lines when it did not end. Omit log to take the newest log that holds residuals. Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case": {
+          "type": "string",
+          "description": "Case name, as listed by list_cases (container/case for a case in a container)"
+        },
+        "log": {
+          "type": "string",
+          "description": "e.g. \"foamRun\", \"log.foamRun\", \"snappyHexMesh\"; omit for the newest solver log"
+        }
+      },
+      "required": [
+        "case"
+      ]
+    }
+  },
+  {
+    "name": "read_log_excerpt",
+    "description": "A bounded slice of a log (at most 120 lines): around the first or last occurrence of a literal text (match), from a line number (line + count), or the last lines (tail). Use it to look at a place analyze_log pointed to — a warning, the step where residuals jumped (\"Time = 0.0123s\"), the error. Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case": {
+          "type": "string",
+          "description": "Case name, as listed by list_cases (container/case for a case in a container)"
+        },
+        "log": {
+          "type": "string",
+          "description": "e.g. \"foamRun\" (default)"
+        },
+        "match": {
+          "type": "string",
+          "description": "Literal text to find, not a regular expression"
+        },
+        "occurrence": {
+          "type": "string",
+          "enum": [
+            "first",
+            "last"
+          ],
+          "description": "Which occurrence of match (default first)"
+        },
+        "context": {
+          "type": "number",
+          "description": "Lines before and after the match (default 15, at most 60)"
+        },
+        "line": {
+          "type": "number",
+          "description": "1-based line to start from"
+        },
+        "count": {
+          "type": "number",
+          "description": "Lines from line (default 60)"
+        },
+        "tail": {
+          "type": "number",
+          "description": "The last N lines"
+        }
+      },
+      "required": [
+        "case"
+      ]
+    }
+  },
+  {
+    "name": "analyze_fields",
+    "description": "Digest of the time directories, computed in WSL without transferring the fields: which times exist at the case root and in the processor directories of a decomposed case (and whether they agree or were reconstructed), then for one time (default: the latest anywhere) every volume field's min, max and mean — vectors as magnitude and components — combined over all processors, with NaN and physically impossible values flagged, and the boundary condition types per patch. Face/point fields (phi, Uf) only when named in fields. Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case": {
+          "type": "string",
+          "description": "Case name, as listed by list_cases (container/case for a case in a container)"
+        },
+        "time": {
+          "type": "string",
+          "description": "Time directory name, e.g. \"0.5\"; omit or \"latest\" for the latest"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only these fields, e.g. [\"U\", \"p\", \"phi\"]"
+        }
+      },
+      "required": [
+        "case"
+      ]
+    }
+  },
+  {
+    "name": "postprocess_summary",
+    "description": "Digest of postProcessing/: for every tabular function-object output (forces, coefficients, field values, probes, residuals, sampled lines) the rows and time span, and per column the last value, range, mean over the final fifth and drift between the last two fifths — small drift means the quantity has settled. Restarts are stitched. Surfaces and VTK are not read. Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case": {
+          "type": "string",
+          "description": "Case name, as listed by list_cases (container/case for a case in a container)"
+        }
+      },
+      "required": [
+        "case"
+      ]
+    }
+  },
+  {
+    "name": "mesh_summary",
+    "description": "Digest of the mesh without reading points/faces/owner/neighbour: cells, points and faces from the file headers, bounding box, patches with types and face counts (2D/axisymmetric detection), zones, sets, meshes kept in time directories (snappyHexMesh without -overwrite, moving meshes), the decomposition (cells per processor, imbalance, processor interface faces) and whether the 0/ boundary conditions cover the patches. With quality: true it also runs checkMesh (-latestTime when the mesh is in a time directory) and reports every failed or warned check; checkMesh writes the failing cells into polyMesh/sets, nothing else.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case": {
+          "type": "string",
+          "description": "Case name, as listed by list_cases (container/case for a case in a container)"
+        },
+        "quality": {
+          "type": "boolean",
+          "description": "Also run checkMesh"
+        }
+      },
+      "required": [
+        "case"
       ]
     }
   }

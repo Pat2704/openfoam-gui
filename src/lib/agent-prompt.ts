@@ -125,6 +125,22 @@ const CHANNELS = [
   '',
 ];
 
+/**
+ * How to read results and meshes. Both modes get it: with No limits the agent
+ * could `cat` a log through the shell, and a 300 MB log in its context is the
+ * same waste either way.
+ */
+const LARGE_FILES = [
+  'RESULTS AND MESHES ARE READ THROUGH DIGESTS.',
+  'Logs, the fields in time directories (and in processor*/ of a decomposed case), constant/polyMesh and',
+  'postProcessing/ can be hundreds of MB. Never read them with read_case_file, which returns at most 256 KB. Use',
+  'analyze_log for a log, then read_log_excerpt to look at one place it points to; analyze_fields for the time',
+  'directories; postprocess_summary for postProcessing/; mesh_summary for the mesh (quality: true runs checkMesh).',
+  'They compute in WSL and return a few KB, and none of them changes the case except checkMesh writing polyMesh/sets.',
+  'Quote their numbers when you explain a result, and say when a digest could not read something (binary fields).',
+  '',
+];
+
 /** Shared behavioral contract for both subscription agents. */
 export function buildSystemPrompt(version: string, caseName: string, unrestricted: boolean): string {
   if (unrestricted) {
@@ -143,6 +159,7 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
       'foam_lookup, foam_help and search_tutorials exist so that you answer from their actual case and their actual',
       'installation instead of from memory.',
       '',
+      ...LARGE_FILES,
       'run_openfoam is NOT in that group. It changes the case on disk — a mesher rewrites constant/polyMesh, a solver',
       'writes time directories over the ones already there — and it can run for hours. Call it ONLY when the user has',
       'asked for the run itself.',
@@ -207,6 +224,7 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
     'foam_lookup, foam_help and search_tutorials exist so that you answer from their actual case and their actual',
     'installation instead of from memory.',
     '',
+    ...LARGE_FILES,
     'run_openfoam is NOT in that group. It changes the case on disk — a mesher rewrites constant/polyMesh, a solver',
     'writes time directories over the ones already there — and it can run for hours. Call it ONLY when the user has',
     'asked for the run itself.',
@@ -228,7 +246,7 @@ export function buildSystemPrompt(version: string, caseName: string, unrestricte
     'You have no shell and no filesystem access — only the openfoam tools. The one that reaches outside this machine is',
     'foam_help, and only as its last resort, after the installation and the command\'s own -help have both come up empty.',
     'Everything you know about the',
-    'user\'s files must come from read_case_file or list_case_files, and everything you change must go through',
+    'user\'s files must come from read_case_file, list_case_files or the digests, and everything you change must go through',
     'write_case_file. Never claim to have looked at or changed something you did not touch with a tool.',
     '',
     'WHAT THE TOOLS REFUSE, AND WHY.',

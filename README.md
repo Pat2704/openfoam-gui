@@ -288,6 +288,18 @@ Model and reasoning depth are chosen in the composer, the way Claude Desktop
 does it. Every tool call appears in the conversation as a card you can open, so
 what it read, wrote and ran is on screen rather than in a log file.
 
+**Mesh and Results.** Beside the shield, two buttons ask the agent — Claude or
+Codex — to analyse the open case without changing it. **Mesh** reports size,
+bounding box, patches, zones, the decomposition (cells per processor, interface
+faces) and the `checkMesh` verdict; **Results** reads the solver log, the time
+directories (the `processor*` ones of a decomposed case included) and
+`postProcessing/`, and says whether the run finished, how it converged, whether
+the fields are physical and what went wrong. Logs and fields can be hundreds of
+MB, so they are never handed to the agent: small scripts stream them inside WSL
+and give it a summary of a few KB (`src/lib/case-digest.ts`), and
+`read_case_file` returns at most 256 KB. The only write is `checkMesh` recording
+failing cells in `polyMesh/sets`.
+
 ---
 
 ## Setting up the Codex agent (optional)
@@ -423,6 +435,7 @@ Electron `44.5.1` and the bundled Node `22.23.3` are pinned in
 | `src/lib/codex-cli.ts` | finds, authenticates and drives the isolated Codex app-server process |
 | `src/lib/agent-policy.ts` | what the agent may do, and the record of what it did |
 | `src/lib/agent-knowledge.ts` | pure lookup and installed-command validation rules |
+| `src/lib/case-digest.ts` | the streaming log, field, postProcessing and mesh digests the agent reads |
 | `src/lib/foam-installation.ts` | shared identity for installation-derived caches |
 | `src/lib/postprocess.ts` | parses what the function objects wrote, and the templates that describe them |
 | `src/lib/residuals.ts` | reads solver residuals out of a log — shared by the Monitor and Post-Process |

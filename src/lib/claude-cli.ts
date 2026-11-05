@@ -21,7 +21,7 @@
  * an agent working on someone's CFD case has no business holding those.
  * `--setting-sources ''` does the same for the user's own settings files.
  *
- * So the tool list is exactly the ten in electron/mcp/openfoam-tools.json, whose
+ * So the tool list is exactly the one in electron/mcp/openfoam-tools.json, whose
  * policy is src/lib/agent-policy.ts: read, write and run OpenFOAM executables,
  * confined to the run directory. `rm` is not in that list and cannot be
  * expressed. `--permission-mode bypassPermissions` therefore does not mean

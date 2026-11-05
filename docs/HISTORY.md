@@ -6,6 +6,29 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-05 — Agent: Mesh and Results analysis buttons, streaming digests
+
+- Claude and Codex panels: **Mesh** and **Results** beside the shield send a
+  prepared request (`src/lib/agent-analysis.ts`, reply language from the
+  locale) that uses five new read-only tools: `analyze_log`,
+  `read_log_excerpt`, `analyze_fields`, `postprocess_summary`, `mesh_summary`.
+- `src/lib/case-digest.ts` builds bash+awk scripts that stream logs, fields
+  (root and `processor*`, combined) and polyMesh headers inside WSL and print
+  a few KB; `src/lib/case-analysis.ts` runs them on the async base64 runner.
+  The awk is POSIX and has no `sqrt` (busybox builds lack it): vectors report
+  squared magnitudes, the RMS comes from TypeScript. postProcessing reuses
+  `parseFoamTable`/`mergeRestarts`/`summarizeColumn`. `mesh_summary` reports
+  meshes in time directories (snappy without `-overwrite`) and runs
+  `checkMesh -latestTime` for them; BC check is skipped there.
+- `read_case_file` returns at most 256 KB (`readFileHead`), pointing at the
+  digests above; both prompts say so (`LARGE_FILES`).
+- Fixed beside it: list keys in the panels' markdown used the line AFTER the
+  list, duplicating the next line's key; React repeated paragraphs.
+- Checked: 17 tests in `tests/case-digest.test.ts` (fake case in WSL /tmp)
+  under gawk, mawk and busybox; a real 8.8 MB log in 1.4 s; a disposable
+  decomposed cavity (`digest_test`, since removed) through the server and the
+  Results button with the Claude agent, which used the three digests.
+
 ## 2026-10-20 — v5.8.2: containers open closed; OpenFOAM search in /home and chosen folders
 
 - Released `v5.8.2` at the user's request (notes `docs/releases/v5.8.2.md`): the
@@ -397,37 +420,14 @@ audits.
   v5.3.0 portable executable and folder ZIP were replaced with hash-verified
   artifacts.
 
-## 2026-09-10 — Mesh tab: honest BC check, checkMesh report, viewer on large meshes
+## 2026-09-10 — Mesh tab: honest BC check, checkMesh report, viewer on large meshes (in brief)
 
-From the Mesh audit (`docs/agent-log/mesh-audit.md`, ignored):
-
-- Boundary-condition validation with no `constant/polyMesh/boundary` (before
-  blockMesh, or processor-only) now says the patches were not checked
-  (`meshChecked: false`, a warning and a neutral toast) instead of "All BCs are
-  valid". `parsePolyMeshBoundary` accepts any OpenFOAM word as a patch name, so
-  snappyHexMesh names such as `motorBike_frt-fairing:001%1` and their groups
-  are no longer lost.
-- checkMesh is read by `parseCheckMeshOutput` (`src/lib/check-mesh.ts`) using
-  the markers the v13/v14 sources print (" ***" failures, "  *" warnings, the
-  "Mesh stats" block, the bounding box) and the LAST verdict; the old parser
-  matched none of them. It runs through the script runner with its exit status
-  captured, so a run that stopped before judging shows "checkMesh could not
-  run" with the reason instead of "Mesh issues detected".
-- The marker scripts behind the viewer and `paraFoam -touch` exit 0, so "no
-  mesh yet — run blockMesh first" reaches the user instead of the wsl command
-  line. Surface extraction is asynchronous (the synchronous call froze every
-  other request for up to 120 s), and `/api/mesh` answers 409 with an estimate
-  from the boundary file's `nFaces` when the surface would exceed 500,000
-  triangles, so the viewer asks before extracting rather than after.
-- The STL is still read as one string; streaming it is left for later.
-- Verified through the real API: on `test` checkMesh now returns its
-  statistics (5616 points, 3875 cells…) and "Mesh OK.", BC validation
-  `meshChecked: true`, and the viewer 6300 triangles in about 2 s. On a
-  disposable case without a mesh (since removed) the viewer says to run
-  blockMesh, checkMesh reports that it could not run with "cannot find file
-  …/system/controlDict" as the reason, and BC validation says the patches were
-  not checked. A fake boundary of 400,000 wall faces plus a processor patch
-  gave a 409 estimating 800,000 triangles. 219 tests, lint and typecheck pass.
+- BC validation without `constant/polyMesh/boundary` says the patches were not
+  checked (`meshChecked: false`); `parsePolyMeshBoundary` accepts any OpenFOAM
+  word. checkMesh is read by `parseCheckMeshOutput` (`src/lib/check-mesh.ts`)
+  from the v13/v14 markers and its last verdict, with the exit status captured.
+  Surface extraction is asynchronous and `/api/mesh` answers 409 with an
+  estimate above 500,000 triangles. The STL is still read as one string.
 
 ## 2026-09-10 — Case lifecycle: timesteps, clone, rename, create, unsaved edits (in brief)
 

@@ -25,9 +25,11 @@
  */
 
 import {
-  listCases, listDirectory, readFile, writeFile, executeCommandAsync, getCaseInfo,
+  listCases, listDirectory, readFile, readFileHead, writeFile, executeCommandAsync, getCaseInfo,
   getRunDirectory,
 } from '@/lib/wsl';
+import { analyzeFields, analyzeLog, readLogExcerpt, summarizeMesh, summarizePostProcessing } from '@/lib/case-analysis';
+import { MAX_AGENT_READ_BYTES } from '@/lib/case-digest';
 import { argumentStaysInside, looksLikePath, validateCaseName, validateRelativePath } from '@/lib/wsl-input';
 import {
   ensureFoamIndex, getFoamIndexIfReady, validateDictText, checkDictSyntax, suggest,
@@ -299,7 +301,52 @@ async function call(tool: string, args: Record<string, unknown>, unrestricted = 
     case 'read_case_file': {
       const name = validateCaseName(str('case'));
       const path = validateRelativePath(str('path'), 'File path');
-      return { text: readFile(name, path) };
+      // Bounded: a whole log or field file would fill the conversation with
+      // numbers. Above the limit the agent gets the size, the file's start (so
+      // it can see the format) and the tool that reads it properly instead.
+      const { size, text } = readFileHead(name, path, MAX_AGENT_READ_BYTES);
+      if (size <= MAX_AGENT_READ_BYTES) return { text };
+      const mb = (size / 1024 / 1024).toFixed(1);
+      return {
+        text: `${path} is ${mb} MB, and read_case_file returns at most ${MAX_AGENT_READ_BYTES / 1024} KB so a large file `
+          + 'cannot flood this conversation. Read it with the digest made for it: analyze_log and read_log_excerpt for a '
+          + 'log, analyze_fields for the fields of a time directory (processor directories included), mesh_summary for '
+          + 'constant/polyMesh, postprocess_summary for postProcessing/.\n\nThe first 4 KB:\n'
+          + text.slice(0, 4096),
+      };
+    }
+
+    // ── Read-only digests of results and mesh (src/lib/case-analysis.ts) ──
+    case 'analyze_log': {
+      const name = validateCaseName(str('case'));
+      return { text: await analyzeLog(name, args.log) };
+    }
+
+    case 'read_log_excerpt': {
+      const name = validateCaseName(str('case'));
+      const n = (k: string) => (typeof args[k] === 'number' ? (args[k] as number) : undefined);
+      return {
+        text: await readLogExcerpt(name, args.log, {
+          match: str('match') || undefined,
+          occurrence: str('occurrence') === 'last' ? 'last' : 'first',
+          context: n('context'), line: n('line'), count: n('count'), tail: n('tail'),
+        }),
+      };
+    }
+
+    case 'analyze_fields': {
+      const name = validateCaseName(str('case'));
+      return { text: await analyzeFields(name, args.time, args.fields) };
+    }
+
+    case 'postprocess_summary': {
+      const name = validateCaseName(str('case'));
+      return { text: await summarizePostProcessing(name) };
+    }
+
+    case 'mesh_summary': {
+      const name = validateCaseName(str('case'));
+      return { text: await summarizeMesh(name, args.quality === true) };
     }
 
     case 'write_case_file': {
@@ -453,6 +500,11 @@ function summarise(tool: string, args: Record<string, unknown>, result: ToolResu
     case 'validate_case_files': return `checked ${c}`;
     case 'search_tutorials': return `searched: ${typeof args.query === 'string' ? args.query.slice(0, 60) : ''}`;
     case 'foam_lookup': return `looked up ${typeof args.name === 'string' && args.name ? args.name : (typeof args.kind === 'string' ? args.kind : '')}`;
+    case 'analyze_log': return `analysed the log of ${c}${typeof args.log === 'string' && args.log ? ` (${args.log})` : ''}`;
+    case 'read_log_excerpt': return `read part of a log of ${c}${typeof args.match === 'string' && args.match ? `: "${args.match.slice(0, 40)}"` : ''}`;
+    case 'analyze_fields': return `analysed the fields of ${c}${typeof args.time === 'string' && args.time ? ` at ${args.time}` : ''}`;
+    case 'postprocess_summary': return `summarised postProcessing of ${c}`;
+    case 'mesh_summary': return `analysed the mesh of ${c}${args.quality === true ? ' (checkMesh)' : ''}`;
     case 'foam_help': return `read the documentation for ${typeof args.name === 'string' ? args.name : ''}${args.web === true ? ' (web included)' : ''}`;
     default: return c || tool;
   }
