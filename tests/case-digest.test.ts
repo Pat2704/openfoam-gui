@@ -32,7 +32,7 @@ import {
   summarizeTimes,
   type FieldFileRecord,
 } from '../src/lib/case-digest.ts';
-import { replyLanguageHint, buildResultsAnalysisRequest } from '../src/lib/agent-analysis.ts';
+import { buildAnalysisRequest, buildResultsAnalysisRequest } from '../src/lib/agent-analysis.ts';
 
 describe('names and times', () => {
   test('time and field names are what OpenFOAM writes, and nothing a shell could read', () => {
@@ -189,11 +189,9 @@ describe('mesh digest', () => {
 });
 
 describe('analysis requests', () => {
-  test('ask in English and for an answer in the user\'s language', () => {
-    assert.equal(replyLanguageHint('it-IT'), ' Reply in Italian.');
-    assert.equal(replyLanguageHint('en-GB'), '');
-    assert.equal(replyLanguageHint(undefined), '');
-    assert.match(buildResultsAnalysisRequest('grp/cavity', 'it-IT'), /^Analyse the results of the run in "grp\/cavity"\..*Reply in Italian\.$/);
+  test('ask in English, for an answer in the language of the conversation or English when it is empty', () => {
+    assert.match(buildResultsAnalysisRequest('grp/cavity', false), /^Analyse the results of the run in "grp\/cavity"\..*Reply in English\.$/);
+    assert.match(buildAnalysisRequest('mesh', 'cavity', true), /^Analyse the mesh of "cavity"\..*Reply in the language this conversation has been in\.$/);
   });
 });
 

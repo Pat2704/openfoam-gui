@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,8 @@ import {
   Plus, Trash2, FileCode, FolderPlus, Save, Copy,
   FolderTree, ChevronDown, ChevronRight, File, FileText,
   RotateCcw, Folder, CheckSquare, Square, XCircle, Timer,
-  Loader2, RefreshCw, Search, WrapText, X, Pencil, AlertTriangle, Palette, IndentIncrease
+  Loader2, RefreshCw, Search, WrapText, X, Pencil, AlertTriangle, Palette, IndentIncrease,
+  ChevronUp, FoldVertical, UnfoldVertical, CaseSensitive, WholeWord, Regex, Replace, ReplaceAll
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -20,8 +21,12 @@ import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { isProcessForCase } from '@/lib/case-processes';
 import { CasePreflightResults, CasePreflightTrigger, useCasePreflight } from './case-preflight-panel';
-import { EditorHighlightLayer } from './editor-highlight-layer';
-import { canHighlight } from '@/lib/editor-highlight';
+import { EditorHighlightLayer, type LayerRow } from './editor-highlight-layer';
+import { canHighlight, scanFoam, type LineMark } from '@/lib/editor-highlight';
+import {
+  applyVisibleEdit, foldRegions, foldsHiding, fullToVisible, lineOfOffset, project, shiftFolds, visibleToFull,
+} from '@/lib/editor-folding';
+import { findMatches, replaceAll, replaceMatch, type SearchOptions } from '@/lib/editor-search';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 
 /** Comment colours offered next to the free picker. */
@@ -83,7 +88,19 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   const pendingAppearance = useRef<{ 'editor-comment-color'?: string; 'editor-indent-guides'?: string }>({});
   const highlightRef = useRef<HTMLDivElement>(null);
   const [textareaWidth, setTextareaWidth] = useState<number | null>(null);
-  const [searchMatches, setSearchMatches] = useState(0);
+  // Find and replace (src/lib/editor-search.ts).
+  const [replaceTerm, setReplaceTerm] = useState('');
+  const [replaceVisible, setReplaceVisible] = useState(false);
+  const [searchOptions, setSearchOptions] = useState<SearchOptions>({ caseSensitive: false, wholeWord: false, regex: false });
+  const [currentMatch, setCurrentMatch] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Folded blocks, by the line of their `{` (src/lib/editor-folding.ts). The
+  // textarea shows the file without their inner lines; the file stays whole.
+  const [folded, setFolded] = useState<Set<number>>(new Set());
+  /** Where the caret belongs in the FILE once the projection has re-rendered. */
+  const pendingCaretRef = useRef<number | null>(null);
+  /** A search hit to select once the folds hiding it have opened. */
+  const pendingRevealRef = useRef<number | null>(null);
   /** Something else rewrote the open file while it had unsaved edits. */
   const [externalChange, setExternalChange] = useState(false);
 
@@ -193,36 +210,25 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     return () => window.removeEventListener('keydown', handler);
   }, [currentFile, saving]);
 
-  // Ctrl+F shortcut to toggle search bar (only when a file is open)
+  // Ctrl+F opens find, Ctrl+H find and replace (only when a file is open). A
+  // selection on one line becomes the search, as in VS Code.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        if (currentFile) {
-          e.preventDefault();
-          setSearchVisible(prev => {
-            if (prev) setSearchTerm('');
-            return !prev;
-          });
-        }
-      }
+      if (!(e.ctrlKey || e.metaKey) || !currentFile) return;
+      const key = e.key.toLowerCase();
+      if (key !== 'f' && key !== 'h') return;
+      e.preventDefault();
+      const textarea = textareaRef.current;
+      const selected = textarea ? textarea.value.slice(textarea.selectionStart, textarea.selectionEnd) : '';
+      if (selected && !selected.includes('\n')) setSearchTerm(selected);
+      setSearchVisible(true);
+      if (key === 'h') setReplaceVisible(true);
+      requestAnimationFrame(() => { searchInputRef.current?.focus(); searchInputRef.current?.select(); });
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [currentFile]);
 
-  // Compute search match count whenever search term or file content changes
-  useEffect(() => {
-    if (!searchTerm) { setSearchMatches(0); return; }
-    const lines = fileContent.split('\n');
-    let count = 0;
-    for (const line of lines) {
-      const lower = line.toLowerCase();
-      const term = searchTerm.toLowerCase();
-      let idx = 0;
-      while ((idx = lower.indexOf(term, idx)) !== -1) { count++; idx++; }
-    }
-    setSearchMatches(count);
-  }, [searchTerm, fileContent]);
 
   useEffect(() => { expandedDirsRef.current = expandedDirs; }, [expandedDirs]);
 
@@ -389,6 +395,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         const textarea = textareaRef.current;
         const scrollTop = textarea?.scrollTop ?? 0;
         const caret = textarea?.selectionStart ?? 0;
+        // Another writer may have moved every line, so folds start over.
+        setFolded(new Set());
         setFileContent(content);
         setOriginalContent(content);
         setActiveFile({ path: currentFile, content });
@@ -773,6 +781,148 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // The layer behind the text is skipped for huge files (a field of a large
   // mesh): one element per line would make every keystroke slow.
   const highlighting = canHighlight(fileContent);
+
+  // One scan gives the highlight and the brace blocks folding uses; folding,
+  // like highlighting, is off for a file too large to draw.
+  const scan = useMemo(() => (highlighting ? scanFoam(fileContent) : null), [fileContent, highlighting]);
+  const regions = useMemo(() => (scan ? foldRegions(fileContent, scan.blocks) : []), [scan, fileContent]);
+  const regionByToggle = useMemo(() => new Map(regions.map(region => [region.toggle, region])), [regions]);
+  const projection = useMemo(() => project(fileContent, regions, folded), [fileContent, regions, folded]);
+  const search = useMemo(
+    () => (searchVisible ? findMatches(fileContent, searchTerm, searchOptions) : { matches: [], truncated: false, error: undefined }),
+    [searchVisible, fileContent, searchTerm, searchOptions],
+  );
+  const matchCount = search.matches.length;
+  const shownMatch = matchCount ? Math.min(currentMatch, matchCount - 1) : 0;
+
+  /** The visible lines for the layer: highlight, search hits, fold markers. */
+  const layerRows = useMemo<LayerRow[]>(() => {
+    if (!scan) return [];
+    const marks = new Map<number, LineMark[]>();
+    search.matches.forEach((match, index) => {
+      const line = lineOfOffset(projection.fullLineStarts, match.start);
+      const lineStart = projection.fullLineStarts[line];
+      const lineEnd = (projection.fullLineStarts[line + 1] ?? fileContent.length + 1) - 1;
+      const list = marks.get(line) ?? [];
+      list.push({ start: match.start - lineStart, end: Math.min(match.end, lineEnd) - lineStart, current: index === shownMatch });
+      marks.set(line, list);
+    });
+    return projection.lineMap.map((fullLine, visibleLine) => ({
+      line: scan.lines[fullLine],
+      marks: marks.get(fullLine) ?? [],
+      hidden: projection.hiddenAfter.get(visibleLine) ?? 0,
+    }));
+  }, [scan, search.matches, shownMatch, projection, fileContent.length]);
+
+  /** An edit of what the textarea shows, carried over to the file. */
+  // `caret` is where the textarea left it, which says on which side of a fold
+  // an edit landed (see applyVisibleEdit).
+  const applyVisible = useCallback((nextVisible: string, caret?: number) => {
+    if (projection.visible === fileContent) { setFileContent(nextVisible); return; }
+    const edit = applyVisibleEdit(fileContent, projection, nextVisible, caret);
+    // Folds follow the lines they are on and keep only their own blocks.
+    const nextRegions = foldRegions(edit.text, scanFoam(edit.text).blocks);
+    setFolded(prev => {
+      const next = shiftFolds(prev, edit.fromLine, edit.lineDelta, nextRegions, regions);
+      if (edit.reveal !== undefined) next.delete(edit.reveal);
+      return next;
+    });
+    pendingCaretRef.current = edit.caret;
+    setFileContent(edit.text);
+  }, [fileContent, projection, regions]);
+
+  /** Fold or unfold, keeping the caret on the same text. */
+  const changeFolds = useCallback((change: (prev: Set<number>) => Set<number>) => {
+    const textarea = textareaRef.current;
+    if (textarea) pendingCaretRef.current = visibleToFull(projection, textarea.selectionStart);
+    setFolded(prev => change(prev));
+  }, [projection]);
+  const toggleFold = (open: number) => changeFolds(prev => {
+    const next = new Set(prev);
+    if (next.has(open)) next.delete(open); else next.add(open);
+    return next;
+  });
+
+  // A fold whose block an edit broke is dropped, which shows its lines again.
+  useLayoutEffect(() => {
+    setFolded(prev => {
+      if (!prev.size) return prev;
+      const opens = new Set(regions.map(region => region.open));
+      const kept = [...prev].filter(line => opens.has(line));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [regions]);
+  useEffect(() => { setFolded(new Set()); }, [currentFile]);
+
+  // After the projection changed under the caret (a fold toggled, an edit that
+  // broke a fold), put the caret back on the text it was on.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    const pending = pendingCaretRef.current;
+    if (!textarea || pending === null) return;
+    pendingCaretRef.current = null;
+    const position = fullToVisible(projection, Math.min(pending, fileContent.length));
+    if (textarea.selectionStart !== position || textarea.selectionEnd !== position) textarea.setSelectionRange(position, position);
+  }, [projection, fileContent.length]);
+
+  /** Select a search hit, opening any fold that hides it, and scroll to it. */
+  const revealMatch = useCallback((index: number) => {
+    const match = search.matches[index];
+    const textarea = textareaRef.current;
+    if (!match || !textarea) return;
+    const line = lineOfOffset(projection.fullLineStarts, match.start);
+    const hiding = foldsHiding(line, regions, folded);
+    if (hiding.length) {
+      pendingRevealRef.current = index;
+      setFolded(prev => new Set([...prev].filter(open => !hiding.includes(open))));
+      return;
+    }
+    const start = fullToVisible(projection, match.start);
+    const end = fullToVisible(projection, match.end);
+    textarea.setSelectionRange(start, end);
+    // A big file has no layer to show the hit, so the selection must.
+    if (!highlighting) textarea.focus();
+    const visibleLine = lineOfOffset(projection.visibleLineStarts, start);
+    const row = highlightRef.current?.children[visibleLine] as HTMLElement | undefined;
+    const top = row ? row.offsetTop : visibleLine * 20;
+    if (top < textarea.scrollTop || top > textarea.scrollTop + textarea.clientHeight - 40) {
+      textarea.scrollTop = Math.max(0, top - textarea.clientHeight / 3);
+    }
+  }, [search.matches, projection, regions, folded, highlighting]);
+  useLayoutEffect(() => {
+    const index = pendingRevealRef.current;
+    if (index === null) return;
+    pendingRevealRef.current = null;
+    revealMatch(index);
+  }, [projection, revealMatch]);
+
+  const stepMatch = (direction: 1 | -1) => {
+    if (!matchCount) return;
+    const next = (shownMatch + direction + matchCount) % matchCount;
+    setCurrentMatch(next);
+    revealMatch(next);
+  };
+  // A new search starts from the first hit.
+  useEffect(() => { setCurrentMatch(0); }, [searchTerm, searchOptions]);
+
+  const replaceCurrent = () => {
+    const match = search.matches[shownMatch];
+    if (!match) return;
+    const next = replaceMatch(fileContent, match, searchTerm, replaceTerm, searchOptions);
+    const insertedLength = next.length - fileContent.length + (match.end - match.start);
+    const lineDelta = next.slice(match.start, match.start + insertedLength).split('\n').length
+      - fileContent.slice(match.start, match.end).split('\n').length;
+    setFolded(prev => shiftFolds(prev, lineOfOffset(projection.fullLineStarts, match.start), lineDelta));
+    setFileContent(next);
+    // The next hit takes this one's index, so the same index moves on.
+  };
+  const replaceEverything = () => {
+    const result = replaceAll(fileContent, searchTerm, replaceTerm, searchOptions);
+    if (!result.count) return;
+    if (result.text.split('\n').length !== fileContent.split('\n').length) setFolded(new Set());
+    setFileContent(result.text);
+    toast.success(`Replaced ${result.count} ${result.count === 1 ? 'occurrence' : 'occurrences'}`);
+  };
 
   /** Move the layer behind the text to the textarea's scroll offsets. */
   const syncHighlight = useCallback(() => {
@@ -1361,6 +1511,24 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 </Button>
                 <Button
                   size="sm" variant="ghost" className="h-8 px-2"
+                  disabled={!regions.length}
+                  onClick={() => changeFolds(() => new Set(regions.map(region => region.open)))}
+                  title="Fold every { … } block"
+                  aria-label="Fold all blocks"
+                >
+                  <FoldVertical className="w-3 h-3" />
+                </Button>
+                <Button
+                  size="sm" variant="ghost" className="h-8 px-2"
+                  disabled={!folded.size}
+                  onClick={() => changeFolds(() => new Set())}
+                  title="Unfold every block"
+                  aria-label="Unfold all blocks"
+                >
+                  <UnfoldVertical className="w-3 h-3" />
+                </Button>
+                <Button
+                  size="sm" variant="ghost" className="h-8 px-2"
                   onClick={() => setAppearanceOpen(true)}
                   title="Editor appearance: comment colour and indent guides"
                   aria-label="Editor appearance"
@@ -1373,32 +1541,130 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               </div>
             </div>
             {searchVisible && currentFile && (
-              <div className="px-3 py-1.5 border-b bg-muted/30 flex flex-shrink-0 items-center gap-2">
-                <Search className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-                <input
-                  autoFocus
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search in file..."
-                  className="flex-1 text-xs font-mono bg-transparent focus:outline-none placeholder:text-muted-foreground/50"
-                />
-                {searchTerm && (
-                  <span className="text-[10px] text-muted-foreground flex-shrink-0">{searchMatches} results</span>
-                )}
-                <button onClick={() => { setSearchVisible(false); setSearchTerm(''); }} className="p-0.5 hover:bg-muted rounded" aria-label="Close search">
-                  <X className="w-3 h-3 text-muted-foreground" />
+              <div className="px-3 py-1.5 border-b bg-muted/30 flex flex-shrink-0 flex-col gap-1">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setReplaceVisible(v => !v)}
+                    className="p-0.5 rounded text-muted-foreground hover:bg-muted"
+                    aria-expanded={replaceVisible}
+                    title={replaceVisible ? 'Hide replace' : 'Show replace (Ctrl+H)'}
+                    aria-label="Toggle replace"
+                  >
+                    {replaceVisible ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                  </button>
+                  <Search className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                  <input
+                    ref={searchInputRef}
+                    autoFocus
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); stepMatch(e.shiftKey ? -1 : 1); }
+                      if (e.key === 'Escape') { setSearchVisible(false); textareaRef.current?.focus(); }
+                    }}
+                    placeholder="Find (Enter next, Shift+Enter previous)"
+                    className="flex-1 min-w-0 text-xs font-mono bg-transparent focus:outline-none placeholder:text-muted-foreground/50"
+                    aria-label="Find in file"
+                    spellCheck={false}
+                  />
+                <button
+                  type="button"
+                  onClick={() => setSearchOptions(o => ({ ...o, caseSensitive: !o.caseSensitive }))}
+                  className={`p-0.5 rounded ${searchOptions.caseSensitive ? 'bg-primary/15 text-foreground ring-1 ring-primary/40' : 'text-muted-foreground hover:bg-muted'}`}
+                  aria-pressed={searchOptions.caseSensitive}
+                  title="Match case"
+                  aria-label="Match case"
+                >
+                  <CaseSensitive className="w-3.5 h-3.5" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchOptions(o => ({ ...o, wholeWord: !o.wholeWord }))}
+                  className={`p-0.5 rounded ${searchOptions.wholeWord ? 'bg-primary/15 text-foreground ring-1 ring-primary/40' : 'text-muted-foreground hover:bg-muted'}`}
+                  aria-pressed={searchOptions.wholeWord}
+                  title="Whole word"
+                  aria-label="Whole word"
+                >
+                  <WholeWord className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchOptions(o => ({ ...o, regex: !o.regex }))}
+                  className={`p-0.5 rounded ${searchOptions.regex ? 'bg-primary/15 text-foreground ring-1 ring-primary/40' : 'text-muted-foreground hover:bg-muted'}`}
+                  aria-pressed={searchOptions.regex}
+                  title="Regular expression"
+                  aria-label="Regular expression"
+                >
+                  <Regex className="w-3.5 h-3.5" />
+                </button>
+                  <span className={`text-[10px] flex-shrink-0 tabular-nums ${search.error ? 'text-danger' : 'text-muted-foreground'}`} title={search.error}>
+                    {search.error ? 'invalid regex' : searchTerm ? (matchCount ? `${shownMatch + 1} of ${matchCount}${search.truncated ? '+' : ''}` : 'no results') : ''}
+                  </span>
+                  <button type="button" onClick={() => stepMatch(-1)} disabled={!matchCount} className="p-0.5 rounded text-muted-foreground hover:bg-muted disabled:opacity-40" title="Previous (Shift+Enter)" aria-label="Previous match">
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button type="button" onClick={() => stepMatch(1)} disabled={!matchCount} className="p-0.5 rounded text-muted-foreground hover:bg-muted disabled:opacity-40" title="Next (Enter)" aria-label="Next match">
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                  <button onClick={() => { setSearchVisible(false); textareaRef.current?.focus(); }} className="p-0.5 hover:bg-muted rounded" aria-label="Close search" title="Close (Esc)">
+                    <X className="w-3 h-3 text-muted-foreground" />
+                  </button>
+                </div>
+                {replaceVisible && (
+                  <div className="flex items-center gap-1.5 pl-5">
+                    <Replace className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                    <input
+                      value={replaceTerm}
+                      onChange={(e) => setReplaceTerm(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); replaceCurrent(); }
+                        if (e.key === 'Escape') { setSearchVisible(false); textareaRef.current?.focus(); }
+                      }}
+                      placeholder={searchOptions.regex ? 'Replace ($1 is the first group)' : 'Replace'}
+                      className="flex-1 min-w-0 text-xs font-mono bg-transparent focus:outline-none placeholder:text-muted-foreground/50"
+                      aria-label="Replace with"
+                      spellCheck={false}
+                    />
+                    <button type="button" onClick={replaceCurrent} disabled={!matchCount} className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-40" title="Replace this match (Enter)">
+                      <Replace className="w-3 h-3" /> Replace
+                    </button>
+                    <button type="button" onClick={replaceEverything} disabled={!matchCount} className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-40" title="Replace every match">
+                      <ReplaceAll className="w-3 h-3" /> All
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             <div className="flex-1 min-h-0 overflow-hidden relative">
               <div className="absolute inset-0 flex">
                 <div
                   ref={lineNumbersRef}
-                  className="flex-shrink-0 w-12 py-3 px-2 text-right select-none border-r bg-muted/30 overflow-hidden"
+                  className="flex-shrink-0 w-14 py-3 pl-0.5 pr-2 text-right select-none border-r bg-muted/30 overflow-hidden"
                 >
-                  {fileContent.split('\n').map((_, i) => (
-                    <div key={i} className="text-xs leading-5 text-muted-foreground font-mono">{i + 1}</div>
-                  ))}
+                  {projection.lineMap.map((fullLine) => {
+                    const region = regionByToggle.get(fullLine);
+                    const isFolded = region ? folded.has(region.open) : false;
+                    return (
+                      <div key={fullLine} className="flex items-center justify-end gap-0.5 text-xs leading-5 text-muted-foreground font-mono">
+                        {region && (
+                          <button
+                            type="button"
+                            // Keep the caret in the textarea.
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => toggleFold(region.open)}
+                            className="mr-auto rounded hover:bg-muted hover:text-foreground"
+                            title={isFolded ? 'Unfold this block' : 'Fold this block'}
+                            aria-label={`${isFolded ? 'Unfold' : 'Fold'} the block at line ${fullLine + 1}`}
+                            aria-expanded={!isFolded}
+                          >
+                            {isFolded ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                          </button>
+                        )}
+                        {fullLine + 1}
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="relative flex-1 min-w-0">
                 {/* The coloured copy of the text, behind the transparent
@@ -1407,7 +1673,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   <div className="absolute inset-0 overflow-hidden pointer-events-none">
                     <EditorHighlightLayer
                       ref={highlightRef}
-                      text={fileContent}
+                      rows={layerRows}
                       commentColor={commentColor}
                       guides={indentGuides}
                       wordWrap={wordWrap}
@@ -1417,7 +1683,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                 )}
                 <textarea
                   ref={textareaRef}
-                  value={fileContent} onChange={(e) => setFileContent(e.target.value)}
+                  value={projection.visible} onChange={(e) => applyVisible(e.target.value, e.target.selectionEnd)}
                   onScroll={(e) => {
                     if (lineNumbersRef.current) {
                       lineNumbersRef.current.scrollTop = e.currentTarget.scrollTop;
@@ -1431,23 +1697,23 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                       const start = ta.selectionStart;
                       const end = ta.selectionEnd;
 
+                      // Indentation edits the visible text, like typing does.
+                      const shown = projection.visible;
                       if (e.shiftKey) {
                         // Shift+Tab: outdent (remove up to 4 leading spaces on current line)
-                        const lineStart = fileContent.lastIndexOf('\n', start - 1) + 1;
+                        const lineStart = shown.lastIndexOf('\n', start - 1) + 1;
                         const removeCount = Math.min(
-                          (fileContent.substring(lineStart, start).match(/^ */) || [''])[0].length,
+                          (shown.substring(lineStart, start).match(/^ */) || [''])[0].length,
                           4
                         );
                         if (removeCount > 0) {
-                          const updated = fileContent.substring(0, lineStart) + fileContent.substring(lineStart + removeCount);
-                          setFileContent(updated);
+                          applyVisible(shown.substring(0, lineStart) + shown.substring(lineStart + removeCount), start - removeCount);
                           requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start - removeCount; });
                         }
                       } else {
                         // Tab: insert 4 spaces
                         const spaces = '    ';
-                        const updated = fileContent.substring(0, start) + spaces + fileContent.substring(end);
-                        setFileContent(updated);
+                        applyVisible(shown.substring(0, start) + spaces + shown.substring(end), start + spaces.length);
                         requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + spaces.length; });
                       }
                     }

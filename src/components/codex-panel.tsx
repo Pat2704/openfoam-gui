@@ -26,7 +26,7 @@ import {
   Square, AlertCircle, ExternalLink, LogOut, LogIn, UserRound, Sparkles, Wrench, FolderOpen,
   Shield, ShieldOff, Grid3x3, Activity,
 } from 'lucide-react';
-import { buildMeshAnalysisRequest, buildResultsAnalysisRequest } from '@/lib/agent-analysis';
+import { ANALYSIS_LABELS, buildAnalysisRequest, type AnalysisKind } from '@/lib/agent-analysis';
 import { readMarkdownTable } from '@/lib/markdown-table';
 import type { CodexModel } from '@/lib/codex-protocol';
 import { Button } from '@/components/ui/button';
@@ -56,6 +56,11 @@ function ChatGPTMark({ className = '', color = 'currentColor' }: { className?: s
 interface Turn {
   role: 'user' | 'assistant';
   text?: string;
+  /**
+   * Set on a user turn sent by an analysis button: the panel shows this short
+   * label instead of the prepared request in `text`.
+   */
+  label?: string;
   blocks?: Block[];
   /** Set on the assistant turn when the run ended badly. */
   error?: string;
@@ -367,13 +372,14 @@ export default function CodexPanel() {
   }, []);
 
   // ── Send ──
-  // `prepared` is a message from one of the analysis buttons; the draft in the
-  // composer is left alone when one is sent.
-  const sendMessage = useCallback(async (prepared?: string) => {
-    const text = (prepared ?? input).trim();
+  // `prepared` is a request from one of the analysis buttons: it is sent as
+  // written but shown only by its label, and the draft in the composer is
+  // left alone.
+  const sendMessage = useCallback(async (prepared?: { text: string; label: string }) => {
+    const text = (prepared?.text ?? input).trim();
     if (!text || running) return;
 
-    setTurns(prev => [...prev, { role: 'user', text }, { role: 'assistant', blocks: [] }]);
+    setTurns(prev => [...prev, { role: 'user', text, label: prepared?.label }, { role: 'assistant', blocks: [] }]);
     if (prepared === undefined) setInput('');
     setRunning(true);
     stickToBottom.current = true;
@@ -924,14 +930,22 @@ export default function CodexPanel() {
                       request that uses only the read-only digest tools (see
                       src/lib/agent-analysis.ts), so they work in either mode. */}
                   {([
-                    { label: 'Mesh', Icon: Grid3x3, build: buildMeshAnalysisRequest,
+                    { label: 'Mesh', Icon: Grid3x3, kind: 'mesh' as AnalysisKind,
                       title: 'Analyse the mesh of the open case: size, patches, zones, decomposition and checkMesh quality' },
-                    { label: 'Results', Icon: Activity, build: buildResultsAnalysisRequest,
+                    { label: 'Results', Icon: Activity, kind: 'results' as AnalysisKind,
                       title: 'Analyse the run of the open case: log, time directories (processor ones included) and postProcessing' },
-                  ] as const).map(({ label, Icon, build, title }) => (
+                  ] as const).map(({ label, Icon, kind, title }) => (
                     <button
                       key={label}
-                      onClick={() => { if (caseName) void sendMessage(build(caseName, navigator.language)); }}
+                      onClick={() => {
+                        if (!caseName) return;
+                        // The answer follows the conversation's language; an
+                        // empty chat has none yet, so it is English.
+                        void sendMessage({
+                          text: buildAnalysisRequest(kind, caseName, turns.length > 0),
+                          label: `${ANALYSIS_LABELS[kind]} · ${caseName}`,
+                        });
+                      }}
                       disabled={!caseName || running}
                       className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg transition-colors duration-150 text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 active:bg-black/10 dark:active:bg-white/15 disabled:opacity-40 disabled:pointer-events-none"
                       title={caseName ? title : 'Open a case first'}
@@ -989,6 +1003,15 @@ export default function CodexPanel() {
 // ── One turn ────────────────────────────────────────────────────────────────
 
 function TurnView({ turn, running }: { turn: Turn; running: boolean }) {
+  if (turn.role === 'user' && turn.label) {
+    return (
+      <div className="flex justify-end">
+        <span className="rounded-full border border-black/10 dark:border-white/10 px-2.5 py-0.5 text-[11px] text-muted-foreground">
+          {turn.label}
+        </span>
+      </div>
+    );
+  }
   if (turn.role === 'user') {
     return (
       <div className="flex justify-end">

@@ -67,3 +67,12 @@ test('very large files are not highlighted', () => {
   assert.equal(canHighlight('a\nb'), true);
   assert.equal(canHighlight('\n'.repeat(HIGHLIGHT_MAX_LINES)), false);
 });
+
+test('search hits cut the segments of a line, the current one marked apart', async () => {
+  const { markSegments } = await import('../src/lib/editor-highlight.ts');
+  const [line] = highlightFoam('value 1; // value');
+  const marked = markSegments(line.segments, [{ start: 0, end: 5, current: true }, { start: 12, end: 17, current: false }]);
+  assert.deepEqual(marked.map(s => [s.text, s.comment, s.mark]), [
+    ['value', false, 2], [' 1; ', false, 0], ['// ', true, 0], ['value', true, 1],
+  ]);
+});

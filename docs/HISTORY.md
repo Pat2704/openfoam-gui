@@ -6,6 +6,15 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-05 — File Editor find/replace and folding; analysis buttons hide their request
+
+- Find/replace (`src/lib/editor-search.ts`): case, whole word, regex (`$1`;
+  plain replacements literal). Folding (`src/lib/editor-folding.ts`): the
+  textarea shows a projection without folded lines, edits map back using the
+  caret; tested for every keystroke position. Mesh/Results show a label only,
+  answer in the conversation's language (English when empty). Known: below
+  ~1070 px the tab bar overflows the root and a focus scrolls the app sideways.
+
 ## 2026-11-05 — Agent tables, one ParaView legend, File Editor comments and guides
 
 - Agent panels: GitHub tables render (`src/lib/markdown-table.ts`, alignment,
@@ -21,9 +30,7 @@ audits.
   indentation. The text is transparent with a visible caret; the layer follows
   the scroll and the wrap width. Off above 20,000 lines. Saved as
   `editor-comment-color` / `editor-indent-guides` in the FOAMy store.
-- Checked in the dev server on `editor_test` (since removed): selection lines
-  up with and without wrap, typing colours live, light and dark, the choice
-  survives a reload. 405 tests, lint and typecheck pass.
+- Checked in the dev server on a disposable case; 405 tests pass.
 
 ## 2026-11-05 — Agent: Mesh and Results analysis buttons, streaming digests
 

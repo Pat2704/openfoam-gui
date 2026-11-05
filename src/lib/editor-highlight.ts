@@ -50,15 +50,31 @@ function indentColumn(line: string, tabSize: number): number {
   return column;
 }
 
+/** A `{ … }` pair, by the lines its braces are on (0-based). */
+export interface BraceBlock {
+  open: number;
+  close: number;
+}
+
 export function highlightFoam(text: string, tabSize = 4): HighlightLine[] {
+  return scanFoam(text, tabSize).lines;
+}
+
+/**
+ * One pass over the text: the highlight of every line, and every matched brace
+ * pair (comments and strings excluded), which is what folding works from.
+ */
+export function scanFoam(text: string, tabSize = 4): { lines: HighlightLine[]; blocks: BraceBlock[] } {
   const lines = text.split('\n');
   const out: HighlightLine[] = [];
+  const blocks: BraceBlock[] = [];
   let inBlockComment = false;
   // Open braces, innermost last: the column their guide is drawn at.
-  const open: { id: number; column: number }[] = [];
+  const open: { id: number; column: number; line: number }[] = [];
   let nextId = 0;
 
-  for (const raw of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex];
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
     const atStart = [...open];
     const closedHere = new Set<number>();
@@ -106,10 +122,13 @@ export function highlightFoam(text: string, tabSize = 4): HighlightLine[] {
       flush(false);
       current += char;
       if (char === '"') inString = true;
-      else if (char === '{') open.push({ id: nextId++, column: indent });
+      else if (char === '{') open.push({ id: nextId++, column: indent, line: lineIndex });
       else if (char === '}') {
         const closed = open.pop();
-        if (closed) closedHere.add(closed.id);
+        if (closed) {
+          closedHere.add(closed.id);
+          blocks.push({ open: closed.line, close: lineIndex });
+        }
       }
     }
     if (current) segments.push({ text: current, comment: currentIsComment });
@@ -117,6 +136,43 @@ export function highlightFoam(text: string, tabSize = 4): HighlightLine[] {
       segments,
       guides: atStart.filter(brace => !closedHere.has(brace.id)).map(brace => brace.column),
     });
+  }
+  blocks.sort((a, b) => a.open - b.open || b.close - a.close);
+  return { lines: out, blocks };
+}
+
+/** A search hit on one line, by column. */
+export interface LineMark {
+  start: number;
+  end: number;
+  current: boolean;
+}
+
+export interface MarkedSegment extends HighlightSegment {
+  /** 0 none, 1 a search hit, 2 the current hit. */
+  mark: 0 | 1 | 2;
+}
+
+/** Cut a line's segments where the search hits on it begin and end. */
+export function markSegments(segments: readonly HighlightSegment[], marks: readonly LineMark[]): MarkedSegment[] {
+  if (!marks.length) return segments.map(segment => ({ ...segment, mark: 0 }));
+  const out: MarkedSegment[] = [];
+  let offset = 0;
+  for (const segment of segments) {
+    const end = offset + segment.text.length;
+    const cuts = new Set<number>([offset, end]);
+    for (const mark of marks) {
+      if (mark.start > offset && mark.start < end) cuts.add(mark.start);
+      if (mark.end > offset && mark.end < end) cuts.add(mark.end);
+    }
+    const points = [...cuts].sort((a, b) => a - b);
+    for (let i = 0; i + 1 < points.length; i++) {
+      const from = points[i];
+      const to = points[i + 1];
+      const hit = marks.find(mark => mark.start <= from && mark.end >= to);
+      out.push({ text: segment.text.slice(from - offset, to - offset), comment: segment.comment, mark: hit ? (hit.current ? 2 : 1) : 0 });
+    }
+    offset = end;
   }
   return out;
 }
