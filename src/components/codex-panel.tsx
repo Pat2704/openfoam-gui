@@ -27,6 +27,7 @@ import {
   Shield, ShieldOff, Grid3x3, Activity,
 } from 'lucide-react';
 import { buildMeshAnalysisRequest, buildResultsAnalysisRequest } from '@/lib/agent-analysis';
+import { readMarkdownTable } from '@/lib/markdown-table';
 import type { CodexModel } from '@/lib/codex-protocol';
 import { Button } from '@/components/ui/button';
 import { KnowledgeStatus } from '@/components/knowledge-status';
@@ -1160,6 +1161,39 @@ function Markdown({ text }: { text: string }) {
         let i = 0;
         while (i < lines.length) {
           const line = lines[i];
+
+          // A table: header, separator, rows (src/lib/markdown-table.ts).
+          const table = readMarkdownTable(lines, i);
+          if (table) {
+            out.push(
+              <div key={`${index}-${i}`} className="my-1.5 overflow-x-auto">
+                <table className="text-[11px] border-collapse">
+                  <thead>
+                    <tr>
+                      {table.header.map((cell, k) => (
+                        <th key={k} style={{ textAlign: table.align[k] ?? 'left' }} className="px-2 py-1 font-semibold border-b border-black/15 dark:border-white/15 whitespace-nowrap">
+                          {inline(cell)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {table.rows.map((row, r) => (
+                      <tr key={r} className="even:bg-black/[0.03] dark:even:bg-white/[0.04]">
+                        {row.map((cell, k) => (
+                          <td key={k} style={{ textAlign: table.align[k] ?? 'left' }} className="px-2 py-0.5 border-b border-black/5 dark:border-white/5 align-top">
+                            {inline(cell)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>,
+            );
+            i = table.end;
+            continue;
+          }
 
           const heading = line.match(/^(#{1,3})\s+(.*)/);
           if (heading) {
