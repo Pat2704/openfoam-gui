@@ -1149,13 +1149,16 @@ function Markdown({ text }: { text: string }) {
           }
 
           if (/^\s*[-*]\s+/.test(line)) {
+            // Keyed by the list's FIRST line: `i` has moved past it by the
+            // time the list is pushed, onto the line keyed next.
+            const start = i;
             const items: string[] = [];
             while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
               items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
               i++;
             }
             out.push(
-              <ul key={`${index}-${i}`} className="ml-4 list-disc space-y-0.5 my-1">
+              <ul key={`${index}-${start}`} className="ml-4 list-disc space-y-0.5 my-1">
                 {items.map((item, k) => <li key={k}>{inline(item)}</li>)}
               </ul>,
             );
@@ -1163,13 +1166,16 @@ function Markdown({ text }: { text: string }) {
           }
 
           if (/^\s*\d+\.\s+/.test(line)) {
+            // Keyed by the list's FIRST line: `i` has moved past it by the
+            // time the list is pushed, onto the line keyed next.
+            const start = i;
             const items: string[] = [];
             while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
               items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
               i++;
             }
             out.push(
-              <ol key={`${index}-${i}`} className="ml-4 list-decimal space-y-0.5 my-1">
+              <ol key={`${index}-${start}`} className="ml-4 list-decimal space-y-0.5 my-1">
                 {items.map((item, k) => <li key={k}>{inline(item)}</li>)}
               </ol>,
             );
