@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,7 @@ import {
   Plus, Trash2, FileCode, FolderPlus, Save, Copy,
   FolderTree, ChevronDown, ChevronRight, File, FileText,
   RotateCcw, Folder, CheckSquare, Square, XCircle, Timer,
-  Loader2, RefreshCw, Search, WrapText, X, Pencil, AlertTriangle
+  Loader2, RefreshCw, Search, WrapText, X, Pencil, AlertTriangle, Palette, IndentIncrease
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -20,6 +20,13 @@ import { useCaseContext } from '@/lib/case-context';
 import { confirmDialog } from '@/components/ui/confirm-host';
 import { isProcessForCase } from '@/lib/case-processes';
 import { CasePreflightResults, CasePreflightTrigger, useCasePreflight } from './case-preflight-panel';
+import { EditorHighlightLayer } from './editor-highlight-layer';
+import { canHighlight } from '@/lib/editor-highlight';
+import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
+
+/** Comment colours offered next to the free picker. */
+const COMMENT_SWATCHES = ['#6A9955', '#8B949E', '#4F8CC9', '#2AA198', '#CE9178', '#C586C0'];
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 interface FileItem {
   name: string;
@@ -66,6 +73,16 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   const [searchTerm, setSearchTerm] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
+  // Appearance: comment colour ('' = the theme's) and indent guides, kept in
+  // the app's own store because localStorage does not survive a packaged-app
+  // restart (its origin changes every launch).
+  const [commentColor, setCommentColor] = useState('');
+  const [indentGuides, setIndentGuides] = useState(true);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const saveAppearanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingAppearance = useRef<{ 'editor-comment-color'?: string; 'editor-indent-guides'?: string }>({});
+  const highlightRef = useRef<HTMLDivElement>(null);
+  const [textareaWidth, setTextareaWidth] = useState<number | null>(null);
   const [searchMatches, setSearchMatches] = useState(0);
   /** Something else rewrote the open file while it had unsaved edits. */
   const [externalChange, setExternalChange] = useState(false);
@@ -117,6 +134,42 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     setClosingRename(renameTarget);
     setRenameTarget(null);
   }, [renameTarget]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadFoamyConfig().then(config => {
+      if (cancelled) return;
+      const color = config['editor-comment-color'] ?? '';
+      setCommentColor(HEX_COLOR.test(color) ? color : '');
+      setIndentGuides(config['editor-indent-guides'] !== 'off');
+    });
+    return () => {
+      cancelled = true;
+      // A change still waiting for its save is written now, not dropped.
+      if (saveAppearanceTimer.current) clearTimeout(saveAppearanceTimer.current);
+      const pending = pendingAppearance.current;
+      if (Object.keys(pending).length) void patchFoamyConfig(pending);
+    };
+  }, []);
+
+  /**
+   * Apply an appearance change now and save it shortly after: the colour
+   * picker reports every step of a drag, and each save rewrites the store.
+   */
+  const changeAppearance = useCallback((change: { color?: string; guides?: boolean }) => {
+    if (change.color !== undefined) setCommentColor(change.color);
+    if (change.guides !== undefined) setIndentGuides(change.guides);
+    // Collected, not replaced: a colour picked and the guides toggled within
+    // the delay must both be saved.
+    if (change.color !== undefined) pendingAppearance.current['editor-comment-color'] = change.color;
+    if (change.guides !== undefined) pendingAppearance.current['editor-indent-guides'] = change.guides ? 'on' : 'off';
+    if (saveAppearanceTimer.current) clearTimeout(saveAppearanceTimer.current);
+    saveAppearanceTimer.current = setTimeout(() => {
+      const patch = pendingAppearance.current;
+      pendingAppearance.current = {};
+      void patchFoamyConfig(patch).then(ok => { if (!ok) toast.error('The editor appearance could not be saved'); });
+    }, 400);
+  }, []);
 
   // Scroll to top on mount
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }, []);
@@ -717,6 +770,38 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   };
 
   const isModified = fileContent !== originalContent;
+  // The layer behind the text is skipped for huge files (a field of a large
+  // mesh): one element per line would make every keystroke slow.
+  const highlighting = canHighlight(fileContent);
+
+  /** Move the layer behind the text to the textarea's scroll offsets. */
+  const syncHighlight = useCallback(() => {
+    const textarea = textareaRef.current;
+    const layer = highlightRef.current;
+    if (!textarea || !layer) return;
+    layer.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+  }, []);
+
+  // Wrapped lines break at the textarea's inner width, which a scrollbar
+  // appearing or the window resizing changes; the layer must break at the
+  // same place or the text below the first wrap drifts out of line.
+  const measureTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) setTextareaWidth(width => width === textarea.clientWidth ? width : textarea.clientWidth);
+  }, []);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const observer = new ResizeObserver(measureTextarea);
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [currentFile, measureTextarea]);
+  // An edit can add or remove the vertical scrollbar (changing the width) and
+  // can scroll the textarea without a scroll event reaching React first.
+  useLayoutEffect(() => {
+    measureTextarea();
+    syncHighlight();
+  }, [fileContent, wordWrap, highlighting, measureTextarea, syncHighlight]);
   useEffect(() => { isModifiedRef.current = isModified; }, [isModified]);
   // Published for the app: this editor is remounted per case, so switching or
   // renaming the case would discard the buffer — those paths ask first.
@@ -1274,6 +1359,14 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   <WrapText className="w-3 h-3" />
                   <span className="hidden xl:inline">Wrap {wordWrap ? 'On' : 'Off'}</span>
                 </Button>
+                <Button
+                  size="sm" variant="ghost" className="h-8 px-2"
+                  onClick={() => setAppearanceOpen(true)}
+                  title="Editor appearance: comment colour and indent guides"
+                  aria-label="Editor appearance"
+                >
+                  <Palette className="w-3 h-3" style={commentColor ? { color: commentColor } : undefined} />
+                </Button>
                 <Button size="sm" onClick={saveFile} disabled={saving || !isModified}>
                   <Save className="w-3 h-3 mr-1" /> Save
                 </Button>
@@ -1307,6 +1400,21 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                     <div key={i} className="text-xs leading-5 text-muted-foreground font-mono">{i + 1}</div>
                   ))}
                 </div>
+                <div className="relative flex-1 min-w-0">
+                {/* The coloured copy of the text, behind the transparent
+                    textarea (editor-highlight-layer.tsx). */}
+                {highlighting && (
+                  <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                    <EditorHighlightLayer
+                      ref={highlightRef}
+                      text={fileContent}
+                      commentColor={commentColor}
+                      guides={indentGuides}
+                      wordWrap={wordWrap}
+                      width={textareaWidth}
+                    />
+                  </div>
+                )}
                 <textarea
                   ref={textareaRef}
                   value={fileContent} onChange={(e) => setFileContent(e.target.value)}
@@ -1314,6 +1422,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                     if (lineNumbersRef.current) {
                       lineNumbersRef.current.scrollTop = e.currentTarget.scrollTop;
                     }
+                    syncHighlight();
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Tab') {
@@ -1343,14 +1452,19 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                       }
                     }
                   }}
-                  className={`flex-1 p-3 font-mono text-xs leading-5 bg-transparent resize-none focus:outline-none min-h-full ${wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre overflow-x-auto'}`}
-                  spellCheck={false} style={{ tabSize: 4, whiteSpace: wordWrap ? 'pre-wrap' : 'pre' }}
+                  className={`absolute inset-0 w-full h-full p-3 font-mono text-xs leading-5 bg-transparent resize-none focus:outline-none ${wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre overflow-x-auto'} ${highlighting ? 'text-transparent caret-foreground selection:bg-sky-400/30 selection:text-transparent' : ''}`}
+                  spellCheck={false}
+                  style={{ tabSize: 4, whiteSpace: wordWrap ? 'pre-wrap' : 'pre', overflowWrap: wordWrap ? 'break-word' : 'normal' }}
                 />
+                </div>
               </div>
             </div>
             {!compact && (
             <div className="px-4 py-1.5 border-t text-xs text-muted-foreground flex flex-shrink-0 justify-between">
-              <span>{fileContent.split('\n').length} lines | {fileContent.length} characters</span>
+              <span>
+                {fileContent.split('\n').length} lines | {fileContent.length} characters
+                {!highlighting && <span title="Comment colours and indent guides are drawn up to 20 000 lines"> | highlighting off for a file this large</span>}
+              </span>
               <span className={isModified ? 'text-amber-500' : 'text-green-500'}>
                 {isModified ? 'Not saved' : 'Saved'}
               </span>
@@ -1387,6 +1501,71 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
           onOpenFile={(filePath) => { void loadFile(filePath); }}
         />
       )}
+
+      {/* ═══ Editor appearance ═══ */}
+      <Dialog open={appearanceOpen} onOpenChange={setAppearanceOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Editor appearance</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <div className="space-y-2">
+              <Label className="text-xs">Comment colour</Label>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => changeAppearance({ color: '' })}
+                  className={`h-7 rounded-md border px-2 text-[11px] ${commentColor ? 'text-muted-foreground' : 'ring-2 ring-primary'}`}
+                  aria-pressed={!commentColor}
+                  title="The colour that suits the light or dark theme"
+                >
+                  <span className="text-[#008000] dark:text-[#6A9955]">Theme</span>
+                </button>
+                {COMMENT_SWATCHES.map(color => (
+                  <button
+                    key={color}
+                    type="button"
+                    onClick={() => changeAppearance({ color })}
+                    className={`h-7 w-7 rounded-md border ${commentColor.toLowerCase() === color.toLowerCase() ? 'ring-2 ring-primary' : ''}`}
+                    style={{ backgroundColor: color }}
+                    aria-label={`Comment colour ${color}`}
+                    aria-pressed={commentColor.toLowerCase() === color.toLowerCase()}
+                  />
+                ))}
+                <label className="flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] text-muted-foreground" title="Any colour">
+                  <input
+                    type="color"
+                    value={commentColor || '#6a9955'}
+                    onChange={(e) => changeAppearance({ color: e.target.value })}
+                    className="h-4 w-4 cursor-pointer border-0 bg-transparent p-0"
+                    aria-label="Pick any comment colour"
+                  />
+                  Custom
+                </label>
+              </div>
+              <pre className="rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-5">
+                {'deltaT  0.005; '}
+                <span className={commentColor ? undefined : 'text-[#008000] dark:text-[#6A9955]'} style={commentColor ? { color: commentColor } : undefined}>{'// a comment'}</span>
+              </pre>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium">Indent guides</p>
+                <p className="text-[11px] text-muted-foreground">A line down every {'{ … }'} block, at its indentation.</p>
+              </div>
+              <Button
+                size="sm"
+                variant={indentGuides ? 'secondary' : 'outline'}
+                className="gap-1"
+                onClick={() => changeAppearance({ guides: !indentGuides })}
+                aria-pressed={indentGuides}
+              >
+                <IndentIncrease className="w-3 h-3" /> {indentGuides ? 'On' : 'Off'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ═══ Rename / move ═══ */}
       <Dialog open={renameTarget !== null} onOpenChange={(open) => { if (!open) closeRename(); }}>

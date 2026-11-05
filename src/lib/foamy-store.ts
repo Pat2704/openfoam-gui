@@ -44,6 +44,10 @@ export const FOAMY_KEYS = [
   // 'off' turns off loading ParaView in the background at startup; anything
   // else, including never having been set, leaves it on.
   'paraview-warmup',
+  // File Editor appearance: the comment colour as #rrggbb ('' or absent is the
+  // theme's own), and 'off' to hide the indent guides of { … } blocks.
+  'editor-comment-color',
+  'editor-indent-guides',
   // Light or dark, as the user last chose it. next-themes keeps its own copy in
   // localStorage, which in the packaged app is a different origin on every
   // launch — so the app opened light however many times the user had switched

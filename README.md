@@ -97,6 +97,10 @@ found once you add its folder under **Search folders** in the same dialog.
   ![The New Case wizard, on the step where the mesh and the patch list are defined](screenshots/new-case.png)
 - **File Editor** — view, edit, create and delete case files. Indexing indicators
   appear during the initial listing and manual refresh; background updates stay quiet.
+  Comments (`//` and `/* … */`) are drawn in their own colour and every `{ … }`
+  block has an indent guide; the palette button in the editor's toolbar picks
+  the colour (the theme's, a swatch or any) and turns the guides off, and the
+  choice is remembered.
 - **Commands** — run `blockMesh`, `foamRun`, `snappyHexMesh`… with a command
   list filtered to the OpenFOAM version in use. One-click **Allrun** launches
   the case script in the background and takes you to the Monitor.

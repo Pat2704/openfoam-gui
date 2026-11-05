@@ -6,6 +6,25 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-05 — Agent tables, one ParaView legend, File Editor comments and guides
+
+- Agent panels: GitHub tables render (`src/lib/markdown-table.ts`, alignment,
+  `\|` escapes); both renderers stay identical.
+- ParaView: a scalar bar belongs to the array's colour map, so recolouring p
+  → U left p's bar on screen. `apply_display` now ends in `HideUnusedScalarBars`
+  (ParaView's rule: a bar stays while a visible display uses its map); shown
+  first in pvpython, then in the workbench on a disposable cavity.
+- File Editor: still a textarea, with a layer behind it
+  (`editor-highlight-layer.tsx`, rules in `src/lib/editor-highlight.ts`):
+  `//` and `/* */` comments in a colour from the palette button (theme default,
+  swatches or any), and indent guides between `{ }` at the opening line's
+  indentation. The text is transparent with a visible caret; the layer follows
+  the scroll and the wrap width. Off above 20,000 lines. Saved as
+  `editor-comment-color` / `editor-indent-guides` in the FOAMy store.
+- Checked in the dev server on `editor_test` (since removed): selection lines
+  up with and without wrap, typing colours live, light and dark, the choice
+  survives a reload. 405 tests, lint and typecheck pass.
+
 ## 2026-11-05 — Agent: Mesh and Results analysis buttons, streaming digests
 
 - Claude and Codex panels: **Mesh** and **Results** beside the shield send a
@@ -220,40 +239,15 @@ audits.
   snapshots. Verified on v14/ParaView 6.2.0; unsupported Volume refused.
   344 tests, typecheck and lint passed. Evidence: v5.6.0 notes and Git history.
 
-## 2026-09-12 — ParaView: video export with a timeline of views
+## 2026-09-12 — ParaView: video export with a timeline of views (in brief)
 
-- At the user's request the ParaView workbench has a **Video** tab. The user
-  sets a view in the viewport and adds it "until" a saved time step, changes
-  the view and adds the next, as often as wanted; each entry keeps a thumbnail
-  and can be shown again, replaced with the current view or removed, with a cut
-  or a smooth one-second camera move into it. Pace: every saved step lasts N s
-  (slow motion whatever the spacing) or 1 simulated second = N s of video;
-  optionally fields are interpolated between steps (ParaView's
-  TemporalInterpolator, inserted under the reader for the export only).
-  Output 480p–4K, 12–60 fps, colour range fixed as captured or rescaled per
-  frame; a live estimate of frames and duration (limit revised below).
-- The frame plan is pure and tested (`src/lib/paraview-video.ts`); the session's
-  own pvpython renders it (`capture_view`, `apply_view`, `export_video` in the
-  worker; snapshots are re-validated there). MP4 uses VTK's Media Foundation
-  writer that the Windows ParaView ships (no FFMPEG); OGV (Theora) is the
-  fallback; `videoFormats` in the state reports what the build has. The
-  process answers one request at a time, so while exporting the API refuses
-  other workbench commands ("A video export is running…"), the viewport shows
-  a lock overlay, progress arrives as protocol lines and Cancel drops a file
-  the worker checks between frames. Afterwards the original view, time and
-  size are restored. The latest video stays in the session's temp folder and
-  can be downloaded (Save as…) or copied to `postProcessing/videos` in the case.
-- Verified on a disposable cavity run (v14, ParaView 6.2.0), in the dev server:
-  two views (U until 5 s, then p zoomed and rotated with a smooth move) at
-  0.8 s per simulated second with interpolation gave 183 frames, 7.6 s, 876 KB
-  in 5.4 s; frames decoded in the page show one legend per view and the camera
-  mid-move. A 1,200-frame 1080p export ran at about 39 frames/s, blocked
-  commands with the message above and cancelled at 716 frames with the view
-  restored; a 160-frame export was saved into the case (valid ISO MP4); OGV
-  with per-frame colour and no interpolation gave 58 frames. 342 tests (11 new
-  for the plan), typecheck and lint pass. The case was removed.
-- Found, not changed: after recolouring, the live workbench keeps the previous
-  array's legend on screen beside the new one (the export hides it).
+- Video tab: views added "until" a saved time step, cut or smooth camera moves,
+  pace per step or per simulated second, optional TemporalInterpolator,
+  480p–4K, fixed or per-frame colour range. The plan is pure and tested
+  (`src/lib/paraview-video.ts`); the session pvpython renders it (MP4 through
+  Media Foundation, OGV fallback), refuses other commands while exporting and
+  restores the view after. The legend left behind on recolouring, found then,
+  is fixed on 2026-11-05.
 
 ## 2026-09-12 — v5.5.0: File Editor fits the window; preflight beside Clean TS
 
