@@ -6,6 +6,20 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-06 — File Editor: fold arrows in the text, number colour
+
+- The fold arrow sits right after each foldable `{` (`BraceBlock.openChar`),
+  and a folded block's `▸ ⋯ N lines` opens it; the gutter keeps only numbers.
+  To be clickable the layer now lies OVER the textarea, pointer-events none
+  but for the arrows, clipped to the textarea's client area; it is aria-hidden
+  and the arrows are out of the tab order (toolbar Fold/Unfold all remain).
+- Numbers (`1`, `-0.5`, `1e-05`) get their own colour, chosen and saved like
+  the comment one (`editor-number-color`); digits in names (`U_0`, `p2`,
+  `k:0`), strings and comments are left alone.
+- Checked in the dev server on a disposable cavity: fold and unfold by the
+  arrow and by the marker, caret and double-click selection through the layer,
+  the number colour applied and saved.
+
 ## 2026-11-05 — File Editor find/replace and folding; analysis buttons hide their request
 
 - Find/replace (`src/lib/editor-search.ts`): case, whole word, regex (`$1`;

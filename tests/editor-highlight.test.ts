@@ -72,7 +72,34 @@ test('search hits cut the segments of a line, the current one marked apart', asy
   const { markSegments } = await import('../src/lib/editor-highlight.ts');
   const [line] = highlightFoam('value 1; // value');
   const marked = markSegments(line.segments, [{ start: 0, end: 5, current: true }, { start: 12, end: 17, current: false }]);
-  assert.deepEqual(marked.map(s => [s.text, s.comment, s.mark]), [
-    ['value', false, 2], [' 1; ', false, 0], ['// ', true, 0], ['value', true, 1],
+  assert.deepEqual(marked.map(s => [s.text, s.comment, s.number ?? false, s.mark]), [
+    ['value', false, false, 2], [' ', false, false, 0], ['1', false, true, 0], ['; ', false, false, 0],
+    ['// ', true, false, 0], ['value', true, false, 1],
   ]);
+});
+
+describe('numbers', () => {
+  const numbers = (text: string) => highlightFoam(text).map(line =>
+    line.segments.filter(s => s.number).map(s => s.text));
+
+  test('integers, decimals, exponents and signs standing alone are numbers', () => {
+    assert.deepEqual(numbers('deltaT 0.005;\nnu 1e-05;\nvalue uniform (-1 0 2.5E+3);\nn .5;'),
+      [['0.005'], ['1e-05'], ['-1', '0', '2.5E+3'], ['.5']]);
+  });
+
+  test('digits in names, strings and comments are not', () => {
+    assert.deepEqual(numbers('U_0 p2 k:0 div(phi,U) 3;'), [['3']]);
+    assert.deepEqual(numbers('#include "file1" // step 2\n/* 3 */ 4;'), [[], ['4']]);
+    assert.deepEqual(numbers('a-1;'), [['1']], 'a minus after a name is an operator, the digits still count');
+  });
+
+  test('the text is kept exactly with numbers split out', () => {
+    const text = 'value nonuniform List<scalar> 3(1 -2e-3 .5); // 4';
+    assert.equal(highlightFoam(text)[0].segments.map(s => s.text).join(''), text);
+  });
+});
+
+test('a block knows the column of its brace, for the fold arrow', async () => {
+  const { scanFoam } = await import('../src/lib/editor-highlight.ts');
+  assert.deepEqual(scanFoam('inlet\n{\n  a;\n}\n  wall {\n  b;\n  }').blocks.map(b => [b.open, b.openChar]), [[1, 0], [4, 7]]);
 });

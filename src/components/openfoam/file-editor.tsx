@@ -29,9 +29,64 @@ import {
 import { findMatches, replaceAll, replaceMatch, type SearchOptions } from '@/lib/editor-search';
 import { loadFoamyConfig, patchFoamyConfig } from '@/lib/foamy-store';
 
-/** Comment colours offered next to the free picker. */
+/** Colours offered next to the free picker. */
 const COMMENT_SWATCHES = ['#6A9955', '#8B949E', '#4F8CC9', '#2AA198', '#CE9178', '#C586C0'];
+const NUMBER_SWATCHES = ['#B5CEA8', '#098658', '#D19A66', '#E5C07B', '#56B6C2', '#C678DD'];
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/** One colour setting of the Editor appearance dialog: the theme's, a swatch, or any. */
+function ColourChoice({ label, value, swatches, themeClass, fallback, sample, onChange }: {
+  label: string;
+  value: string;
+  swatches: readonly string[];
+  /** The light/dark classes of the theme default, for the "Theme" button and the sample. */
+  themeClass: string;
+  fallback: string;
+  sample: React.ReactNode;
+  onChange: (color: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label className="text-xs">{label}</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          className={`h-7 rounded-md border px-2 text-[11px] ${value ? 'text-muted-foreground' : 'ring-2 ring-primary'}`}
+          aria-pressed={!value}
+          title="The colour that suits the light or dark theme"
+        >
+          <span className={themeClass}>Theme</span>
+        </button>
+        {swatches.map(color => (
+          <button
+            key={color}
+            type="button"
+            onClick={() => onChange(color)}
+            className={`h-7 w-7 rounded-md border ${value.toLowerCase() === color.toLowerCase() ? 'ring-2 ring-primary' : ''}`}
+            style={{ backgroundColor: color }}
+            aria-label={`${label} ${color}`}
+            aria-pressed={value.toLowerCase() === color.toLowerCase()}
+          />
+        ))}
+        <label className="flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] text-muted-foreground" title="Any colour">
+          <input
+            type="color"
+            value={value || fallback}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-4 w-4 cursor-pointer border-0 bg-transparent p-0"
+            aria-label={`Pick any ${label.toLowerCase()}`}
+          />
+          Custom
+        </label>
+      </div>
+      <pre className="rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-5">{sample}</pre>
+    </div>
+  );
+}
+
+const THEME_COMMENT = 'text-[#008000] dark:text-[#6A9955]';
+const THEME_NUMBER = 'text-[#098658] dark:text-[#B5CEA8]';
 
 interface FileItem {
   name: string;
@@ -82,12 +137,14 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // the app's own store because localStorage does not survive a packaged-app
   // restart (its origin changes every launch).
   const [commentColor, setCommentColor] = useState('');
+  const [numberColor, setNumberColor] = useState('');
   const [indentGuides, setIndentGuides] = useState(true);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const saveAppearanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingAppearance = useRef<{ 'editor-comment-color'?: string; 'editor-indent-guides'?: string }>({});
+  const pendingAppearance = useRef<{ 'editor-comment-color'?: string; 'editor-number-color'?: string; 'editor-indent-guides'?: string }>({});
   const highlightRef = useRef<HTMLDivElement>(null);
   const [textareaWidth, setTextareaWidth] = useState<number | null>(null);
+  const [textareaHeight, setTextareaHeight] = useState<number | null>(null);
   // Find and replace (src/lib/editor-search.ts).
   const [replaceTerm, setReplaceTerm] = useState('');
   const [replaceVisible, setReplaceVisible] = useState(false);
@@ -158,6 +215,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       if (cancelled) return;
       const color = config['editor-comment-color'] ?? '';
       setCommentColor(HEX_COLOR.test(color) ? color : '');
+      const number = config['editor-number-color'] ?? '';
+      setNumberColor(HEX_COLOR.test(number) ? number : '');
       setIndentGuides(config['editor-indent-guides'] !== 'off');
     });
     return () => {
@@ -173,8 +232,10 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
    * Apply an appearance change now and save it shortly after: the colour
    * picker reports every step of a drag, and each save rewrites the store.
    */
-  const changeAppearance = useCallback((change: { color?: string; guides?: boolean }) => {
+  const changeAppearance = useCallback((change: { color?: string; number?: string; guides?: boolean }) => {
     if (change.color !== undefined) setCommentColor(change.color);
+    if (change.number !== undefined) setNumberColor(change.number);
+    if (change.number !== undefined) pendingAppearance.current['editor-number-color'] = change.number;
     if (change.guides !== undefined) setIndentGuides(change.guides);
     // Collected, not replaced: a colour picked and the guides toggled within
     // the delay must both be saved.
@@ -786,7 +847,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // like highlighting, is off for a file too large to draw.
   const scan = useMemo(() => (highlighting ? scanFoam(fileContent) : null), [fileContent, highlighting]);
   const regions = useMemo(() => (scan ? foldRegions(fileContent, scan.blocks) : []), [scan, fileContent]);
-  const regionByToggle = useMemo(() => new Map(regions.map(region => [region.toggle, region])), [regions]);
+  const regionByOpen = useMemo(() => new Map(regions.map(region => [region.open, region])), [regions]);
   const projection = useMemo(() => project(fileContent, regions, folded), [fileContent, regions, folded]);
   const search = useMemo(
     () => (searchVisible ? findMatches(fileContent, searchTerm, searchOptions) : { matches: [], truncated: false, error: undefined }),
@@ -807,12 +868,16 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
       list.push({ start: match.start - lineStart, end: Math.min(match.end, lineEnd) - lineStart, current: index === shownMatch });
       marks.set(line, list);
     });
-    return projection.lineMap.map((fullLine, visibleLine) => ({
-      line: scan.lines[fullLine],
-      marks: marks.get(fullLine) ?? [],
-      hidden: projection.hiddenAfter.get(visibleLine) ?? 0,
-    }));
-  }, [scan, search.matches, shownMatch, projection, fileContent.length]);
+    return projection.lineMap.map((fullLine, visibleLine) => {
+      const region = regionByOpen.get(fullLine);
+      return {
+        line: scan.lines[fullLine],
+        marks: marks.get(fullLine) ?? [],
+        hidden: projection.hiddenAfter.get(visibleLine) ?? 0,
+        fold: region ? { open: region.open, char: region.openChar, folded: folded.has(region.open) } : undefined,
+      };
+    });
+  }, [scan, search.matches, shownMatch, projection, fileContent.length, regionByOpen, folded]);
 
   /** An edit of what the textarea shows, carried over to the file. */
   // `caret` is where the textarea left it, which says on which side of a fold
@@ -842,6 +907,10 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     if (next.has(open)) next.delete(open); else next.add(open);
     return next;
   });
+  // The arrows live in memoised lines, which need one function for good.
+  const toggleFoldRef = useRef(toggleFold);
+  useLayoutEffect(() => { toggleFoldRef.current = toggleFold; });
+  const onToggleFold = useCallback((open: number) => toggleFoldRef.current(open), []);
 
   // A fold whose block an edit broke is dropped, which shows its lines again.
   useLayoutEffect(() => {
@@ -937,7 +1006,9 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // same place or the text below the first wrap drifts out of line.
   const measureTextarea = useCallback(() => {
     const textarea = textareaRef.current;
-    if (textarea) setTextareaWidth(width => width === textarea.clientWidth ? width : textarea.clientWidth);
+    if (!textarea) return;
+    setTextareaWidth(width => width === textarea.clientWidth ? width : textarea.clientWidth);
+    setTextareaHeight(height => height === textarea.clientHeight ? height : textarea.clientHeight);
   }, []);
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -1640,47 +1711,14 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
               <div className="absolute inset-0 flex">
                 <div
                   ref={lineNumbersRef}
-                  className="flex-shrink-0 w-14 py-3 pl-0.5 pr-2 text-right select-none border-r bg-muted/30 overflow-hidden"
+                  className="flex-shrink-0 w-12 py-3 px-2 text-right select-none border-r bg-muted/30 overflow-hidden"
                 >
-                  {projection.lineMap.map((fullLine) => {
-                    const region = regionByToggle.get(fullLine);
-                    const isFolded = region ? folded.has(region.open) : false;
-                    return (
-                      <div key={fullLine} className="flex items-center justify-end gap-0.5 text-xs leading-5 text-muted-foreground font-mono">
-                        {region && (
-                          <button
-                            type="button"
-                            // Keep the caret in the textarea.
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => toggleFold(region.open)}
-                            className="mr-auto rounded hover:bg-muted hover:text-foreground"
-                            title={isFolded ? 'Unfold this block' : 'Fold this block'}
-                            aria-label={`${isFolded ? 'Unfold' : 'Fold'} the block at line ${fullLine + 1}`}
-                            aria-expanded={!isFolded}
-                          >
-                            {isFolded ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </button>
-                        )}
-                        {fullLine + 1}
-                      </div>
-                    );
-                  })}
+                  {/* The file's own line numbers, folded lines skipped. */}
+                  {projection.lineMap.map((fullLine) => (
+                    <div key={fullLine} className="text-xs leading-5 text-muted-foreground font-mono">{fullLine + 1}</div>
+                  ))}
                 </div>
                 <div className="relative flex-1 min-w-0">
-                {/* The coloured copy of the text, behind the transparent
-                    textarea (editor-highlight-layer.tsx). */}
-                {highlighting && (
-                  <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                    <EditorHighlightLayer
-                      ref={highlightRef}
-                      rows={layerRows}
-                      commentColor={commentColor}
-                      guides={indentGuides}
-                      wordWrap={wordWrap}
-                      width={textareaWidth}
-                    />
-                  </div>
-                )}
                 <textarea
                   ref={textareaRef}
                   value={projection.visible} onChange={(e) => applyVisible(e.target.value, e.target.selectionEnd)}
@@ -1722,6 +1760,27 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   spellCheck={false}
                   style={{ tabSize: 4, whiteSpace: wordWrap ? 'pre-wrap' : 'pre', overflowWrap: wordWrap ? 'break-word' : 'normal' }}
                 />
+                {/* The coloured copy of the text, OVER the transparent textarea
+                    (editor-highlight-layer.tsx): clicks pass through it except
+                    on the fold arrows. Sized to the textarea's client area so
+                    it never paints over the scrollbars. */}
+                {highlighting && (
+                  <div
+                    className="absolute left-0 top-0 overflow-hidden pointer-events-none"
+                    style={{ width: textareaWidth ?? '100%', height: textareaHeight ?? '100%' }}
+                  >
+                    <EditorHighlightLayer
+                      ref={highlightRef}
+                      rows={layerRows}
+                      commentColor={commentColor}
+                      numberColor={numberColor}
+                      guides={indentGuides}
+                      wordWrap={wordWrap}
+                      width={textareaWidth}
+                      onToggleFold={onToggleFold}
+                    />
+                  </div>
+                )}
                 </div>
               </div>
             </div>
@@ -1775,45 +1834,26 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
             <DialogTitle>Editor appearance</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-1">
-            <div className="space-y-2">
-              <Label className="text-xs">Comment colour</Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => changeAppearance({ color: '' })}
-                  className={`h-7 rounded-md border px-2 text-[11px] ${commentColor ? 'text-muted-foreground' : 'ring-2 ring-primary'}`}
-                  aria-pressed={!commentColor}
-                  title="The colour that suits the light or dark theme"
-                >
-                  <span className="text-[#008000] dark:text-[#6A9955]">Theme</span>
-                </button>
-                {COMMENT_SWATCHES.map(color => (
-                  <button
-                    key={color}
-                    type="button"
-                    onClick={() => changeAppearance({ color })}
-                    className={`h-7 w-7 rounded-md border ${commentColor.toLowerCase() === color.toLowerCase() ? 'ring-2 ring-primary' : ''}`}
-                    style={{ backgroundColor: color }}
-                    aria-label={`Comment colour ${color}`}
-                    aria-pressed={commentColor.toLowerCase() === color.toLowerCase()}
-                  />
-                ))}
-                <label className="flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] text-muted-foreground" title="Any colour">
-                  <input
-                    type="color"
-                    value={commentColor || '#6a9955'}
-                    onChange={(e) => changeAppearance({ color: e.target.value })}
-                    className="h-4 w-4 cursor-pointer border-0 bg-transparent p-0"
-                    aria-label="Pick any comment colour"
-                  />
-                  Custom
-                </label>
-              </div>
-              <pre className="rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-5">
-                {'deltaT  0.005; '}
-                <span className={commentColor ? undefined : 'text-[#008000] dark:text-[#6A9955]'} style={commentColor ? { color: commentColor } : undefined}>{'// a comment'}</span>
-              </pre>
-            </div>
+            <ColourChoice
+              label="Comment colour"
+              value={commentColor}
+              swatches={COMMENT_SWATCHES}
+              themeClass={THEME_COMMENT}
+              fallback="#6a9955"
+              onChange={(color) => changeAppearance({ color })}
+              sample={<>{'deltaT  0.005; '}<span className={commentColor ? undefined : THEME_COMMENT} style={commentColor ? { color: commentColor } : undefined}>{'// a comment'}</span></>}
+            />
+            <ColourChoice
+              label="Number colour"
+              value={numberColor}
+              swatches={NUMBER_SWATCHES}
+              themeClass={THEME_NUMBER}
+              fallback="#b5cea8"
+              onChange={(number) => changeAppearance({ number })}
+              sample={<>{'value  uniform ('}{['1', '0', '-2.5e-3'].map((n, k) => (
+                <React.Fragment key={k}>{k ? ' ' : ''}<span className={numberColor ? undefined : THEME_NUMBER} style={numberColor ? { color: numberColor } : undefined}>{n}</span></React.Fragment>
+              ))}{');'}</>}
+            />
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-medium">Indent guides</p>
