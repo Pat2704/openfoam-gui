@@ -55,12 +55,14 @@ directories:
   output: ../dist-electron
   buildResources: build
 
-# Only these three files go into app.asar — everything else the app needs is
+# Only these files go into app.asar — everything else the app needs is
 # shipped unpacked under resources/ (see extraResources below), because the
 # Next.js standalone server has to be executed by a real node.exe and cannot
-# be read from inside an asar archive.
+# be read from inside an asar archive. A module main.js requires must be listed
+# here, or the packaged app fails at startup while `npm run electron` works.
 files:
   - main.js
+  - housekeeping.js
   - preload.js
   - package.json
 

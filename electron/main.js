@@ -10,13 +10,15 @@
  * No Chrome, no visible localhost: the user just double-clicks the .exe.
  */
 
-const { app, BrowserWindow, dialog, shell, Menu, ipcMain, safeStorage, screen } = require('electron');
+const { app, BrowserWindow, dialog, shell, Menu, ipcMain, safeStorage, screen, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const http = require('http');
 const crypto = require('crypto');
 const net = require('net');
+const os = require('os');
+const { snapshotLeftovers, removeLeftovers } = require('./housekeeping');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Input-freeze mitigations (must run BEFORE app.whenReady).
@@ -892,6 +894,14 @@ function createWindow() {
 // clean one up.
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
+// What earlier runs left in TEMP, listed now — before the server exists and can
+// create anything that would match — and removed in the background once the
+// window is up. electron/housekeeping.js explains the order. Only the instance
+// holding the lock does this: a second launch is about to quit.
+const leftovers = gotSingleInstanceLock
+  ? snapshotLeftovers({ tmpDir: os.tmpdir(), currentDir: path.dirname(process.execPath) })
+  : { folders: [], prompts: 0 };
+
 /**
  * Start the server WITHOUT waiting for Electron to be ready.
  *
@@ -974,8 +984,36 @@ app.whenReady().then(async () => {
 
   registerConfigIpc();
   createWindow();
+  sweepLeftovers();
   await loadApp();
 });
+
+/**
+ * Empty Chromium's HTTP and V8 code caches, and remove the TEMP leftovers.
+ *
+ * Both caches are keyed by URL, and the URL carries the port, which changes at
+ * every launch: no entry written by an earlier run can ever be read again, so
+ * they only grew — 260 MB on one machine. Emptying them at start costs nothing
+ * that could have been reused. Cookies, Local/Session Storage and the GPU shader
+ * caches are not touched.
+ *
+ * Runs while the server is still booting; nothing waits for it, and a failure is
+ * only logged.
+ */
+function sweepLeftovers() {
+  const ses = session.defaultSession;
+  ses.clearCache()
+    .then(() => ses.clearCodeCaches({}))
+    .then(() => appendToLogFile('[main] browser caches emptied'))
+    .catch((err) => appendToLogFile('[main] could not empty browser caches: ' + (err && err.message ? err.message : err)));
+
+  if (leftovers.prompts) appendToLogFile('[main] removed ' + leftovers.prompts + ' stale agent prompt file(s)');
+  if (!leftovers.folders.length) return;
+  removeLeftovers(leftovers.folders)
+    .then(({ removed, skipped }) => appendToLogFile(
+      '[main] TEMP leftovers: removed ' + removed + (skipped ? ', ' + skipped + ' still in use' : '')))
+    .catch(() => { /* removeLeftovers does not reject; never let it matter */ });
+}
 
 app.on('second-instance', () => {
   // Someone tried to run a second instance — focus our window.

@@ -6,6 +6,23 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-06 — TEMP leftovers and stale browser caches removed at start
+
+- Found on the user's machine: six portable extractions in `%TEMP%` (2.1 GB,
+  left when the stub is ended before it can delete them), ~150
+  `openfoam-studio-paraview-session-*` folders (the server is `taskkill`ed on
+  quit, so the worker never removes its folder; the warm-up made one per
+  launch), 20 content-addressed Claude prompt files, and a 260 MB Chromium HTTP
+  cache whose entries are keyed by a port that changes every launch.
+- `electron/housekeeping.js` (now in the asar `files` list) lists them before
+  the server is spawned and deletes them in the background; prompt files go at
+  once, as their names are reused. Folders whose `OpenFOAMStudio.exe` or
+  `resources/bin/node.exe` cannot be opened for writing are running and are
+  kept, as are portable folders under 10 min old (Windows renames a folder with
+  a running .exe in it: a rename is no in-use test). `main.js` also empties the
+  HTTP and V8 code caches at start. It uses `original-fs`: Electron's `fs`
+  cannot delete `app.asar`. Covered by `tests/housekeeping.test.ts`.
+
 ## 2026-11-06 — v5.9.0: agent analyses, File Editor colours, folding and find/replace
 
 - Released `v5.9.0` at the user's request (notes `docs/releases/v5.9.0.md`): the
@@ -419,29 +436,13 @@ audits.
   v5.3.0 portable executable and folder ZIP were replaced with hash-verified
   artifacts.
 
-## 2026-09-10 — Mesh tab: honest BC check, checkMesh report, viewer on large meshes (in brief)
+## 2026-09-10 — Mesh tab, case lifecycle, honest states (in brief; details in Git)
 
-- BC validation without `constant/polyMesh/boundary` says the patches were not
-  checked (`meshChecked: false`); `parsePolyMeshBoundary` accepts any OpenFOAM
-  word. checkMesh is read by `parseCheckMeshOutput` (`src/lib/check-mesh.ts`)
-  from the v13/v14 markers and its last verdict, with the exit status captured.
-  Surface extraction is asynchronous and `/api/mesh` answers 409 with an
-  estimate above 500,000 triangles. The STL is still read as one string.
-
-## 2026-09-10 — Case lifecycle: timesteps, clone, rename, create, unsaved edits (in brief)
-
-- `deleteAllTimesteps` spares 0 and the earliest time, in `processor*/` too.
-- `cloneCase` removes a half-made clone; clone, rename and create refuse an
-  existing name readably (`allowExisting` is the wizard's confirmed Overwrite).
-- The File Editor publishes its unsaved file (`case-context`), and every route
-  that remounts it asks first. Verified on disposable cases; details in Git.
-
-## 2026-09-10 — Honest states and dead code (in brief; details in Git)
-
-- Failures no longer read as normal states (file browser, Commands, Monitor,
-  Undo, folder creation, batch delete); File Editor "Clean TS" refuses while a
-  case process runs. Unused `CASE_TEMPLATES` and file templates were deleted
-  from `src/lib/openfoam-data.ts` (1378 lines).
+- BC checks without `polyMesh/boundary` say so (`meshChecked: false`);
+  checkMesh is parsed by `src/lib/check-mesh.ts`; `/api/mesh` answers 409 above
+  an estimated 500,000 triangles. `deleteAllTimesteps` spares 0 and the earliest
+  time; clone/rename/create refuse existing names and remove half-made copies;
+  File Editor remounts ask about unsaved edits; unused `CASE_TEMPLATES` gone.
 
 ## 2026-09-10 — Wizard writes only runnable cases; accessibility pass (in brief)
 
