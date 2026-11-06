@@ -6,6 +6,11 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-06 — v5.9.1: housekeeping at start
+
+- Released `v5.9.1` (`docs/releases/v5.9.1.md`): the `44d0ce3` pair, renamed
+  without rebuilding (embedded 5.9.0); the v5.8.2 release entry was removed.
+
 ## 2026-11-06 — TEMP leftovers and stale browser caches removed at start
 
 - Found on the user's machine: six portable extractions in `%TEMP%` (2.1 GB,
@@ -25,9 +30,8 @@ audits.
 
 ## 2026-11-06 — v5.9.0: agent analyses, File Editor colours, folding and find/replace
 
-- Released `v5.9.0` at the user's request (notes `docs/releases/v5.9.0.md`): the
-  pair built for `ff35265`, renamed without rebuilding (embedded 5.8.2). GitHub
-  keeps v5.9.0 and v5.8.2; the v5.8.1 release entry was removed, tag kept.
+- Released `v5.9.0` (`docs/releases/v5.9.0.md`): the `ff35265` pair, renamed
+  without rebuilding (embedded 5.8.2); the v5.8.1 release entry was removed.
 
 ## 2026-11-06 — File Editor: fold arrows in the text, number colour
 
@@ -451,9 +455,8 @@ audits.
   `wallDist { method meshWave; }`; Spalart-Allmaras walls get
   nutUSpaldingWallFunction. On <=10 the run quick commands use the case's
   `application`. Icon-only buttons gained accessible names. Details in Git.
-- Still open: per-process Kill has no confirmation (declined by the user); Undo
-  reverts all edits without asking; the v11 reading of `nu 1e-05 [m^2/s]` is
-  unverified.
+- Still open: per-process Kill unconfirmed (declined); Undo reverts all edits
+  without asking; the v11 reading of `nu 1e-05 [m^2/s]` is unverified.
 
 ## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards (in brief)
 
@@ -462,15 +465,12 @@ audits.
   group". The panel ignores out-of-order answers; `copyTutorial` creates the
   destination atomically and removes a half-made copy. v9-v10 not checked locally.
 - File Editor: "New file" on an existing name asks first; a failed read no
-  longer opens the file empty and "Saved". The wizard re-reads the case list on
-  Create. Tutorial lists scroll independently; the app icon was redrawn.
+  longer opens the file empty and "Saved". The app icon was redrawn.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
 
-Released `v5.3.0` (notes in `docs/releases/v5.3.0.md`). The function catalogue
-was audited against v14/v13 sources and 127 `cavity_test` replays (`89211cb`).
-ParaView warms up in the background 5 s after detection, at low priority, with
-an on/off setting: a cold import had measured 107 s, a warm one under 2 s.
+Released `v5.3.0` (`docs/releases/v5.3.0.md`): catalogue audited against
+v14/v13 (`89211cb`); ParaView warms up 5 s after detection (cold 107 s, warm <2 s).
 
 ## 2026-09-08 – 09-09 in brief
 
