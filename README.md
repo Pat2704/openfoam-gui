@@ -100,7 +100,11 @@ found once you add its folder under **Search folders** in the same dialog.
   Comments (`//` and `/* … */`) are drawn in their own colour and every `{ … }`
   block has an indent guide; the palette button in the editor's toolbar picks
   the colour (the theme's, a swatch or any) and turns the guides off, and the
-  choice is remembered.
+  choice is remembered. **Ctrl+F** finds and **Ctrl+H** replaces, with match
+  case, whole word and regular expressions (`$1` is a group in the
+  replacement). Every `{ … }` block folds from the arrow beside its line
+  number, or all at once from the toolbar; editing with blocks folded changes
+  the file exactly where you see it.
 - **Commands** — run `blockMesh`, `foamRun`, `snappyHexMesh`… with a command
   list filtered to the OpenFOAM version in use. One-click **Allrun** launches
   the case script in the background and takes you to the Monitor.
@@ -293,7 +297,9 @@ does it. Every tool call appears in the conversation as a card you can open, so
 what it read, wrote and ran is on screen rather than in a log file.
 
 **Mesh and Results.** Beside the shield, two buttons ask the agent — Claude or
-Codex — to analyse the open case without changing it. **Mesh** reports size,
+Codex — to analyse the open case without changing it. The conversation shows
+only a label for the request, and the answer comes in the language the
+conversation is in (English when it is empty). **Mesh** reports size,
 bounding box, patches, zones, the decomposition (cells per processor, interface
 faces) and the `checkMesh` verdict; **Results** reads the solver log, the time
 directories (the `processor*` ones of a decomposed case included) and

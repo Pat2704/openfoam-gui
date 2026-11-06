@@ -12,8 +12,9 @@ audits.
   plain replacements literal). Folding (`src/lib/editor-folding.ts`): the
   textarea shows a projection without folded lines, edits map back using the
   caret; tested for every keystroke position. Mesh/Results show a label only,
-  answer in the conversation's language (English when empty). Known: below
-  ~1070 px the tab bar overflows the root and a focus scrolls the app sideways.
+  answer in the conversation's language (English when empty), checked live in
+  both languages. The main tab bar overflowed below ~1070 px and a focus slid
+  the clipped root sideways; under 1120 px the tabs now show icons only.
 
 ## 2026-11-05 — Agent tables, one ParaView legend, File Editor comments and guides
 
@@ -256,34 +257,13 @@ audits.
   restores the view after. The legend left behind on recolouring, found then,
   is fixed on 2026-11-05.
 
-## 2026-09-12 — v5.5.0: File Editor fits the window; preflight beside Clean TS
+## 2026-09-12 — v5.5.0: File Editor fits the window; preflight beside Clean TS (in brief)
 
-- Released `v5.5.0` at the user's request with notes in
-  `docs/releases/v5.5.0.md`. Direct publication reused the paired artifacts
-  built from commit `f956e95`, renaming them without a second build, so their
-  embedded version resource still reads 5.4.1; source-to-artifact equivalence
-  belongs to that pre-version build. GitHub keeps v5.5.0 and v5.4.1; the
-  v5.4.0 release entry was removed, its tag kept.
-- The File Editor fills its tab exactly at any window size and follows resizes:
-  the tree and the open file each scroll inside their own card, so both stay
-  on screen and the page itself never scrolls. The fixed `calc(100vh - 300px)`
-  tree cap and the 32rem minimum that pushed the page are gone.
-- Case preflight is launched from a green box in the tree's toolbar, beside
-  Clean TS (with a ✓ or error count after a run). Its results always open in a
-  compact section below, capped at min(34%, 17rem) and scrolling inside; tree
-  and file keep the rest (12rem floor). At the user's request the section has
-  Hide (folds to a one-line bar with the summary) and Close; the green box and
-  Show bring the same report back without re-running, and only "Run again"
-  checks again. An unsaved buffer opens the section with the "save first" note
-  instead of running.
-- The work row is measured: below 440 px the new-file/folder inputs fold behind
-  a + button and the line-count footer hides; below `xl` the file header shows
-  icon-only Rename, Undo and Wrap.
-- Checked in the dev server on `test` at 1024×768, 900×520 and 1600×1000, with
-  and without results: no page overflow; tree list and text scroll alone. With
-  results at 1024×768 the section is 198 px and the text 324 px; hidden, a
-  38 px bar; at 1600×1000 the cap holds at 272 px. Hide, Show, Close and the
-  green box made no further preflight request.
+- Released `v5.5.0` (notes `docs/releases/v5.5.0.md`; artifacts of `f956e95`
+  renamed, embedded 5.4.1). The File Editor fills its tab and the tree and file
+  scroll on their own; the preflight starts from a box beside Clean TS and its
+  results open in a capped section below (Hide, Show, Close, Run again). Below
+  440 px the inputs fold behind a + button. Details in Git.
 
 ## 2026-09-12 — larger initial workspaces and wizard-marker exclusion
 

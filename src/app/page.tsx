@@ -424,7 +424,13 @@ export default function Home() {
       <div className="border-b bg-card/40">
         <div className="max-w-[1800px] mx-auto px-3 sm:px-4">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="bg-transparent h-auto p-0 gap-0">
+            {/* Never wider than the window: at 1024 px the eleven labelled tabs
+                measured 1069 px, and the overflow made the whole app (whose
+                root clips, rather than scrolls) slide sideways whenever a focus
+                landed near the right edge — moving buttons out from under the
+                pointer. Below 1120 px the tabs show their icons (the name is in
+                the tooltip); the scroll is only a last resort. */}
+            <TabsList className="bg-transparent h-auto p-0 gap-0 max-w-full overflow-x-auto overflow-y-hidden justify-start">
               {TABS.map((tab) => (
                 <TabsTrigger
                   key={tab.id}
@@ -447,7 +453,7 @@ export default function Home() {
                   className="relative rounded-none border-b-2 border-transparent px-3 py-2.5 text-sm gap-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent/40 data-[state=active]:border-b-brand! data-[state=active]:bg-transparent! data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
                 >
                   {tab.icon}
-                  <span className="hidden sm:inline">{tab.label}</span>
+                  <span className="hidden min-[1120px]:inline">{tab.label}</span>
                 </TabsTrigger>
               ))}
             </TabsList>
