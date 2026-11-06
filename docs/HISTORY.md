@@ -6,6 +6,12 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-06 — v5.9.0: agent analyses, File Editor colours, folding and find/replace
+
+- Released `v5.9.0` at the user's request (notes `docs/releases/v5.9.0.md`): the
+  pair built for `ff35265`, renamed without rebuilding (embedded 5.8.2). GitHub
+  keeps v5.9.0 and v5.8.2; the v5.8.1 release entry was removed, tag kept.
+
 ## 2026-11-06 — File Editor: fold arrows in the text, number colour
 
 - The fold arrow sits right after each foldable `{` (`BraceBlock.openChar`),
@@ -65,10 +71,8 @@ audits.
   digests above; both prompts say so (`LARGE_FILES`).
 - Fixed beside it: list keys in the panels' markdown used the line AFTER the
   list, duplicating the next line's key; React repeated paragraphs.
-- Checked: 17 tests in `tests/case-digest.test.ts` (fake case in WSL /tmp)
-  under gawk, mawk and busybox; a real 8.8 MB log in 1.4 s; a disposable
-  decomposed cavity (`digest_test`, since removed) through the server and the
-  Results button with the Claude agent, which used the three digests.
+- Checked: 17 tests (fake case in WSL /tmp) under gawk, mawk and busybox; an
+  8.8 MB log in 1.4 s; the Results button live on a disposable decomposed case.
 
 ## 2026-10-20 — v5.8.2: containers open closed; OpenFOAM search in /home and chosen folders
 
