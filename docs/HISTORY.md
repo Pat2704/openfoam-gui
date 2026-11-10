@@ -6,6 +6,11 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-10 — v5.9.2: shell scripts in the File Editor
+
+- Released `v5.9.2` (`docs/releases/v5.9.2.md`): the `2310f48` pair, renamed
+  without rebuilding (embedded 5.9.1); the v5.9.0 release entry was removed.
+
 ## 2026-11-10 — File Editor: shell scripts no longer read as one comment
 
 - `cd ${0%/*}` at the top of every Allrun opened an OpenFOAM `/* … */` comment
@@ -14,13 +19,9 @@ audits.
   '…'/"…" strings, `$1` not a number. Checked in the dev server on
   `assignment1/combustorSimple` (opened only); dictionaries unchanged.
 
-## 2026-11-06 — v5.9.1: housekeeping at start
-
-- Released `v5.9.1` (`docs/releases/v5.9.1.md`): the `44d0ce3` pair, renamed
-  without rebuilding (embedded 5.9.0); the v5.8.2 release entry was removed.
-
 ## 2026-11-06 — TEMP leftovers and stale browser caches removed at start
 
+- Released as `v5.9.1` (the `44d0ce3` pair renamed, embedded 5.9.0).
 - Found on the user's machine: six portable extractions in `%TEMP%` (2.1 GB,
   left when the stub is ended before it can delete them), ~150
   `openfoam-studio-paraview-session-*` folders (the server is `taskkill`ed on
