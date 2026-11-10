@@ -2,7 +2,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { canHighlight, highlightFoam, HIGHLIGHT_MAX_LINES } from '../src/lib/editor-highlight.ts';
+import { canHighlight, highlightFoam, syntaxFor, HIGHLIGHT_MAX_LINES } from '../src/lib/editor-highlight.ts';
 
 const comments = (text: string) => highlightFoam(text).map(line =>
   line.segments.filter(s => s.comment).map(s => s.text).join('|'));
@@ -102,4 +102,48 @@ describe('numbers', () => {
 test('a block knows the column of its brace, for the fold arrow', async () => {
   const { scanFoam } = await import('../src/lib/editor-highlight.ts');
   assert.deepEqual(scanFoam('inlet\n{\n  a;\n}\n  wall {\n  b;\n  }').blocks.map(b => [b.open, b.openChar]), [[1, 0], [4, 7]]);
+});
+
+describe('shell scripts', () => {
+  const shellComments = (text: string) => highlightFoam(text, 4, 'shell').map(line =>
+    line.segments.filter(s => s.comment).map(s => s.text).join('|'));
+
+  test('Allrun, *.sh and a #! first line are read as shell; dictionaries are not', () => {
+    assert.equal(syntaxFor('combustorSimple/Allrun', ''), 'shell');
+    assert.equal(syntaxFor('Allclean', ''), 'shell');
+    assert.equal(syntaxFor('Allrun.pre', ''), 'shell');
+    assert.equal(syntaxFor('scripts/mesh.sh', ''), 'shell');
+    assert.equal(syntaxFor('system/run', '#!/bin/bash\necho'), 'shell');
+    assert.equal(syntaxFor('system/controlDict', 'FoamFile\n{\n}'), 'foam');
+    assert.equal(syntaxFor(null, '/*---*/'), 'foam');
+  });
+
+  test('the /* of `cd ${0%/*}` does not open a comment', () => {
+    const text = [
+      '#!/bin/sh',
+      'cd ${0%/*} || exit 1    # run from this directory',
+      '',
+      '# Source tutorial run functions',
+      '. $WM_PROJECT_DIR/bin/tools/RunFunctions',
+      "physical_cores=$(lscpu | grep 'Core(s) per socket' | awk '{print $NF}')",
+      'nCores=$1;',
+      'runApplication blockMesh',
+    ].join('\n');
+    assert.deepEqual(shellComments(text), [
+      '#!/bin/sh', '# run from this directory', '', '# Source tutorial run functions', '', '', '', '',
+    ]);
+  });
+
+  test('a # inside quotes, after $ or in ${#…} is not a comment', () => {
+    assert.deepEqual(shellComments('echo "a # b" \'c # d\' $# ${#x} \\# e # real'), ['# real']);
+  });
+
+  test('a shell argument is a variable, not a number', () => {
+    const [line] = highlightFoam('nCores=$1; sleep 2', 4, 'shell');
+    assert.deepEqual(line.segments.filter(s => s.number).map(s => s.text), ['2']);
+  });
+
+  test('the same text read as a dictionary still treats /* as a comment', () => {
+    assert.deepEqual(comments('cd ${0%/*}\nx'), ['/*}', 'x']);
+  });
 });

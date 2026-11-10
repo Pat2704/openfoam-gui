@@ -22,7 +22,7 @@ import { confirmDialog } from '@/components/ui/confirm-host';
 import { isProcessForCase } from '@/lib/case-processes';
 import { CasePreflightResults, CasePreflightTrigger, useCasePreflight } from './case-preflight-panel';
 import { EditorHighlightLayer, type LayerRow } from './editor-highlight-layer';
-import { canHighlight, scanFoam, type LineMark } from '@/lib/editor-highlight';
+import { canHighlight, scanFoam, syntaxFor, type LineMark } from '@/lib/editor-highlight';
 import {
   applyVisibleEdit, foldRegions, foldsHiding, fullToVisible, lineOfOffset, project, shiftFolds, visibleToFull,
 } from '@/lib/editor-folding';
@@ -843,9 +843,15 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // mesh): one element per line would make every keystroke slow.
   const highlighting = canHighlight(fileContent);
 
+  // A script (Allrun, *.sh, `#!`) is read with the shell's comment rules, a
+  // dictionary with OpenFOAM's.
+  const syntax = syntaxFor(currentFile, fileContent);
+
   // One scan gives the highlight and the brace blocks folding uses; folding,
   // like highlighting, is off for a file too large to draw.
-  const scan = useMemo(() => (highlighting ? scanFoam(fileContent) : null), [fileContent, highlighting]);
+  const scan = useMemo(
+    () => (highlighting ? scanFoam(fileContent, 4, syntax) : null), [fileContent, highlighting, syntax],
+  );
   const regions = useMemo(() => (scan ? foldRegions(fileContent, scan.blocks) : []), [scan, fileContent]);
   const regionByOpen = useMemo(() => new Map(regions.map(region => [region.open, region])), [regions]);
   const projection = useMemo(() => project(fileContent, regions, folded), [fileContent, regions, folded]);
@@ -886,7 +892,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     if (projection.visible === fileContent) { setFileContent(nextVisible); return; }
     const edit = applyVisibleEdit(fileContent, projection, nextVisible, caret);
     // Folds follow the lines they are on and keep only their own blocks.
-    const nextRegions = foldRegions(edit.text, scanFoam(edit.text).blocks);
+    const nextRegions = foldRegions(edit.text, scanFoam(edit.text, 4, syntax).blocks);
     setFolded(prev => {
       const next = shiftFolds(prev, edit.fromLine, edit.lineDelta, nextRegions, regions);
       if (edit.reveal !== undefined) next.delete(edit.reveal);
@@ -894,7 +900,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     });
     pendingCaretRef.current = edit.caret;
     setFileContent(edit.text);
-  }, [fileContent, projection, regions]);
+  }, [fileContent, projection, regions, syntax]);
 
   /** Fold or unfold, keeping the caret on the same text. */
   const changeFolds = useCallback((change: (prev: Set<number>) => Set<number>) => {

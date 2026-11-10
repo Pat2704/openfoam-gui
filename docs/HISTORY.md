@@ -6,6 +6,14 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-10 — File Editor: shell scripts no longer read as one comment
+
+- `cd ${0%/*}` at the top of every Allrun opened an OpenFOAM `/* … */` comment
+  that never closed. `syntaxFor` (`src/lib/editor-highlight.ts`) reads Allrun,
+  Allclean & co., `*.sh` and `#!` files with shell rules: `#` at a word start,
+  '…'/"…" strings, `$1` not a number. Checked in the dev server on
+  `assignment1/combustorSimple` (opened only); dictionaries unchanged.
+
 ## 2026-11-06 — v5.9.1: housekeeping at start
 
 - Released `v5.9.1` (`docs/releases/v5.9.1.md`): the `44d0ce3` pair, renamed
@@ -448,24 +456,14 @@ audits.
   time; clone/rename/create refuse existing names and remove half-made copies;
   File Editor remounts ask about unsaved edits; unused `CASE_TEMPLATES` gone.
 
-## 2026-09-10 — Wizard writes only runnable cases; accessibility pass (in brief)
+## 2026-09-10 — Runnable wizard cases, tutorial listing, data-loss guards (in brief)
 
-- From the OpenFOAM audit, the wizard lists only incompressibleFluid (11+) and
-  simpleFoam, pimpleFoam, pisoFoam, icoFoam (<=10); fvSchemes always carries
-  `wallDist { method meshWave; }`; Spalart-Allmaras walls get
-  nutUSpaldingWallFunction. On <=10 the run quick commands use the case's
-  `application`. Icon-only buttons gained accessible names. Details in Git.
+- The wizard lists only incompressibleFluid (11+) and simple/pimple/piso/icoFoam
+  (<=10), always with `wallDist { method meshWave; }`. Tutorials are listed at
+  any depth (`listTutorialCases`); `copyTutorial` is atomic. "New file" on an
+  existing name asks first. Details in Git.
 - Still open: per-process Kill unconfirmed (declined); Undo reverts all edits
   without asking; the v11 reading of `nu 1e-05 [m^2/s]` is unverified.
-
-## 2026-09-10 — Tutorial listing, File Editor and wizard data-loss guards (in brief)
-
-- Tutorials are listed at any depth (`listTutorialCases`): a folder with
-  `system/` is a tutorial, one with its own `Allrun` above cases is an "Allrun
-  group". The panel ignores out-of-order answers; `copyTutorial` creates the
-  destination atomically and removes a half-made copy. v9-v10 not checked locally.
-- File Editor: "New file" on an existing name asks first; a failed read no
-  longer opens the file empty and "Saved". The app icon was redrawn.
 
 ## 2026-09-10 — v5.3.0: Post-Process audit and a warm ParaView start (in brief)
 

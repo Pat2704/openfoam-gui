@@ -15,7 +15,28 @@
  * lines up whatever indent width the file uses. A number is one standing on
  * its own — `1`, `-0.5`, `1e-05` — outside comments and strings, never the
  * digits of a name such as `U_0`, `p2` or `k:0`.
+ *
+ * Shell scripts (`Allrun`, `Allclean`, `*.sh`, anything starting with `#!`)
+ * follow the shell's rules instead: `#` starts a comment where a word starts,
+ * '…' and "…" are strings, and `//` or `/*` mean nothing. Read with the
+ * OpenFOAM rules, the `/*` of the usual `cd ${0%/*}` opened a block comment
+ * that never closed, and the whole script was coloured as a comment.
  */
+
+export type HighlightSyntax = 'foam' | 'shell';
+
+/** Script names OpenFOAM's tutorials use, with or without a suffix (`Allrun.pre`). */
+const SHELL_NAME = /^All(?:run|clean|mesh|wmake|test|pre|post|parallel)\b/i;
+
+/** Which rules a file is read with: from its name, or a `#!` first line. */
+export function syntaxFor(filePath: string | null | undefined, text: string): HighlightSyntax {
+  const name = (filePath ?? '').split('/').pop() ?? '';
+  if (SHELL_NAME.test(name) || /\.(?:sh|bash)$/i.test(name) || text.startsWith('#!')) return 'shell';
+  return 'foam';
+}
+
+/** Where a shell `#` starts a comment: at a line start or after a separator. */
+const SHELL_WORD_BREAK = /[\s;|&()]/;
 
 export interface HighlightSegment {
   text: string;
@@ -70,16 +91,18 @@ const NAME_CHAR = /[A-Za-z0-9_.:]/;
  * leaving "strings" whole. `before` is the character preceding the piece on
  * its line, so a number at the start of the piece is judged in context.
  */
-function splitNumbers(text: string, before: string): HighlightSegment[] {
+function splitNumbers(text: string, before: string, quotes: string): HighlightSegment[] {
   const out: HighlightSegment[] = [];
   let plain = '';
   let i = 0;
   const flushPlain = () => { if (plain) { out.push({ text: plain, comment: false }); plain = ''; } };
   while (i < text.length) {
-    if (text[i] === '"') {
-      // A string runs to its closing quote (or the end of the piece).
+    if (quotes.includes(text[i])) {
+      // A string runs to its closing quote (or the end of the piece); nothing
+      // escapes inside a shell '…' string.
+      const quote = text[i];
       let end = i + 1;
-      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      while (end < text.length && text[end] !== quote) end += text[end] === '\\' && quote === '"' ? 2 : 1;
       plain += text.slice(i, end + 1);
       i = end + 1;
       continue;
@@ -91,7 +114,9 @@ function splitNumbers(text: string, before: string): HighlightSegment[] {
       const next = text[i + match[0].length] ?? '';
       // A sign belongs to the number only where a name could not end.
       const signed = /^[-+]/.test(match[0]);
-      const ok = !NAME_CHAR.test(previous) && !NAME_CHAR.test(next) && !(signed && /[\w)\]]/.test(previous));
+      // `$1` is a variable: a shell argument, or an OpenFOAM `$macro`.
+      const ok = !NAME_CHAR.test(previous) && previous !== '$' && !NAME_CHAR.test(next)
+        && !(signed && /[\w)\]]/.test(previous));
       if (ok) {
         flushPlain();
         out.push({ text: match[0], comment: false, number: true });
@@ -107,27 +132,31 @@ function splitNumbers(text: string, before: string): HighlightSegment[] {
 }
 
 /** Numbers picked out of the non-comment segments of one line. */
-function withNumbers(segments: HighlightSegment[]): HighlightSegment[] {
+function withNumbers(segments: HighlightSegment[], quotes: string): HighlightSegment[] {
   if (!segments.some(segment => !segment.comment && /\d/.test(segment.text))) return segments;
   const out: HighlightSegment[] = [];
   let previous = '';
   for (const segment of segments) {
     if (segment.comment || !/\d/.test(segment.text)) out.push(segment);
-    else out.push(...splitNumbers(segment.text, previous));
+    else out.push(...splitNumbers(segment.text, previous, quotes));
     previous = segment.text.slice(-1);
   }
   return out;
 }
 
-export function highlightFoam(text: string, tabSize = 4): HighlightLine[] {
-  return scanFoam(text, tabSize).lines;
+export function highlightFoam(text: string, tabSize = 4, syntax: HighlightSyntax = 'foam'): HighlightLine[] {
+  return scanFoam(text, tabSize, syntax).lines;
 }
 
 /**
  * One pass over the text: the highlight of every line, and every matched brace
  * pair (comments and strings excluded), which is what folding works from.
  */
-export function scanFoam(text: string, tabSize = 4): { lines: HighlightLine[]; blocks: BraceBlock[] } {
+export function scanFoam(
+  text: string, tabSize = 4, syntax: HighlightSyntax = 'foam',
+): { lines: HighlightLine[]; blocks: BraceBlock[] } {
+  const shell = syntax === 'shell';
+  const quotes = shell ? `"'` : '"';
   const lines = text.split('\n');
   const out: HighlightLine[] = [];
   const blocks: BraceBlock[] = [];
@@ -152,7 +181,8 @@ export function scanFoam(text: string, tabSize = 4): { lines: HighlightLine[]; b
       currentIsComment = comment;
     };
 
-    let inString = false;
+    // The quote that opened the string being read, or '' outside one.
+    let inString = '';
     const indent = indentColumn(line, tabSize);
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
@@ -166,16 +196,25 @@ export function scanFoam(text: string, tabSize = 4): { lines: HighlightLine[]; b
       if (inString) {
         flush(false);
         current += char;
-        if (char === '\\' && next !== undefined) { current += next; i++; continue; }
-        if (char === '"') inString = false;
+        if (char === '\\' && next !== undefined && inString === '"') { current += next; i++; continue; }
+        if (char === inString) inString = '';
         continue;
       }
-      if (char === '/' && next === '/') {
+      if (shell) {
+        // `\#` and `\"` are plain characters.
+        if (char === '\\' && next !== undefined) { flush(false); current += char + next; i++; continue; }
+        // `${#var}` and `$#` are not comments: their `#` does not start a word.
+        if (char === '#' && (i === 0 || SHELL_WORD_BREAK.test(line[i - 1]))) {
+          flush(true);
+          current += line.slice(i);
+          break;
+        }
+      } else if (char === '/' && next === '/') {
         flush(true);
         current += line.slice(i);
         break;
       }
-      if (char === '/' && next === '*') {
+      if (!shell && char === '/' && next === '*') {
         flush(true);
         current += '/*';
         i++;
@@ -184,7 +223,7 @@ export function scanFoam(text: string, tabSize = 4): { lines: HighlightLine[]; b
       }
       flush(false);
       current += char;
-      if (char === '"') inString = true;
+      if (quotes.includes(char)) inString = char;
       else if (char === '{') open.push({ id: nextId++, column: indent, line: lineIndex, char: i });
       else if (char === '}') {
         const closed = open.pop();
@@ -196,7 +235,7 @@ export function scanFoam(text: string, tabSize = 4): { lines: HighlightLine[]; b
     }
     if (current) segments.push({ text: current, comment: currentIsComment });
     out.push({
-      segments: withNumbers(segments),
+      segments: withNumbers(segments, quotes),
       guides: atStart.filter(brace => !closedHere.has(brace.id)).map(brace => brace.column),
     });
   }
