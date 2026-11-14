@@ -8,7 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import {
   Folder, File, FileCode, ChevronRight, ChevronDown, RefreshCw,
-  Loader2, ArrowLeft, Boxes, FolderTree, Copy, AlertCircle
+  Loader2, ArrowLeft, Boxes, FolderTree, FolderCog, Copy, AlertCircle
 } from 'lucide-react';
 
 interface FoamFileItem {
@@ -25,9 +25,10 @@ interface LsResult {
   items: FoamFileItem[];
 }
 
-type Section = 'applications' | 'src';
+type Section = 'etc' | 'applications' | 'src';
 
 const SECTION_META: Record<Section, { label: string; icon: React.ReactNode; desc: string }> = {
+  etc:          { label: 'Etc',          icon: <FolderCog className="w-4 h-4" />,  desc: 'Installation configuration — $FOAM_ETC (bashrc, caseDicts, templates, thermoData)' },
   applications: { label: 'Applications', icon: <Boxes className="w-4 h-4" />,     desc: 'OpenFOAM Applications — applications/ (solvers, utilities)' },
   src:          { label: 'Src',          icon: <FolderTree className="w-4 h-4" />, desc: 'Core library sources — src' },
 };
@@ -333,7 +334,7 @@ export default function OpenFoamBrowser({ section }: { section: Section }) {
                 Text files (.C, .H, .so meta, etc.) are readable; binaries (.so) are flagged.
               </p>
               <p className="text-[10px] mt-3 text-muted-foreground/70">
-                Generic section: uses OpenFOAM environment variables (FOAM_LIBBIN / FOAM_SOLVERS / FOAM_SRC),
+                Generic section: uses OpenFOAM environment variables (FOAM_ETC / FOAM_APP / FOAM_SRC),
                 not hard-coded to a specific path.
               </p>
             </div>

@@ -8,7 +8,7 @@ import { Toaster, toast } from 'sonner';
 import { useTheme } from 'next-themes';
 import {
   LayoutDashboard, Wand2, FileCode, Terminal, Activity,
-  TerminalSquare, Waves, Cpu, X, Boxes, FolderTree,
+  TerminalSquare, Waves, Cpu, X, Boxes, FolderTree, FolderCog,
   Keyboard, Sun, Moon, Zap, Box, Cuboid, BarChart3
 } from 'lucide-react';
 import Dashboard from '@/components/openfoam/dashboard';
@@ -33,6 +33,7 @@ const TABS = [
   { id: 'mesh', label: 'Mesh', icon: <Box className="w-4 h-4" /> },
   { id: 'postprocess', label: 'Post-Process', icon: <BarChart3 className="w-4 h-4" /> },
   { id: 'paraview', label: 'ParaView', icon: <Cuboid className="w-4 h-4" /> },
+  { id: 'etc', label: 'Etc', icon: <FolderCog className="w-4 h-4" /> },
   { id: 'applications', label: 'Applications', icon: <Boxes className="w-4 h-4" /> },
   { id: 'src', label: 'Src', icon: <FolderTree className="w-4 h-4" /> },
 ];
@@ -41,7 +42,7 @@ const SHORTCUTS = [
   { keys: 'Ctrl + S', desc: 'Save the open file in the editor' },
   { keys: 'Ctrl + Enter', desc: 'Send message in chat' },
   { keys: 'Ctrl + /', desc: 'Show/hide keyboard shortcuts' },
-  { keys: 'Ctrl + 0-9', desc: 'Switch tab, in order (0 = Dashboard … 9 = Src)' },
+  { keys: 'Ctrl + 0-9', desc: 'Switch tab, in order (0 = Dashboard … 8 = Etc, 9 = Applications)' },
   { keys: '↑ / ↓', desc: 'Navigate command history in the terminal' },
   { keys: 'Ctrl + F', desc: 'Search in the file open in the editor' },
   { keys: 'Ctrl + B', desc: 'Switch light/dark theme' },
@@ -139,7 +140,7 @@ export default function Home() {
    * user-draggable height and the checkMesh and boundary-condition reports stack
    * below it, so that tab is a column that scrolls, not a pane that fills.
    */
-  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'postprocess', 'paraview', 'applications', 'src']);
+  const FILL_HEIGHT_TABS = new Set(['editor', 'commands', 'postprocess', 'paraview', 'etc', 'applications', 'src']);
   const paneClass = (id: string) =>
     activeTab !== id ? 'hidden' : FILL_HEIGHT_TABS.has(id) ? 'h-full' : undefined;
   // Open cases: array of names. First element is the active one.
@@ -291,7 +292,8 @@ export default function Home() {
       //
       // A tenth tab (Post-Process) does not fit 1..9, and renumbering from zero
       // was the user's call: the digit now IS the tab index, so Ctrl+0 is the
-      // Dashboard and Ctrl+9 is Src, with nothing left without a shortcut.
+      // Dashboard. Since the Etc tab (before Applications) there are eleven:
+      // Ctrl+9 is Applications and Src, the last, has no digit.
       //
       // Ctrl+0 is also the conventional zoom reset. In Electron that shortcut
       // comes from the default application menu's zoom roles, and main.js
@@ -428,8 +430,9 @@ export default function Home() {
                 measured 1069 px, and the overflow made the whole app (whose
                 root clips, rather than scrolls) slide sideways whenever a focus
                 landed near the right edge — moving buttons out from under the
-                pointer. Below 1120 px the tabs show their icons (the name is in
-                the tooltip); the scroll is only a last resort. */}
+                pointer. Below 1180 px the tabs show their icons (the name is in
+                the tooltip); the scroll is only a last resort. With the Etc tab
+                the labelled row measured 1135 px, which overflowed at 1120. */}
             <TabsList className="bg-transparent h-auto p-0 gap-0 max-w-full overflow-x-auto overflow-y-hidden justify-start">
               {TABS.map((tab) => (
                 <TabsTrigger
@@ -453,7 +456,7 @@ export default function Home() {
                   className="relative rounded-none border-b-2 border-transparent px-3 py-2.5 text-sm gap-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent/40 data-[state=active]:border-b-brand! data-[state=active]:bg-transparent! data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
                 >
                   {tab.icon}
-                  <span className="hidden min-[1120px]:inline">{tab.label}</span>
+                  <span className="hidden min-[1180px]:inline">{tab.label}</span>
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -538,6 +541,11 @@ export default function Home() {
               active={activeTab === 'paraview'}
               onConfigure={() => setActiveTab('dashboard')}
             />
+          </div>
+        )}
+        {visitedTabs.includes('etc') && (
+          <div className={paneClass('etc')}>
+            <OpenFoamBrowser section="etc" />
           </div>
         )}
         {visitedTabs.includes('applications') && (

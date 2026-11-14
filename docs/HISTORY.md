@@ -6,6 +6,13 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-14 — Etc tab: browse $FOAM_ETC
+
+- New `etc` section (`FOAM_SECTIONS` in `src/lib/wsl.ts`: `$FOAM_ETC`, else
+  `$WM_PROJECT_DIR/etc`) in the same `OpenFoamBrowser`, as a tab before
+  Applications. Ctrl+8 is Etc, Ctrl+9 Applications; Src has no digit now. Tab
+  labels appear from 1180 px (the labelled row is 1135 px wide).
+
 ## 2026-11-10 — v5.9.2: shell scripts in the File Editor
 
 - Released `v5.9.2` (`docs/releases/v5.9.2.md`): the `2310f48` pair, renamed
@@ -422,32 +429,14 @@ audits.
   build or source-to-artifact verification. Its embedded Windows version
   resource therefore still reads 5.3.0.
 
-## 2026-09-10 — Post-Process data integrity; ParaView cancellation and access
+## 2026-09-10 — Post-Process data integrity; ParaView cancellation (in brief)
 
-- Post-Process CSV now fetches the complete parsed table (up to the existing
-  200,000-row/8 MB safety ceilings) instead of copying the 4,000-point chart
-  sample, and quotes commas, quotes and line breaks as real CSV. Any remaining
-  limit is stated in the toast rather than presented as a complete export.
-- Sampled profiles retain up to 20,000 time names and directly load the chosen
-  snapshot; the initial view reads the latest 200 files instead of the first
-  200. A time-series with more than 200 restart files and a longer time list
-  are explicitly marked as limited. Dataset and file symlinks are resolved and
-  accepted only when their targets remain under the case's postProcessing tree.
-- Post-Process now reports a failed dataset/log listing, serializes WSL reads,
-  ignores superseded dataset, catalogue, context and class-reference answers,
-  and clears installation-owned state when the OpenFOAM selection changes.
-- ParaView startup has cancellable generation tickets. Cancel invalidates an
-  in-progress discovery and queued starts, cleans temporary state, immediately
-  leaves the loading screen and ignores late state/images. Camera and
-  manipulator requests use the same timeout as other workbench operations.
-- ParaView's pipeline can be selected by keyboard; icon-only workbench and
-  timestep controls and all range inputs now expose accessible names.
-- Typecheck, full lint and 220 tests pass (one pre-existing external Codex test
-  skipped). A read-only call on the WSL `test` case confirmed the empty
-  Post-Process state; the disposable 205-time/symlink WSL integration also
-  passed and removed its temporary data. The Electron build passed and the
-  v5.3.0 portable executable and folder ZIP were replaced with hash-verified
-  artifacts.
+- Post-Process CSV exports the full parsed table (200,000 rows / 8 MB caps,
+  stated when hit) as real CSV; profiles keep 20,000 time names and read the
+  latest 200 files; symlinks must stay under `postProcessing`; superseded WSL
+  answers are ignored and listing failures reported.
+- ParaView startup is cancellable by generation ticket; pipeline and controls
+  are keyboard-reachable with accessible names. 220 tests passed then.
 
 ## 2026-09-10 — Mesh tab, case lifecycle, honest states (in brief; details in Git)
 

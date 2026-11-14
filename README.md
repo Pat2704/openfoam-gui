@@ -197,7 +197,7 @@ found once you add its folder under **Search folders** in the same dialog.
   representation.
 
   ![The ParaView tab: a cavity case rendered as surface with edges and coloured by velocity, with the pipeline browser and the mesh regions of the case on the left and ParaView's own display, coloring and render-view properties on the right](screenshots/paraView.png)
-- **Applications / Src** — browse the installed OpenFOAM sources.
+- **Etc / Applications / Src** — browse the installation's `$FOAM_ETC` (bashrc, caseDicts, templates) and the installed OpenFOAM sources.
 
 <details>
 <summary>Four more: the command panel, the file editor, the applications and source browsers</summary>

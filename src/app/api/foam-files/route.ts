@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listFoamDirectory, readFoamFile, getFoamSectionDir, FoamSection } from '@/lib/wsl';
+import { listFoamDirectory, readFoamFile, getFoamSectionDir, FOAM_SECTIONS, FoamSection } from '@/lib/wsl';
 import { apiError } from '@/lib/api-response';
-
-const VALID_SECTIONS: FoamSection[] = ['applications', 'src'];
 
 function parseSection(value: string | null): FoamSection | null {
   if (!value) return null;
-  return VALID_SECTIONS.includes(value as FoamSection) ? (value as FoamSection) : null;
+  return (FOAM_SECTIONS as readonly string[]).includes(value) ? (value as FoamSection) : null;
 }
 
 // GET /api/foam-files
@@ -19,7 +17,7 @@ export async function GET(req: NextRequest) {
     const action = searchParams.get('action');
     const section = parseSection(searchParams.get('section'));
     if (!section) {
-      return NextResponse.json({ error: 'Invalid section. Use: applications, src' }, { status: 400 });
+      return NextResponse.json({ error: `Invalid section. Use: ${FOAM_SECTIONS.join(', ')}` }, { status: 400 });
     }
 
     switch (action) {

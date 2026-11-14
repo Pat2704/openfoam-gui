@@ -1330,13 +1330,23 @@ function getFoamSrc(): string {
   if (env.WM_PROJECT_DIR) return `${env.WM_PROJECT_DIR}/src`;
   return '';
 }
+// etc → FOAM_ETC (or $WM_PROJECT_DIR/etc): the bashrc, the global
+// configuration and the caseDicts / templates that `foamGet` copies from.
+function getFoamEtc(): string {
+  const env = getFoamEnv();
+  if (env.FOAM_ETC && env.FOAM_ETC !== '$FOAM_ETC') return env.FOAM_ETC;
+  if (env.WM_PROJECT_DIR) return `${env.WM_PROJECT_DIR}/etc`;
+  return '';
+}
 
 // Resolve one of the OpenFOAM sections to its absolute path. Used by the
 // API to map the abstract "section" to a concrete directory without exposing
-// the raw path to the client (the client only knows 'applications' | 'src').
-export type FoamSection = 'applications' | 'src';
+// the raw path to the client (the client only knows the section names).
+export const FOAM_SECTIONS = ['etc', 'applications', 'src'] as const;
+export type FoamSection = typeof FOAM_SECTIONS[number];
 export function getFoamSectionDir(section: FoamSection): string {
   switch (section) {
+    case 'etc': return getFoamEtc();
     case 'applications': return getFoamApplications();
     case 'src': return getFoamSrc();
   }
