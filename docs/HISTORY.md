@@ -6,6 +6,11 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-14 — v5.9.3: Etc tab
+
+- Released `v5.9.3` (`docs/releases/v5.9.3.md`): the `b37a736` pair, renamed
+  without rebuilding (embedded 5.9.2); the v5.9.1 release entry was removed.
+
 ## 2026-11-14 — Etc tab: browse $FOAM_ETC
 
 - New `etc` section (`FOAM_SECTIONS` in `src/lib/wsl.ts`: `$FOAM_ETC`, else
@@ -13,13 +18,9 @@ audits.
   Applications. Ctrl+8 is Etc, Ctrl+9 Applications; Src has no digit now. Tab
   labels appear from 1180 px (the labelled row is 1135 px wide).
 
-## 2026-11-10 — v5.9.2: shell scripts in the File Editor
-
-- Released `v5.9.2` (`docs/releases/v5.9.2.md`): the `2310f48` pair, renamed
-  without rebuilding (embedded 5.9.1); the v5.9.0 release entry was removed.
-
 ## 2026-11-10 — File Editor: shell scripts no longer read as one comment
 
+- Released as `v5.9.2` (the `2310f48` pair renamed, embedded 5.9.1).
 - `cd ${0%/*}` at the top of every Allrun opened an OpenFOAM `/* … */` comment
   that never closed. `syntaxFor` (`src/lib/editor-highlight.ts`) reads Allrun,
   Allclean & co., `*.sh` and `#!` files with shell rules: `#` at a word start,
