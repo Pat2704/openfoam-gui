@@ -2211,139 +2211,176 @@ export interface CaseFileItem {
 }
 
 // ── Get case structure (dirs, files in each dir, timesteps) in ONE WSL call ──
-export function getCaseInfo(caseName: string): {
+//
+// The File Editor polls this every four seconds. It used to fork `basename`
+// for every entry and `grep` for every folder, and to check the folder in a
+// separate WSL call first: 1.5 s on a case with ~1,400 entries (Lab05
+// combustor2D-spray), against 7 ms for the same loop with `${item##*/}` and a
+// bash regex. The sync variant blocked the whole server for that time, so the
+// API routes use the async one.
+interface CaseInfo {
   exists: boolean;
   directories: string[];
   files: Record<string, CaseFileItem[]>;
   timeSteps: string[];
-} {
-  const casePath = getCasePath(caseName);
-  try {
-    if (runInWsl(`test -d ${shellQuote(casePath)} && echo "yes" || echo "no"`).trim() !== 'yes') {
-      return { exists: false, directories: [], files: {}, timeSteps: [] };
-    }
+}
 
-    const script = `
+function caseInfoScript(casePath: string): string {
+  return Buffer.from(`
 CASEPATH=${shellQuote(casePath)}
+[ -d "$CASEPATH" ] || { echo NOEXIST; exit 0; }
+num='^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
+ts=()
 for item in "$CASEPATH"/*; do
   [ -e "$item" ] || continue
-  bn=$(basename "$item")
+  bn=\${item##*/}
   if [ -d "$item" ]; then
     echo "D|$bn"
     for sub in "$item"/*; do
       [ -e "$sub" ] || continue
-      sbn=$(basename "$sub")
+      sbn=\${sub##*/}
       if [ -d "$sub" ]; then
         echo "S|$bn|$sbn"
       else
         echo "F|$bn|$sbn"
       fi
     done
+    case "$bn" in
+      0|system|constant|processor*|postProcessing) ;;
+      *) [[ $bn =~ $num ]] && ts+=("$bn") ;;
+    esac
   else
     echo "R|$bn"
   fi
 done
-ts=""
-for d in "$CASEPATH"/*/; do
-  [ -d "$d" ] || continue
-  bn=$(basename "$d")
-  case "$bn" in 0|system|constant|processor*|postProcessing) continue ;; esac
-  if printf '%s' "$bn" | grep -qE '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'; then
-    ts="$ts$bn,"
-  fi
-done
-ts=$(printf '%s' "$ts" | tr ',' '\\n' | grep -v '^$' | sort -gu | tr '\\n' ',' | tr -d '\\r')
-echo "TS:$ts"
-`;
-    const b64 = Buffer.from(script).toString('base64');
-    const output = runInWslScript(b64, 60000)
-      .trim()
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '');
+printf 'TS:'
+[ \${#ts[@]} -gt 0 ] && printf '%s\\n' "\${ts[@]}" | sort -gu | tr '\\n' ','
+echo
+`).toString('base64');
+}
 
-    if (!output) return { exists: true, directories: [], files: {}, timeSteps: [] };
-
-    const lines = output.split('\n');
-    const files: Record<string, CaseFileItem[]> = {};
-    const directories: string[] = [];
-    let timeSteps: string[] = [];
-
-    for (const line of lines) {
-      if (line.startsWith('TS:')) {
-        timeSteps = line.substring(3).split(',').filter(Boolean);
-      } else if (line.startsWith('D|')) {
-        const dirName = line.substring(2);
-        directories.push(dirName);
-        files[dirName] = [];
-      } else if (line.startsWith('S|')) {
-        const parts = line.substring(2).split('|');
-        const parentDir = parts[0];
-        const subName = parts[1];
-        if (!files[parentDir]) files[parentDir] = [];
-        files[parentDir].push({ name: subName, path: `${parentDir}/${subName}`, isDir: true });
-      } else if (line.startsWith('F|')) {
-        const parts = line.substring(2).split('|');
-        const parentDir = parts[0];
-        const fileName = parts[1];
-        if (!files[parentDir]) files[parentDir] = [];
-        files[parentDir].push({ name: fileName, path: `${parentDir}/${fileName}`, isDir: false });
-      } else if (line.startsWith('R|')) {
-        files['_root'] = files['_root'] || [];
-        const name = line.substring(2);
-        files['_root'].push({ name, path: name, isDir: false });
-      }
-    }
-
-    return { exists: true, directories, files, timeSteps };
+export function getCaseInfo(caseName: string): CaseInfo {
+  const script = caseInfoScript(getCasePath(caseName));
+  try {
+    return parseCaseInfo(runInWslScript(script, 60000));
   } catch {
     return { exists: false, directories: [], files: {}, timeSteps: [] };
   }
 }
 
+/** getCaseInfo without blocking the server while WSL answers. */
+export async function getCaseInfoAsync(caseName: string): Promise<CaseInfo> {
+  const script = caseInfoScript(getCasePath(caseName));
+  try {
+    return parseCaseInfo(await runInWslScriptAsync(script, 60000));
+  } catch {
+    return { exists: false, directories: [], files: {}, timeSteps: [] };
+  }
+}
+
+function parseCaseInfo(raw: string): CaseInfo {
+  const output = raw
+    .trim()
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '');
+
+  if (output === 'NOEXIST') return { exists: false, directories: [], files: {}, timeSteps: [] };
+  if (!output) return { exists: true, directories: [], files: {}, timeSteps: [] };
+
+  const lines = output.split('\n');
+  const files: Record<string, CaseFileItem[]> = {};
+  const directories: string[] = [];
+  let timeSteps: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('TS:')) {
+      timeSteps = line.substring(3).split(',').filter(Boolean);
+    } else if (line.startsWith('D|')) {
+      const dirName = line.substring(2);
+      directories.push(dirName);
+      files[dirName] = [];
+    } else if (line.startsWith('S|')) {
+      const parts = line.substring(2).split('|');
+      const parentDir = parts[0];
+      const subName = parts[1];
+      if (!files[parentDir]) files[parentDir] = [];
+      files[parentDir].push({ name: subName, path: `${parentDir}/${subName}`, isDir: true });
+    } else if (line.startsWith('F|')) {
+      const parts = line.substring(2).split('|');
+      const parentDir = parts[0];
+      const fileName = parts[1];
+      if (!files[parentDir]) files[parentDir] = [];
+      files[parentDir].push({ name: fileName, path: `${parentDir}/${fileName}`, isDir: false });
+    } else if (line.startsWith('R|')) {
+      files['_root'] = files['_root'] || [];
+      const name = line.substring(2);
+      files['_root'].push({ name, path: name, isDir: false });
+    }
+  }
+
+  return { exists: true, directories, files, timeSteps };
+}
+
 // ── List contents of ANY subdirectory inside a case (lazy-loading support) ──
-export function listDirectory(caseName: string, dirPath: string): CaseFileItem[] {
+// One WSL call and no forks, for the same reason as getCaseInfo above.
+function listDirectoryScript(caseName: string, dirPath: string): { b64: string; safeDirPath: string } {
   const safeDirPath = validateRelativePath(dirPath, 'Directory path', true);
   const casePath = getCasePath(caseName);
   const fullPath = safeDirPath ? `${casePath}/${safeDirPath}` : casePath;
-  try {
-    if (runInWsl(`test -d ${shellQuote(fullPath)} && echo "yes" || echo "no"`).trim() !== 'yes') {
-      return [];
-    }
-
-    const script = `
+  const b64 = Buffer.from(`
 DIRPATH=${shellQuote(fullPath)}
+[ -d "$DIRPATH" ] || exit 0
 for item in "$DIRPATH"/*; do
   [ -e "$item" ] || continue
-  bn=$(basename "$item")
+  bn=\${item##*/}
   if [ -d "$item" ]; then
     echo "d|$bn"
   else
     echo "f|$bn"
   fi
 done
-`;
-    const b64 = Buffer.from(script).toString('base64');
-    const output = runInWslScript(b64, 15000)
-      .trim()
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '');
+`).toString('base64');
+  return { b64, safeDirPath };
+}
 
-    if (!output) return [];
-
-    const items: CaseFileItem[] = [];
-    for (const line of output.split('\n')) {
-      if (line.startsWith('d|')) {
-        const name = line.substring(2);
-        items.push({ name, path: safeDirPath ? `${safeDirPath}/${name}` : name, isDir: true });
-      } else if (line.startsWith('f|')) {
-        const name = line.substring(2);
-        items.push({ name, path: safeDirPath ? `${safeDirPath}/${name}` : name, isDir: false });
-      }
-    }
-    return items;
+export function listDirectory(caseName: string, dirPath: string): CaseFileItem[] {
+  const { b64, safeDirPath } = listDirectoryScript(caseName, dirPath);
+  try {
+    return parseDirectoryListing(runInWslScript(b64, 15000), safeDirPath);
   } catch {
     return [];
   }
+}
+
+/** listDirectory without blocking the server while WSL answers. */
+export async function listDirectoryAsync(caseName: string, dirPath: string): Promise<CaseFileItem[]> {
+  const { b64, safeDirPath } = listDirectoryScript(caseName, dirPath);
+  try {
+    return parseDirectoryListing(await runInWslScriptAsync(b64, 15000), safeDirPath);
+  } catch {
+    return [];
+  }
+}
+
+function parseDirectoryListing(raw: string, safeDirPath: string): CaseFileItem[] {
+  const output = raw
+    .trim()
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '');
+
+  if (!output) return [];
+
+  const items: CaseFileItem[] = [];
+  for (const line of output.split('\n')) {
+    if (line.startsWith('d|')) {
+      const name = line.substring(2);
+      items.push({ name, path: safeDirPath ? `${safeDirPath}/${name}` : name, isDir: true });
+    } else if (line.startsWith('f|')) {
+      const name = line.substring(2);
+      items.push({ name, path: safeDirPath ? `${safeDirPath}/${name}` : name, isDir: false });
+    }
+  }
+  return items;
 }
 
 export function readFile(caseName: string, filePath: string): string {
@@ -2395,12 +2432,12 @@ export function readFileHead(caseName: string, filePath: string, maxBytes: numbe
  * actually edit. Above the threshold the fingerprint degrades to mtime+size,
  * which is the right trade for a 200 MB log nobody is hand-editing.
  */
-export function statFile(caseName: string, filePath: string): {
+export async function statFile(caseName: string, filePath: string): Promise<{
   exists: boolean;
   mtime: number;
   size: number;
   stamp: string;
-} {
+}> {
   const casePath = getCasePath(caseName);
   const safePath = validateRelativePath(filePath, 'File path');
   const fullPath = `${casePath}/${safePath}`;
@@ -2415,7 +2452,9 @@ if [ "$size" -le ${HASH_LIMIT} ]; then sum=$(cksum < "$f" 2>/dev/null | tr -d ' 
 echo "ok $meta $sum"
 `;
   try {
-    const output = runInWslScript(Buffer.from(script).toString('base64'), 20000).trim();
+    // Async: the editor asks every four seconds, and a sync call stalls every
+    // other request in the server while WSL answers.
+    const output = (await runInWslScriptAsync(Buffer.from(script).toString('base64'), 20000)).trim();
     if (!output.startsWith('ok ')) return { exists: false, mtime: 0, size: 0, stamp: '' };
     const [, mtime, size, sum = ''] = output.split(/\s+/);
     return {

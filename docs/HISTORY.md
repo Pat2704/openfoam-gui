@@ -6,6 +6,20 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-17 — File Editor: faster on large cases, remembers each case
+
+- `getCaseInfo`/`listDirectory` forked `basename` per entry (and `grep` per
+  folder): 1.5 s on Lab05 combustor2D-spray (~1,400 entries) vs 27 ms with
+  `${item##*/}`, same output on four cases. The API routes use the new async
+  variants and `statFile` is async, so the 4 s polls no longer block the server
+  (info + ls + stat in parallel: ~230 ms each).
+- The tree is a `React.memo` `FileTree` with ref-backed stable callbacks:
+  typing with 65 folders open went from 290 ms to 24 ms median per keystroke
+  (dev build); `loadFile` still sees unsaved edits.
+- `caseMemory` (module-level, per session) keeps the open file, caret, scroll
+  (recorded on scroll: a hidden textarea reads 0), open folders, tree and file
+  cache; returning to a case reopens the file from disk, quietly.
+
 ## 2026-11-14 — v5.9.3: Etc tab
 
 - Released `v5.9.3` (`docs/releases/v5.9.3.md`): the `b37a736` pair, renamed

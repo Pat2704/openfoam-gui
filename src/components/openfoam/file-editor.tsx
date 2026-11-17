@@ -94,6 +94,36 @@ interface FileItem {
   isDir: boolean;
 }
 
+/**
+ * What the editor keeps of each case for the rest of the session.
+ *
+ * page.tsx remounts the editor whenever the open case changes, and that used
+ * to drop everything: going back to a case started from no open file, a closed
+ * tree and an empty cache. The open file is reopened from disk, so nothing
+ * stale is shown, and the cached files are still checked against the disk
+ * before they are used.
+ */
+interface CaseMemory {
+  file: string | null;
+  scrollTop: number;
+  caret: number;
+  expanded: string[];
+  directories: Record<string, FileItem[]>;
+  loaded: string[];
+  cache: Map<string, { content: string; stamp: string }>;
+}
+const caseMemory = new Map<string, CaseMemory>();
+
+/** What the memoised file tree calls; see `treeActions`. */
+interface TreeActions {
+  loadFile: (path: string) => Promise<void>;
+  toggleDir: (path: string) => Promise<void>;
+  toggleDirSelection: (path: string) => void;
+  toggleSelection: (path: string) => void;
+  deleteSingle: (path: string) => Promise<void>;
+  startRename: (path: string, isDir: boolean) => void;
+}
+
 function sameItems(a: FileItem[] | undefined, b: FileItem[] | undefined) {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
@@ -110,21 +140,379 @@ function sameDirectoryMap(a: Record<string, FileItem[]>, b: Record<string, FileI
     && aKeys.every(key => Object.prototype.hasOwnProperty.call(b, key) && sameItems(a[key], b[key]));
 }
 
+interface FileTreeProps {
+  directories: Record<string, FileItem[]>;
+  expandedDirs: Set<string>;
+  loadedDirs: Set<string>;
+  loadingDirs: Set<string>;
+  indexing: boolean;
+  multiSelectMode: boolean;
+  selectedItems: Set<string>;
+  currentFile: string | null;
+  loadFile: (path: string) => void;
+  toggleDir: (path: string) => void;
+  toggleDirSelection: (path: string) => void;
+  toggleSelection: (path: string) => void;
+  deleteSingle: (path: string) => void;
+  startRename: (path: string, isDir: boolean) => void;
+}
+
+/**
+ * The case's file tree. A memoised component of its own so that typing in the
+ * open file does not rebuild it: it used to be redrawn on every keystroke,
+ * every folder, file and icon of it, which on a case with many timesteps made
+ * typing lag. The editor passes stable callbacks (see `treeActions`).
+ */
+const FileTree = React.memo(function FileTree({
+  directories, expandedDirs, loadedDirs, loadingDirs, indexing, multiSelectMode, selectedItems, currentFile,
+  loadFile, toggleDir, toggleDirSelection, toggleSelection, deleteSingle, startRename,
+}: FileTreeProps) {
+  const allDirNames = Object.keys(directories).filter(k => k !== '_root' && !k.includes('/'));
+  const rootFileItems: FileItem[] = directories['_root'] || [];
+
+  // ── Recursive tree renderer ──
+  // Renders items inside a directory at any depth.
+  // dirPath: relative path of the parent directory (e.g. 'constant/polyMesh')
+  // items:   children of that directory
+  // depth:   nesting level (0 = first-level contents, 1 = inside sub-folder, …)
+  const renderTreeItems = (dirPath: string, items: FileItem[], depth: number) => {
+    // Sort: directories first, then files, each group alphabetically
+    const sorted = [...items].sort((a, b) => {
+      if (a.isDir && !b.isDir) return -1;
+      if (!a.isDir && b.isDir) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    return sorted.map(item => {
+      const itemPath = item.path; // full relative path within the case
+
+      if (item.isDir) {
+        // ── Directory node ──
+        const isExpanded = expandedDirs.has(itemPath);
+        const subItems = directories[itemPath] || [];
+        const isLoading = loadingDirs.has(itemPath);
+        // Determine if this is a first-level "standard" dir (special icon)
+        const isStandardDir = depth === 0 && ['0', 'system', 'constant'].includes(item.name);
+
+        return (
+          <div key={itemPath}>
+            <div className="flex items-center gap-0 group">
+              {/* Multi-select checkbox */}
+              {multiSelectMode && (() => {
+                const isSel = selectedItems.has(itemPath);
+                return (
+                  <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleDirSelection(itemPath)} aria-label={`Select ${item.name}/`} aria-pressed={isSel}>
+                    <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'} flex items-center justify-center`}>
+                      {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
+                    </div>
+                  </button>
+                );
+              })()}
+              <button
+                className="w-full flex items-center gap-1 rounded hover:bg-accent text-left text-sm"
+                style={{ paddingLeft: `${8 + depth * 16}px`, paddingRight: '4px' }}
+                onClick={() => toggleDir(itemPath)}
+                aria-expanded={isExpanded}
+                aria-busy={isLoading}
+              >
+                {isExpanded ? <ChevronDown className="w-3 h-3 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 flex-shrink-0" />}
+                {isStandardDir ? (
+                  <FolderPlus className="w-3.5 h-3.5 text-yellow-500 flex-shrink-0" />
+                ) : (
+                  <Folder className="w-3.5 h-3.5 text-yellow-600 flex-shrink-0" />
+                )}
+                <span className="font-medium truncate">{item.name}/</span>
+                {indexing && isLoading && <Loader2 className="w-3 h-3 animate-spin flex-shrink-0 text-primary" aria-hidden="true" />}
+                {subItems.length > 0 && (
+                  <Badge variant="secondary" className="text-[10px] px-1 ml-auto flex-shrink-0">{subItems.length}</Badge>
+                )}
+              </button>
+              {/* Rename works on any folder, standard ones included: a case can
+                  legitimately need 0.orig, and moving a folder is a rename. */}
+              <button
+                type="button"
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
+                onClick={(e) => { e.stopPropagation(); startRename(itemPath, true); }}
+                title="Rename or move folder"
+                aria-label={`Rename folder ${item.name}`}
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+              {/* Delete button for directories (first-level non-standard get icon, nested dirs too) */}
+              {(depth === 0 && !isStandardDir) || depth > 0 ? (
+                <button
+                  type="button"
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                  onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${item.name}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(itemPath); }}
+                  title="Delete folder"
+                  aria-label={`Delete folder ${item.name}`}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              ) : null}
+            </div>
+            {/* Expanded children */}
+            {isExpanded && isLoading && subItems.length === 0 && (
+              <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground" style={{ paddingLeft: `${28 + depth * 16}px` }}>
+                {indexing && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />} Indexing folder…
+              </div>
+            )}
+            {isExpanded && subItems.length > 0 && (
+              <div className="space-y-0">
+                {renderTreeItems(itemPath, subItems, depth + 1)}
+              </div>
+            )}
+            {isExpanded && !isLoading && subItems.length === 0 && loadedDirs.has(itemPath) && (
+              <div className="text-xs text-muted-foreground italic" style={{ paddingLeft: `${28 + depth * 16}px` }}>
+                empty
+              </div>
+            )}
+          </div>
+        );
+      } else {
+        // ── File node ──
+        const isSel = selectedItems.has(itemPath);
+        return (
+          <div key={itemPath} className="flex items-center gap-0 group">
+            {multiSelectMode && (
+              <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleSelection(itemPath)} aria-label={`Select ${item.name}`} aria-pressed={isSel}>
+                <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                  {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
+                </div>
+              </button>
+            )}
+            <button
+              className={`w-full flex items-center gap-1.5 rounded hover:bg-accent text-left text-xs flex-1 min-w-0 ${
+                currentFile === itemPath ? 'bg-accent text-accent-foreground' : ''
+              }`}
+              style={{ paddingLeft: `${28 + depth * 16}px`, paddingRight: '4px' }}
+              onClick={() => loadFile(itemPath)}
+            >
+              <FileText className="w-3 h-3 text-blue-400 flex-shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </button>
+            <button
+              type="button"
+              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
+              onClick={(e) => { e.stopPropagation(); startRename(itemPath, false); }}
+              title="Rename or move file"
+              aria-label={`Rename ${item.name}`}
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+            {/* A real <button>, and it asks first. This was a bare <Trash2> SVG
+                with an onClick: unreachable from the keyboard, nameless to a
+                screen reader, and — unlike the folder delete a few lines above,
+                which has always confirmed — it deleted the file the moment it
+                was clicked. It sits directly beside the row that opens the file
+                and only appears on hover, so a mis-aimed click destroyed a file
+                with no warning and no undo. */}
+            <button
+              type="button"
+              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 mr-1"
+              title={`Delete ${item.name}`}
+              aria-label={`Delete ${item.name}`}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (await confirmDialog(`Delete "${item.name}"? This cannot be undone.`,
+                  { title: 'Delete file', confirmLabel: 'Delete', destructive: true })) {
+                  deleteSingle(itemPath);
+                }
+              }}
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        );
+      }
+    });
+  };
+
+  return (
+  <div className="px-2 py-1 space-y-0">
+    {/* Standard directories rendered first (0, system, constant) */}
+    {['0', 'system', 'constant']
+      .filter(d => allDirNames.includes(d))
+      .map(d => {
+        const items = directories[d] || [];
+        return (
+          <div key={d}>
+            {/* Dir header */}
+            <div className="flex items-center gap-0">
+              {multiSelectMode && (
+                // Same checked look as the other folders below: this box
+                // never showed its state, so 0/, system/ or constant/
+                // could sit in a delete selection unnoticed.
+                <button className="p-0 hover:bg-accent rounded" onClick={() => toggleDirSelection(d)} aria-label={`Select ${d}/`} aria-pressed={selectedItems.has(d)}>
+                  <div className={`w-3 h-3 rounded border ${selectedItems.has(d) ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                    {selectedItems.has(d) && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
+                  </div>
+                </button>
+              )}
+              <button
+                className="w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-sm"
+                onClick={() => toggleDir(d)}
+                aria-expanded={expandedDirs.has(d)}
+                aria-busy={loadingDirs.has(d)}
+              >
+                {expandedDirs.has(d) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <FolderPlus className="w-3.5 h-3.5 text-yellow-500" />
+                <span className="font-medium">{d}/</span>
+                {indexing && loadingDirs.has(d) && <Loader2 className="w-3 h-3 animate-spin text-primary" aria-hidden="true" />}
+                <Badge variant="secondary" className="text-[10px] px-1 ml-auto">{items.length}</Badge>
+              </button>
+            </div>
+            {/* Recursive children (sub-dirs are expandable!) */}
+            {expandedDirs.has(d) && (
+              <>
+                {loadingDirs.has(d) && items.length === 0 && (
+                  <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
+                    {indexing && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />} Indexing folder…
+                  </div>
+                )}
+                {items.length > 0 && (
+                  <div className="space-y-0">
+                    {renderTreeItems(d, items, 1)}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+
+    {/* Other directories (timesteps, processor*, etc.) — sorted numerically then alphabetically */}
+    {allDirNames
+      .filter(d => !['0', 'system', 'constant'].includes(d))
+      .sort((a, b) => {
+        const aNum = parseFloat(a);
+        const bNum = parseFloat(b);
+        if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
+        if (!isNaN(aNum)) return -1;
+        if (!isNaN(bNum)) return 1;
+        return a.localeCompare(b);
+      })
+      .map((dir) => {
+        const items = directories[dir] || [];
+        const isSel = selectedItems.has(dir);
+        return (
+          <div key={`other-${dir}`}>
+            <div className="flex items-center gap-0 group">
+              {multiSelectMode && (
+                <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(dir)} aria-label={`Select ${dir}/`} aria-pressed={isSel}>
+                  <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                    {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
+                  </div>
+                </button>
+              )}
+              <button
+                className="w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-sm"
+                onClick={() => toggleDir(dir)}
+                aria-expanded={expandedDirs.has(dir)}
+                aria-busy={loadingDirs.has(dir)}
+              >
+                {expandedDirs.has(dir) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <Folder className="w-3.5 h-3.5 text-yellow-600" />
+                <span className="font-medium truncate">{dir}/</span>
+                {indexing && loadingDirs.has(dir) && <Loader2 className="w-3 h-3 animate-spin text-primary" aria-hidden="true" />}
+                <Badge variant="secondary" className="text-[10px] px-1 ml-auto">{items.length}</Badge>
+              </button>
+              <button
+                type="button"
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${dir}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(dir); }}
+                title="Delete folder"
+                aria-label={`Delete folder ${dir}`}
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+            {/* Recursive children (sub-dirs are expandable!) */}
+            {expandedDirs.has(dir) && (
+              <>
+                {loadingDirs.has(dir) && items.length === 0 && (
+                  <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
+                    {indexing && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />} Indexing folder…
+                  </div>
+                )}
+                {items.length > 0 && (
+                  <div className="space-y-0">
+                    {renderTreeItems(dir, items, 1)}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+
+    {/* Root files */}
+    {rootFileItems.length > 0 && (
+      <div>
+        <div className="px-2 py-0.5 text-xs text-muted-foreground font-medium">Root files</div>
+        {rootFileItems.map((item: FileItem) => {
+          const isSel = selectedItems.has(item.path);
+          return (
+            <div key={item.path} className="flex items-center gap-0 group">
+              {multiSelectMode && (
+                <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(item.path)} aria-label={`Select ${item.name}`} aria-pressed={isSel}>
+                  <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                    {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
+                  </div>
+                </button>
+              )}
+              <button
+                className={`w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-xs flex-1 min-w-0 ${
+                  currentFile === item.path ? 'bg-accent text-accent-foreground' : ''
+                }`}
+                onClick={() => loadFile(item.path)}
+              >
+                <File className="w-3 h-3" />
+                <span className="truncate">{item.name}</span>
+              </button>
+              {/* Same fix as the tree above: a real button, named, and
+                  it asks before destroying the file. */}
+              <button
+                type="button"
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
+                title={`Delete ${item.name}`}
+                aria-label={`Delete ${item.name}`}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (await confirmDialog(`Delete "${item.name}"? This cannot be undone.`,
+                    { title: 'Delete file', confirmLabel: 'Delete', destructive: true })) {
+                    deleteSingle(item.path);
+                  }
+                }}
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+  );
+});
+
 export default function FileEditor({ caseName, active = true }: { caseName: string; active?: boolean }) {
   const { setActiveFile, setUnsavedFile } = useCaseContext();
   // directories maps a relative dir path to its contents (array of FileItem).
   // First-level dirs: key = dir name (e.g. '0', 'system', 'constant', '0.5')
   // Nested dirs:     key = full relative path (e.g. 'constant/polyMesh')
   // Root-level files: key = '_root'
-  const [directories, setDirectories] = useState<Record<string, FileItem[]>>({});
+  // The editor is keyed by case, so this is read once per visit to the case.
+  const [remembered] = useState(() => caseMemory.get(caseName));
+  const [directories, setDirectories] = useState<Record<string, FileItem[]>>(() => remembered?.directories ?? {});
   const [currentFile, setCurrentFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [treeIndexingRequests, setTreeIndexingRequests] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set(['0', 'system', 'constant']));
-  const [loadedDirs, setLoadedDirs] = useState<Set<string>>(new Set());
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set(remembered?.expanded ?? ['0', 'system', 'constant']));
+  const [loadedDirs, setLoadedDirs] = useState<Set<string>>(() => new Set(remembered?.loaded ?? []));
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const indexing = treeIndexingRequests > 0;
   const [newFileName, setNewFileName] = useState('');
@@ -174,14 +562,16 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
    * file asks `stat` for the current one first: same fingerprint, the cache is
    * used and the read is still saved; different, and the text is re-read.
    */
-  const fileCacheRef = useRef<Map<string, { content: string; stamp: string }>>(new Map());
+  const fileCacheRef = useRef<Map<string, { content: string; stamp: string }>>(remembered?.cache ?? new Map());
   /** Fingerprint of the open file as it was last read or written by this editor. */
   const openStampRef = useRef<string>('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Read by the watcher below, which must not re-subscribe on every keystroke.
   const isModifiedRef = useRef(false);
   const treeFetchRef = useRef<Promise<void> | null>(null);
-  const treeLoadedRef = useRef(false);
+  // A remembered tree is shown at once and refreshed quietly, without the
+  // "Indexing" state of a first visit.
+  const treeLoadedRef = useRef(!!remembered);
   const expandedDirsRef = useRef(expandedDirs);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
   const saveFileRef = useRef<() => Promise<void>>(async () => {});
@@ -496,7 +886,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
     } catch { /* silent */ }
   }, [caseName]);
 
-  const loadFile = async (filePath: string) => {
+  // `quiet`: reopening the file a case was left on, which may since have gone.
+  const loadFile = async (filePath: string, { quiet = false }: { quiet?: boolean } = {}) => {
     if (multiSelectMode) {
       // In multi-select mode, toggle selection
       toggleSelectionRef.current(filePath);
@@ -539,7 +930,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         // used to open as an EMPTY file marked "Saved" — and was cached that
         // way — so the next Save replaced the real file with nothing. Leave
         // whatever is open alone and say why this one did not open.
-        toast.error(data?.error ? `Could not open ${filePath}: ${data.error}` : `Could not open ${filePath}`);
+        if (!quiet) toast.error(data?.error ? `Could not open ${filePath}: ${data.error}` : `Could not open ${filePath}`);
       } else {
         const content = data.content || '';
         // The fingerprint is taken AFTER the read, not before: a write landing
@@ -554,7 +945,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
         setActiveFile({ path: filePath, content });
       }
     } catch {
-      toast.error('Error loading');
+      if (!quiet) toast.error('Error loading');
     }
     setLoading(false);
   };
@@ -929,6 +1320,59 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   }, [regions]);
   useEffect(() => { setFolded(new Set()); }, [currentFile]);
 
+  // ── Leaving the case and coming back (CaseMemory) ──
+  const memoryRef = useRef({ currentFile, expandedDirs, directories, loadedDirs, projection });
+  useLayoutEffect(() => { memoryRef.current = { currentFile, expandedDirs, directories, loadedDirs, projection }; });
+  // The scroll is recorded as it happens (textarea onScroll): the case is
+  // usually changed from another tab, where the hidden textarea reads 0.
+  const scrollTopRef = useRef(0);
+  useEffect(() => { scrollTopRef.current = 0; }, [currentFile]);
+  // A layout cleanup, so the textarea is still attached when it runs.
+  useLayoutEffect(() => {
+    const textarea = textareaRef;
+    const scrollTop = scrollTopRef;
+    return () => {
+      const latest = memoryRef.current;
+      const view = textarea.current;
+      caseMemory.set(caseName, {
+        file: latest.currentFile,
+        scrollTop: scrollTop.current,
+        // In the file's terms: folds are not remembered, so the caret is
+        // restored into the unfolded text.
+        caret: view ? visibleToFull(latest.projection, view.selectionStart) : 0,
+        expanded: [...latest.expandedDirs],
+        directories: latest.directories,
+        loaded: [...latest.loadedDirs],
+        cache: fileCacheRef.current,
+      });
+    };
+  }, [caseName]);
+
+  const restoreRef = useRef(remembered?.file
+    ? { file: remembered.file, scrollTop: remembered.scrollTop, caret: remembered.caret }
+    : null);
+  const loadFileRef = useRef(loadFile);
+  useLayoutEffect(() => { loadFileRef.current = loadFile; });
+  useEffect(() => {
+    const restore = restoreRef.current;
+    if (restore) void loadFileRef.current(restore.file, { quiet: true });
+  }, []);
+  // Applied once the editor is on screen: a hidden textarea ignores scrollTop.
+  useEffect(() => {
+    const restore = restoreRef.current;
+    if (!restore || !active || currentFile !== restore.file) return;
+    const frame = requestAnimationFrame(() => {
+      const view = textareaRef.current;
+      if (!view || !view.offsetParent) return;
+      restoreRef.current = null;
+      const caret = Math.min(restore.caret, view.value.length);
+      view.setSelectionRange(caret, caret);
+      view.scrollTop = restore.scrollTop;
+      scrollTopRef.current = view.scrollTop;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentFile, active]);
+
   // After the projection changed under the caret (a fold toggled, an edit that
   // broke a fold), put the caret back on the text it was on.
   useLayoutEffect(() => {
@@ -1059,7 +1503,6 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
 
   // Build top-level dir list
   const allDirNames = Object.keys(directories).filter(k => k !== '_root' && !k.includes('/'));
-  const rootFileItems: FileItem[] = directories['_root'] || [];
 
   // Directories offered in the "new file" target picker: root + the standard
   // three (always available, even when empty — writeFile creates them on demand)
@@ -1068,163 +1511,29 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
   // the case root or any folder, not only 0/system/constant.
   const fileDirOptions = ['__root__', ...Array.from(new Set(['0', 'system', 'constant', ...allDirNames]))];
 
-  // ── Recursive tree renderer ──
-  // Renders items inside a directory at any depth.
-  // dirPath: relative path of the parent directory (e.g. 'constant/polyMesh')
-  // items:   children of that directory
-  // depth:   nesting level (0 = first-level contents, 1 = inside sub-folder, …)
-  const renderTreeItems = (dirPath: string, items: FileItem[], depth: number) => {
-    // Sort: directories first, then files, each group alphabetically
-    const sorted = [...items].sort((a, b) => {
-      if (a.isDir && !b.isDir) return -1;
-      if (!a.isDir && b.isDir) return 1;
-      return a.name.localeCompare(b.name);
-    });
-
-    return sorted.map(item => {
-      const itemPath = item.path; // full relative path within the case
-
-      if (item.isDir) {
-        // ── Directory node ──
-        const isExpanded = expandedDirs.has(itemPath);
-        const subItems = directories[itemPath] || [];
-        const isLoading = loadingDirs.has(itemPath);
-        // Determine if this is a first-level "standard" dir (special icon)
-        const isStandardDir = depth === 0 && ['0', 'system', 'constant'].includes(item.name);
-
-        return (
-          <div key={itemPath}>
-            <div className="flex items-center gap-0 group">
-              {/* Multi-select checkbox */}
-              {multiSelectMode && (() => {
-                const isSel = selectedItems.has(itemPath);
-                return (
-                  <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleDirSelection(itemPath)} aria-label={`Select ${item.name}/`} aria-pressed={isSel}>
-                    <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'} flex items-center justify-center`}>
-                      {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
-                    </div>
-                  </button>
-                );
-              })()}
-              <button
-                className="w-full flex items-center gap-1 rounded hover:bg-accent text-left text-sm"
-                style={{ paddingLeft: `${8 + depth * 16}px`, paddingRight: '4px' }}
-                onClick={() => toggleDir(itemPath)}
-                aria-expanded={isExpanded}
-                aria-busy={isLoading}
-              >
-                {isExpanded ? <ChevronDown className="w-3 h-3 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 flex-shrink-0" />}
-                {isStandardDir ? (
-                  <FolderPlus className="w-3.5 h-3.5 text-yellow-500 flex-shrink-0" />
-                ) : (
-                  <Folder className="w-3.5 h-3.5 text-yellow-600 flex-shrink-0" />
-                )}
-                <span className="font-medium truncate">{item.name}/</span>
-                {indexing && isLoading && <Loader2 className="w-3 h-3 animate-spin flex-shrink-0 text-primary" aria-hidden="true" />}
-                {subItems.length > 0 && (
-                  <Badge variant="secondary" className="text-[10px] px-1 ml-auto flex-shrink-0">{subItems.length}</Badge>
-                )}
-              </button>
-              {/* Rename works on any folder, standard ones included: a case can
-                  legitimately need 0.orig, and moving a folder is a rename. */}
-              <button
-                type="button"
-                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
-                onClick={(e) => { e.stopPropagation(); startRename(itemPath, true); }}
-                title="Rename or move folder"
-                aria-label={`Rename folder ${item.name}`}
-              >
-                <Pencil className="w-3 h-3" />
-              </button>
-              {/* Delete button for directories (first-level non-standard get icon, nested dirs too) */}
-              {(depth === 0 && !isStandardDir) || depth > 0 ? (
-                <button
-                  type="button"
-                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
-                  onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${item.name}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(itemPath); }}
-                  title="Delete folder"
-                  aria-label={`Delete folder ${item.name}`}
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              ) : null}
-            </div>
-            {/* Expanded children */}
-            {isExpanded && isLoading && subItems.length === 0 && (
-              <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground" style={{ paddingLeft: `${28 + depth * 16}px` }}>
-                {indexing && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />} Indexing folder…
-              </div>
-            )}
-            {isExpanded && subItems.length > 0 && (
-              <div className="space-y-0">
-                {renderTreeItems(itemPath, subItems, depth + 1)}
-              </div>
-            )}
-            {isExpanded && !isLoading && subItems.length === 0 && loadedDirs.has(itemPath) && (
-              <div className="text-xs text-muted-foreground italic" style={{ paddingLeft: `${28 + depth * 16}px` }}>
-                empty
-              </div>
-            )}
-          </div>
-        );
-      } else {
-        // ── File node ──
-        const isSel = selectedItems.has(itemPath);
-        return (
-          <div key={itemPath} className="flex items-center gap-0 group">
-            {multiSelectMode && (
-              <button className="p-0 hover:bg-accent rounded flex-shrink-0" onClick={() => toggleSelection(itemPath)} aria-label={`Select ${item.name}`} aria-pressed={isSel}>
-                <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
-                  {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
-                </div>
-              </button>
-            )}
-            <button
-              className={`w-full flex items-center gap-1.5 rounded hover:bg-accent text-left text-xs flex-1 min-w-0 ${
-                currentFile === itemPath ? 'bg-accent text-accent-foreground' : ''
-              }`}
-              style={{ paddingLeft: `${28 + depth * 16}px`, paddingRight: '4px' }}
-              onClick={() => loadFile(itemPath)}
-            >
-              <FileText className="w-3 h-3 text-blue-400 flex-shrink-0" />
-              <span className="truncate">{item.name}</span>
-            </button>
-            <button
-              type="button"
-              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground transition-opacity flex-shrink-0 mr-1"
-              onClick={(e) => { e.stopPropagation(); startRename(itemPath, false); }}
-              title="Rename or move file"
-              aria-label={`Rename ${item.name}`}
-            >
-              <Pencil className="w-3 h-3" />
-            </button>
-            {/* A real <button>, and it asks first. This was a bare <Trash2> SVG
-                with an onClick: unreachable from the keyboard, nameless to a
-                screen reader, and — unlike the folder delete a few lines above,
-                which has always confirmed — it deleted the file the moment it
-                was clicked. It sits directly beside the row that opens the file
-                and only appears on hover, so a mis-aimed click destroyed a file
-                with no warning and no undo. */}
-            <button
-              type="button"
-              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0 mr-1"
-              title={`Delete ${item.name}`}
-              aria-label={`Delete ${item.name}`}
-              onClick={async (e) => {
-                e.stopPropagation();
-                if (await confirmDialog(`Delete "${item.name}"? This cannot be undone.`,
-                  { title: 'Delete file', confirmLabel: 'Delete', destructive: true })) {
-                  deleteSingle(itemPath);
-                }
-              }}
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
-          </div>
-        );
-      }
-    });
-  };
+  // ── The file tree (FileTree above) ──
+  // Its actions go through a ref that always holds the latest functions, so
+  // they still see the current file and its unsaved state while the callbacks
+  // the memoised tree receives never change.
+  const treeActions = useRef<TreeActions | null>(null);
+  useLayoutEffect(() => {
+    treeActions.current = { loadFile, toggleDir, toggleDirSelection, toggleSelection, deleteSingle, startRename };
+  });
+  const onOpenFile = useCallback((path: string) => void treeActions.current?.loadFile(path), []);
+  const onToggleDir = useCallback((path: string) => void treeActions.current?.toggleDir(path), []);
+  const onSelectDir = useCallback((path: string) => treeActions.current?.toggleDirSelection(path), []);
+  const onSelect = useCallback((path: string) => treeActions.current?.toggleSelection(path), []);
+  const onDelete = useCallback((path: string) => void treeActions.current?.deleteSingle(path), []);
+  const onRename = useCallback((path: string, isDir: boolean) => treeActions.current?.startRename(path, isDir), []);
+  const treeView = (
+    <FileTree
+      directories={directories} expandedDirs={expandedDirs} loadedDirs={loadedDirs}
+      loadingDirs={loadingDirs} indexing={indexing} multiSelectMode={multiSelectMode}
+      selectedItems={selectedItems} currentFile={currentFile}
+      loadFile={onOpenFile} toggleDir={onToggleDir} toggleDirSelection={onSelectDir}
+      toggleSelection={onSelect} deleteSingle={onDelete} startRename={onRename}
+    />
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -1312,170 +1621,7 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
 
         <CardContent aria-busy={indexing} className="p-0 flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
-            <div className="px-2 py-1 space-y-0">
-              {/* Standard directories rendered first (0, system, constant) */}
-              {['0', 'system', 'constant']
-                .filter(d => allDirNames.includes(d))
-                .map(d => {
-                  const items = directories[d] || [];
-                  return (
-                    <div key={d}>
-                      {/* Dir header */}
-                      <div className="flex items-center gap-0">
-                        {multiSelectMode && (
-                          // Same checked look as the other folders below: this box
-                          // never showed its state, so 0/, system/ or constant/
-                          // could sit in a delete selection unnoticed.
-                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleDirSelection(d)} aria-label={`Select ${d}/`} aria-pressed={selectedItems.has(d)}>
-                            <div className={`w-3 h-3 rounded border ${selectedItems.has(d) ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
-                              {selectedItems.has(d) && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
-                            </div>
-                          </button>
-                        )}
-                        <button
-                          className="w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-sm"
-                          onClick={() => toggleDir(d)}
-                          aria-expanded={expandedDirs.has(d)}
-                          aria-busy={loadingDirs.has(d)}
-                        >
-                          {expandedDirs.has(d) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                          <FolderPlus className="w-3.5 h-3.5 text-yellow-500" />
-                          <span className="font-medium">{d}/</span>
-                          {indexing && loadingDirs.has(d) && <Loader2 className="w-3 h-3 animate-spin text-primary" aria-hidden="true" />}
-                          <Badge variant="secondary" className="text-[10px] px-1 ml-auto">{items.length}</Badge>
-                        </button>
-                      </div>
-                      {/* Recursive children (sub-dirs are expandable!) */}
-                      {expandedDirs.has(d) && (
-                        <>
-                          {loadingDirs.has(d) && items.length === 0 && (
-                            <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
-                              {indexing && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />} Indexing folder…
-                            </div>
-                          )}
-                          {items.length > 0 && (
-                            <div className="space-y-0">
-                              {renderTreeItems(d, items, 1)}
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-
-              {/* Other directories (timesteps, processor*, etc.) — sorted numerically then alphabetically */}
-              {allDirNames
-                .filter(d => !['0', 'system', 'constant'].includes(d))
-                .sort((a, b) => {
-                  const aNum = parseFloat(a);
-                  const bNum = parseFloat(b);
-                  if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
-                  if (!isNaN(aNum)) return -1;
-                  if (!isNaN(bNum)) return 1;
-                  return a.localeCompare(b);
-                })
-                .map((dir) => {
-                  const items = directories[dir] || [];
-                  const isSel = selectedItems.has(dir);
-                  return (
-                    <div key={`other-${dir}`}>
-                      <div className="flex items-center gap-0 group">
-                        {multiSelectMode && (
-                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(dir)} aria-label={`Select ${dir}/`} aria-pressed={isSel}>
-                            <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
-                              {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
-                            </div>
-                          </button>
-                        )}
-                        <button
-                          className="w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-sm"
-                          onClick={() => toggleDir(dir)}
-                          aria-expanded={expandedDirs.has(dir)}
-                          aria-busy={loadingDirs.has(dir)}
-                        >
-                          {expandedDirs.has(dir) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                          <Folder className="w-3.5 h-3.5 text-yellow-600" />
-                          <span className="font-medium truncate">{dir}/</span>
-                          {indexing && loadingDirs.has(dir) && <Loader2 className="w-3 h-3 animate-spin text-primary" aria-hidden="true" />}
-                          <Badge variant="secondary" className="text-[10px] px-1 ml-auto">{items.length}</Badge>
-                        </button>
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
-                          onClick={async (e) => { e.stopPropagation(); if (await confirmDialog(`Delete folder "${dir}/" and all its contents?`, { title: 'Delete folder', confirmLabel: 'Delete', destructive: true })) deleteSingle(dir); }}
-                          title="Delete folder"
-                          aria-label={`Delete folder ${dir}`}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                      {/* Recursive children (sub-dirs are expandable!) */}
-                      {expandedDirs.has(dir) && (
-                        <>
-                          {loadingDirs.has(dir) && items.length === 0 && (
-                            <div role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground ml-5">
-                              {indexing && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />} Indexing folder…
-                            </div>
-                          )}
-                          {items.length > 0 && (
-                            <div className="space-y-0">
-                              {renderTreeItems(dir, items, 1)}
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-
-              {/* Root files */}
-              {rootFileItems.length > 0 && (
-                <div>
-                  <div className="px-2 py-0.5 text-xs text-muted-foreground font-medium">Root files</div>
-                  {rootFileItems.map((item: FileItem) => {
-                    const isSel = selectedItems.has(item.path);
-                    return (
-                      <div key={item.path} className="flex items-center gap-0 group">
-                        {multiSelectMode && (
-                          <button className="p-0 hover:bg-accent rounded" onClick={() => toggleSelection(item.path)} aria-label={`Select ${item.name}`} aria-pressed={isSel}>
-                            <div className={`w-3 h-3 rounded border ${isSel ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
-                              {isSel && <span className="text-[8px] text-primary-foreground leading-none">✓</span>}
-                            </div>
-                          </button>
-                        )}
-                        <button
-                          className={`w-full flex items-center gap-1 px-2 py-0.5 rounded hover:bg-accent text-left text-xs flex-1 min-w-0 ${
-                            currentFile === item.path ? 'bg-accent text-accent-foreground' : ''
-                          }`}
-                          onClick={() => loadFile(item.path)}
-                        >
-                          <File className="w-3 h-3" />
-                          <span className="truncate">{item.name}</span>
-                        </button>
-                        {/* Same fix as the tree above: a real button, named, and
-                            it asks before destroying the file. */}
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-red-400 hover:text-red-600 transition-opacity flex-shrink-0"
-                          title={`Delete ${item.name}`}
-                          aria-label={`Delete ${item.name}`}
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            if (await confirmDialog(`Delete "${item.name}"? This cannot be undone.`,
-                              { title: 'Delete file', confirmLabel: 'Delete', destructive: true })) {
-                              deleteSingle(item.path);
-                            }
-                          }}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            {treeView}
           </ScrollArea>
         </CardContent>
 
@@ -1729,6 +1875,8 @@ export default function FileEditor({ caseName, active = true }: { caseName: stri
                   ref={textareaRef}
                   value={projection.visible} onChange={(e) => applyVisible(e.target.value, e.target.selectionEnd)}
                   onScroll={(e) => {
+                    // Kept here: once the tab is hidden the textarea reads 0.
+                    if (e.currentTarget.offsetParent) scrollTopRef.current = e.currentTarget.scrollTop;
                     if (lineNumbersRef.current) {
                       lineNumbersRef.current.scrollTop = e.currentTarget.scrollTop;
                     }

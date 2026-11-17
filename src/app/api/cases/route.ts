@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   listCases,
   listCasesBatch,
-  getCaseInfo,
+  getCaseInfoAsync,
   getTimeStepsOnly,
   getRunDirectory,
   createCase,
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
       case 'info': {
         const name = searchParams.get('name');
         const safeName = validateCaseName(name || '');
-        const info = getCaseInfo(safeName);
+        const info = await getCaseInfoAsync(safeName);
         return NextResponse.json(info);
       }
       case 'timesteps': {

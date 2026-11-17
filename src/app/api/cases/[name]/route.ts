@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  getCaseInfo,
+  getCaseInfoAsync,
   statFile,
-  listDirectory,
+  listDirectoryAsync,
   readFile,
   writeFile,
   createDirectory,
@@ -57,15 +57,15 @@ export async function GET(
         // The editor polls this for the one file it has open, to notice a write
         // by an agent, FOAMy, a script or the user's own terminal.
         const path = searchParams.get('path') || '';
-        return NextResponse.json(statFile(caseName, path));
+        return NextResponse.json(await statFile(caseName, path));
       }
       case 'info': {
-        const info = getCaseInfo(caseName);
+        const info = await getCaseInfoAsync(caseName);
         return NextResponse.json(info);
       }
       case 'ls': {
         const dirPath = searchParams.get('path') || '';
-        const items = listDirectory(caseName, dirPath);
+        const items = await listDirectoryAsync(caseName, dirPath);
         return NextResponse.json({ items });
       }
       case 'logs': {
