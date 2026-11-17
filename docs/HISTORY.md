@@ -20,13 +20,9 @@ audits.
   (recorded on scroll: a hidden textarea reads 0), open folders, tree and file
   cache; returning to a case reopens the file from disk, quietly.
 
-## 2026-11-14 — v5.9.3: Etc tab
-
-- Released `v5.9.3` (`docs/releases/v5.9.3.md`): the `b37a736` pair, renamed
-  without rebuilding (embedded 5.9.2); the v5.9.1 release entry was removed.
-
 ## 2026-11-14 — Etc tab: browse $FOAM_ETC
 
+- Released as `v5.9.3` (the `b37a736` pair renamed, embedded 5.9.2).
 - New `etc` section (`FOAM_SECTIONS` in `src/lib/wsl.ts`: `$FOAM_ETC`, else
   `$WM_PROJECT_DIR/etc`) in the same `OpenFoamBrowser`, as a tab before
   Applications. Ctrl+8 is Etc, Ctrl+9 Applications; Src has no digit now. Tab
@@ -59,13 +55,9 @@ audits.
   HTTP and V8 code caches at start. It uses `original-fs`: Electron's `fs`
   cannot delete `app.asar`. Covered by `tests/housekeeping.test.ts`.
 
-## 2026-11-06 — v5.9.0: agent analyses, File Editor colours, folding and find/replace
-
-- Released `v5.9.0` (`docs/releases/v5.9.0.md`): the `ff35265` pair, renamed
-  without rebuilding (embedded 5.8.2); the v5.8.1 release entry was removed.
-
 ## 2026-11-06 — File Editor: fold arrows in the text, number colour
 
+- Released as `v5.9.0` (the `ff35265` pair renamed, embedded 5.8.2).
 - The fold arrow sits right after each foldable `{` (`BraceBlock.openChar`),
   and a folded block's `▸ ⋯ N lines` opens it; the gutter keeps only numbers.
   To be clickable the layer now lies OVER the textarea, pointer-events none
