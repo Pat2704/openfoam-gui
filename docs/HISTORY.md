@@ -8,6 +8,8 @@ audits.
 
 ## 2026-11-17 — File Editor: faster on large cases, remembers each case
 
+- Released `v5.9.4` (`docs/releases/v5.9.4.md`): the `f9adc81` pair, renamed
+  without rebuilding (embedded 5.9.3); the v5.9.2 release entry was removed.
 - `getCaseInfo`/`listDirectory` forked `basename` per entry (and `grep` per
   folder): 1.5 s on Lab05 combustor2D-spray (~1,400 entries) vs 27 ms with
   `${item##*/}`, same output on four cases. The API routes use the new async
