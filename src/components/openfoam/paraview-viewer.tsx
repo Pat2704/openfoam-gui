@@ -27,6 +27,7 @@ import {
   SquareDashedMousePointer, Trash2, Waves,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { describeReaderPart, isReaderInternalMesh, isReaderPatch } from '@/lib/case-regions';
 
 type Vector3 = [number, number, number];
 type FilterType = Exclude<ParaViewNodeType, 'OpenFOAMReader' | 'CaseFileReader'>;
@@ -888,8 +889,10 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
   const scalarArrays = workbench.arrays.filter(array => array.components === 1);
   const pointScalarArrays = scalarArrays.filter(array => array.association === 'POINTS');
   const pointVectorArrays = workbench.arrays.filter(array => array.association === 'POINTS' && array.components >= 2);
-  const patchRegions = workbench.reader.regions.filter(region => region.startsWith('patch/'));
-  const internalRegion = workbench.reader.regions.find(region => region === 'internalMesh');
+  // A multi-region case names its parts behind their region (/fluid/patch/inlet):
+  // Volume, Patches and Both take every region's.
+  const patchRegions = workbench.reader.regions.filter(isReaderPatch);
+  const internalRegions = workbench.reader.regions.filter(isReaderInternalMesh);
   const meshAxes = (['X', 'Y', 'Z'] as const).map((axis, index) => ({
     axis,
     min: workbench.reader.bounds[index * 2],
@@ -974,14 +977,15 @@ export default function ParaViewViewer({ caseName, active = true, onConfigure }:
           <div className="flex min-h-0 flex-[1.1] flex-col">
             <div className="flex items-center justify-between px-3 py-2"><span className="text-xs font-semibold">Mesh regions</span><Badge variant="outline" className="text-[9px]">{workbench.reader.selectedRegions.length}/{workbench.reader.regions.length}</Badge></div>
             <div className="flex gap-1 px-2 pb-2">
-              <Button size="sm" variant="outline" className="h-6 flex-1 px-1 text-[9px]" disabled={!internalRegion} onClick={() => internalRegion && updateRegions([internalRegion])}>Volume</Button>
+              <Button size="sm" variant="outline" className="h-6 flex-1 px-1 text-[9px]" disabled={!internalRegions.length} onClick={() => updateRegions(internalRegions)}>Volume</Button>
               <Button size="sm" variant="outline" className="h-6 flex-1 px-1 text-[9px]" disabled={patchRegions.length === 0} onClick={() => updateRegions(patchRegions)}>Patches</Button>
-              <Button size="sm" variant="outline" className="h-6 flex-1 px-1 text-[9px]" disabled={!internalRegion || patchRegions.length === 0} onClick={() => updateRegions([internalRegion!, ...patchRegions])}>Both</Button>
+              <Button size="sm" variant="outline" className="h-6 flex-1 px-1 text-[9px]" disabled={!internalRegions.length || patchRegions.length === 0} onClick={() => updateRegions([...internalRegions, ...patchRegions])}>Both</Button>
             </div>
             <ScrollArea className="min-h-0 flex-1"><div className="space-y-1 px-3 pb-3">{workbench.reader.regions.map(region => {
               const id = `pv-region-${region.replace(/[^a-z0-9]/gi, '-')}`;
-              const prefix = region.includes('/') ? region.split('/')[0] : 'mesh';
-              const label = region.includes('/') ? region.slice(region.indexOf('/') + 1) : region;
+              const part = describeReaderPart(region);
+              const prefix = part.region ? `${part.region} · ${part.kind}` : part.kind;
+              const label = part.label;
               return <div key={region} className="flex items-center gap-2 rounded px-1 py-1 hover:bg-muted"><Checkbox id={id} checked={workbench.reader.selectedRegions.includes(region)} onCheckedChange={value => toggleRegion(region, value === true)} /><Label htmlFor={id} className="min-w-0 flex-1 truncate text-[10px]" title={region}>{label}</Label><span className="text-[8px] uppercase text-muted-foreground">{prefix}</span></div>;
             })}</div></ScrollArea>
           </div>

@@ -24,7 +24,7 @@ import { validateCaseName, boundedInteger } from '@/lib/wsl-input';
 //   ?action=data&case=…&dataset=…&file=…      → merged, thinned table + per-column stats
 //   ?action=catalog&refresh=…                 → { entries, utility, options }
 //   ?action=doc&type=…                        → { doc } — the class reference
-//   ?action=context&case=…                    → what the case can be asked
+//   ?action=context&case=…&region=…           → what the case (or one of its regions) can be asked
 //
 // POST /api/postprocess
 //   { action: 'run', case, spec, time, fields, region, solver,
@@ -131,7 +131,8 @@ export async function GET(req: NextRequest) {
 
       case 'context': {
         const caseName = validateCaseName(searchParams.get('case') || '');
-        return NextResponse.json(getPostProcessContext(caseName));
+        // A multi-region case: the context of one region (the first by default).
+        return NextResponse.json(getPostProcessContext(caseName, searchParams.get('region') || ''));
       }
 
       default:

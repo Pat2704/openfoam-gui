@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAllResiduals, parseResidualEvents, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
+import { getLastSimTime, parseAllResiduals, parseResidualEvents, residualLogDomain, residualsToTable } from '../src/lib/residuals.ts';
 
 // The shape `foamRun` writes, which is what almost every log looks like.
 const FOAM_RUN_LOG = `
@@ -189,4 +189,55 @@ test('a single residual value still spans a decade', () => {
   const { domain } = residualLogDomain([{ time: 1, p: 1e-5 }], ['p']);
   assert.equal(domain[0], 1e-5);
   assert.ok(domain[1] > domain[0]);
+});
+
+// ── Multi-region logs ──
+
+test('foamMultiRun: each region keeps its own residuals, and the indented Time lines count', () => {
+  // As OpenFOAM 14's foamMultiRun writes it (combustor2D-film): the region
+  // before every line one region wrote, the shared ones indented.
+  const log = [
+    'film  Courant Number mean: 0 max: 0',
+    'fluid Courant Number mean: 0.0024 max: 0.038',
+    '      deltaT = 1.19904e-06',
+    '      Time = 1.19904e-06s',
+    '',
+    'film  DILUPBiCGStab:  Solving for Ux, Initial residual = 1, Final residual = 3e-20, No Iterations 1',
+    'fluid smoothSolver:  Solving for Ux, Initial residual = 0.0013, Final residual = 8e-06, No Iterations 1',
+    'fluid GAMG:  Solving for p_rgh, Initial residual = 0.0025, Final residual = 5e-05, No Iterations 1',
+    'fluid GAMG:  Solving for p_rgh, Initial residual = 9e-05, Final residual = 4e-07, No Iterations 3',
+    '      ExecutionTime = 1.02 s  ClockTime = 1 s',
+    '      Time = 2.63616e-06s',
+    'film  DILUPBiCGStab:  Solving for Ux, Initial residual = 0.5, Final residual = 3e-20, No Iterations 1',
+    'fluid smoothSolver:  Solving for Ux, Initial residual = 0.001, Final residual = 8e-06, No Iterations 1',
+  ].join('\n');
+  const { data, fields } = parseAllResiduals(log);
+  assert.deepEqual(fields, ['film/Ux', 'fluid/Ux', 'fluid/p_rgh']);
+  assert.deepEqual(data.map(p => p.time), [1.19904e-06, 2.63616e-06]);
+  assert.deepEqual([data[0]['film/Ux'], data[0]['fluid/Ux'], data[0]['fluid/p_rgh']], [1, 0.0013, 0.0025]);
+  assert.equal(parseAllResiduals(log, { kind: 'final' }).data[0]['fluid/p_rgh'], 4e-07);
+  assert.equal(getLastSimTime(log), '2.63616e-06');
+});
+
+test('chtMultiRegionFoam (9–10): the region announced before its block names its solves', () => {
+  const log = [
+    'Time = 1',
+    '',
+    'Solving for fluid region bottomAir',
+    'DILUPBiCG:  Solving for h, Initial residual = 0.1, Final residual = 1e-05, No Iterations 2',
+    '',
+    'Solving for solid region heater',
+    'DICPCG:  Solving for h, Initial residual = 0.02, Final residual = 1e-06, No Iterations 4',
+    'Time = 2',
+    'DILUPBiCG:  Solving for h, Initial residual = 0.05, Final residual = 1e-05, No Iterations 2',
+  ].join('\n');
+  const { data, fields } = parseAllResiduals(log);
+  assert.deepEqual(fields, ['bottomAir/h', 'heater/h', 'h'], 'an unannounced solve after a new step has no region');
+  assert.deepEqual([data[0]['bottomAir/h'], data[0]['heater/h']], [0.1, 0.02]);
+});
+
+test('the simulated time is the last Time line, not ExecutionTime or ClockTime', () => {
+  const log = 'Time = 0.005s\n\nsmoothSolver:  Solving for Ux, Initial residual = 1\nExecutionTime = 12.4 s  ClockTime = 13 s\n';
+  assert.equal(getLastSimTime(log), '0.005', 'it used to read 13, the clock time');
+  assert.equal(getLastSimTime('blockMesh only\n'), '');
 });

@@ -80,8 +80,10 @@ function lineClass(line: string): string {
   if (/^\s*-->\s*FOAM Warning/.test(line)) return 'text-warning';
   if (/^\s*FOAM exiting/.test(line)) return 'text-danger/80';
   // The solver's own clock: the line you look for when scrolling a long log.
-  if (/^Time = /.test(line)) return 'text-accent2 font-semibold';
-  if (/^(Courant Number|deltaT|ExecutionTime)/.test(line)) return 'text-muted-foreground';
+  // foamMultiRun indents the lines no single region wrote, and puts the
+  // region's name before the ones it did (`fluid Courant Number …`).
+  if (/^\s*Time = /.test(line)) return 'text-accent2 font-semibold';
+  if (/^\s*(?:[A-Za-z_][\w.:-]*\s+)?(Courant Number|deltaT|ExecutionTime)/.test(line)) return 'text-muted-foreground';
   // Convergence, and the end of a run.
   if (/(solution singularity|Final residual = |converged in)/.test(line)) return 'text-foreground/60';
   if (/^\s*End\s*$/.test(line)) return 'text-success font-semibold';
@@ -639,24 +641,41 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
   // in the case's controlDict, so on those installations the two run buttons
   // use that name, and disappear if it cannot be read. An unknown version
   // keeps foamRun — the same call flavourForVersion makes for the wizard.
+  //
+  // The case's layout decides the rest. A multi-region case runs with
+  // foamMultiRun (v11 on) rather than foamRun, and has no constant/polyMesh:
+  // checkMesh needs -region, decomposePar and reconstructPar -allRegions. The
+  // buttons used to offer foamRun and plain checkMesh on such a case, both of
+  // which stop with an error.
   const isLegacy = flavourForVersion(foamMajorVersion) === 'legacy';
-  const [legacyApp, setLegacyApp] = useState<string | null>(null);
+  const [layout, setLayout] = useState<{ application: string; regions: string[]; multiRegion: boolean } | null>(null);
   useEffect(() => {
-    if (!isLegacy || !caseName) { setLegacyApp(null); return; }
+    if (!caseName) { setLayout(null); return; }
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=read&path=${encodeURIComponent('system/controlDict')}`, { cache: 'no-store' });
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseName)}?action=regions`, { cache: 'no-store' });
         const data = res.ok ? await res.json() : null;
-        const match = typeof data?.content === 'string' ? data.content.match(/^\s*application\s+([A-Za-z][\w.-]*)\s*;/m) : null;
-        if (!cancelled) setLegacyApp(match ? match[1] : null);
+        if (cancelled) return;
+        const regions: string[] = Array.isArray(data?.regions) ? data.regions : [];
+        setLayout({
+          application: typeof data?.application === 'string' ? data.application : '',
+          regions,
+          multiRegion: regions.length > 0 && !data?.defaultMesh,
+        });
       } catch {
-        if (!cancelled) setLegacyApp(null);
+        if (!cancelled) setLayout(null);
       }
     })();
     return () => { cancelled = true; };
-  }, [isLegacy, caseName]);
-  const runner = isLegacy ? legacyApp : 'foamRun';
+  }, [caseName]);
+  const runner = isLegacy
+    ? (layout?.application || null)
+    : layout?.application === 'foamMultiRun' ? 'foamMultiRun' : 'foamRun';
+  const multiRegion = layout?.multiRegion ?? false;
+  const allRegions = multiRegion ? ' -allRegions' : '';
+  const paraFoamCmd = !multiRegion ? 'paraFoam'
+    : (foamMajorVersion ?? 0) >= 14 ? 'paraFoam -allRegions' : `paraFoam -region ${layout!.regions[0]}`;
 
   const quickCommands = [
     ...(runner ? [
@@ -668,10 +687,13 @@ export default function CommandPanel({ caseName, onScriptStarted }: {
     // ("Deprecated option, this is now default behaviour" in its own -help),
     // and overwriting IS the default now — -noOverwrite is the opt-out.
     { label: 'snappyHexMesh', cmd: 'snappyHexMesh', icon: <Grid3x3 className="w-3 h-3" /> },
-    { label: 'checkMesh', cmd: 'checkMesh', icon: <Zap className="w-3 h-3" /> },
-    { label: 'decomposePar', cmd: 'decomposePar', icon: <Layers className="w-3 h-3" /> },
-    { label: 'reconstructPar', cmd: 'reconstructPar', icon: <Layers className="w-3 h-3" /> },
-    { label: 'paraFoam', cmd: 'paraFoam', icon: <Grid3x3 className="w-3 h-3" /> },
+    ...(multiRegion
+      ? layout!.regions.slice(0, 6).map(region => ({ label: `checkMesh -region ${region}`, cmd: `checkMesh -region ${region}`, icon: <Zap className="w-3 h-3" /> }))
+      : [{ label: 'checkMesh', cmd: 'checkMesh', icon: <Zap className="w-3 h-3" /> }]),
+    { label: `decomposePar${allRegions}`, cmd: `decomposePar${allRegions}`, icon: <Layers className="w-3 h-3" /> },
+    { label: `reconstructPar${allRegions}`, cmd: `reconstructPar${allRegions}`, icon: <Layers className="w-3 h-3" /> },
+    // -allRegions is in paraFoam's own -help on 14; -region is in every version.
+    { label: paraFoamCmd, cmd: paraFoamCmd, icon: <Grid3x3 className="w-3 h-3" /> },
   ];
 
   if (!caseName) {

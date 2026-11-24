@@ -156,6 +156,9 @@ interface ClassDoc {
 /** What the open case can be asked, for the examples and the command. */
 interface CaseContext {
   solver: string;
+  /** A multi-region case's regions, and the one the rest of this describes. */
+  regions?: string[];
+  region?: string;
   times: string[];
   patches: string[];
   fields: string[];
@@ -395,6 +398,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
    * graph functions were offered a line from `(0 0 0)` to `(0 0 0)`.
    */
   const [context, setContext] = useState<CaseContext | null>(null);
+  /** The region a function runs on, in a multi-region case ('' = the first). */
+  const [ppRegion, setPpRegion] = useState('');
   /** Which spelling of the utility this OpenFOAM has, and what it accepts. */
   const [utility, setUtility] = useState<string>(POST_PROCESS_NAMES[0]);
   const [utilityOptions, setUtilityOptions] = useState<string[]>([]);
@@ -520,7 +525,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     // builds is made of these, so a call it offers names things that exist.
     if ((force || !context) && caseName) {
       const contextRequest = ++contextRequestRef.current;
-      void fetch(`/api/postprocess?action=context&case=${encodeURIComponent(caseName)}`)
+      void fetch(`/api/postprocess?action=context&case=${encodeURIComponent(caseName)}&region=${encodeURIComponent(ppRegion)}`)
         .then(response => (response.ok ? response.json() : null))
         .then(payload => {
           if (payload && contextRequest === contextRequestRef.current) setContext(payload as CaseContext);
@@ -546,7 +551,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
         toast.error(e instanceof Error ? e.message : 'Could not read the function catalogue');
       }
     }
-  }, [catalog.length, caseName, context]);
+  }, [catalog.length, caseName, context, ppRegion]);
 
   /**
    * The solver to construct during a replay, when there is one to name.
@@ -564,6 +569,8 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     () => (utilityOptions.includes('-solver') ? context?.solver || '' : ''),
     [utilityOptions, context],
   );
+  /** The region the command names, in a multi-region case. */
+  const replayRegion = context?.region || '';
 
   const openCatalog = useCallback(async () => {
     setCatalogOpen(true);
@@ -627,10 +634,10 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
   useEffect(() => {
     if (catalogOpen || !chosen) return;
     const call = buildCallTemplate(chosen.name, chosen.args, context ?? {});
-    setCommandText(buildCommandTemplate(utility, call, { solver: replaySolver }));
+    setCommandText(buildCommandTemplate(utility, call, { solver: replaySolver, region: replayRegion }));
     setEntryText(buildFunctionsEntry(call));
     setRunOutput(null);
-  }, [catalogOpen, chosen, context, utility, replaySolver]);
+  }, [catalogOpen, chosen, context, utility, replaySolver, replayRegion]);
 
   const chooseFunction = (entry: CatalogEntry) => {
     const docRequest = ++docRequestRef.current;
@@ -641,7 +648,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
     // fields and coordinates this case actually has. The user edits the text,
     // not a set of invented controls.
     const call = buildCallTemplate(entry.name, entry.args, context ?? {});
-    setCommandText(buildCommandTemplate(utility, call, { solver: replaySolver }));
+    setCommandText(buildCommandTemplate(utility, call, { solver: replaySolver, region: replayRegion }));
     setEntryText(buildFunctionsEntry(call));
 
     // The class reference behind it, fetched per function rather than with the
@@ -1560,7 +1567,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                          `name=`, which is why the panel insists on keeping it. */
                       <p className="text-[10px] leading-snug text-muted-foreground">
                         Writes under
-                        <code className="mx-1 font-mono text-foreground">postProcessing/{chosen.name}/&lt;time&gt;/</code>
+                        <code className="mx-1 font-mono text-foreground">postProcessing/{replayRegion ? `${replayRegion}/` : ''}{chosen.name}/&lt;time&gt;/</code>
                         — the name in the call is the directory, and this tab reads it back.
                       </p>
                     )}
@@ -1570,13 +1577,52 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                         boxes for -time and -fields used to sit beside a call
                         they were not part of, which is what made them read as
                         noise. Editing the line is editing the run. */}
+                    {/* A multi-region case: which region's mesh and fields the
+                        function runs on. Its patches, fields and solver module
+                        are the ones the command is built from. */}
+                    {context?.regions && context.regions.length > 0 && (
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="pp-region" className="text-[11px]">Region</Label>
+                        <Select
+                          value={replayRegion}
+                          onValueChange={value => {
+                            setPpRegion(value);
+                            const contextRequest = ++contextRequestRef.current;
+                            void fetch(`/api/postprocess?action=context&case=${encodeURIComponent(caseName)}&region=${encodeURIComponent(value)}`)
+                              .then(response => (response.ok ? response.json() : null))
+                              .then(payload => {
+                                if (!payload || contextRequest !== contextRequestRef.current) return;
+                                const next = payload as CaseContext;
+                                setContext(next);
+                                // Choosing a region is choosing what to run on: the
+                                // command and the entry are rebuilt for it.
+                                if (chosen) {
+                                  const call = buildCallTemplate(chosen.name, chosen.args, next);
+                                  setCommandText(buildCommandTemplate(utility, call, {
+                                    solver: utilityOptions.includes('-solver') ? next.solver || '' : '',
+                                    region: next.region || '',
+                                  }));
+                                  setEntryText(buildFunctionsEntry(call));
+                                }
+                              })
+                              .catch(() => { /* the command keeps the previous region */ });
+                          }}
+                        >
+                          <SelectTrigger id="pp-region" className="h-7 w-40 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {context.regions.map(region => <SelectItem key={region} value={region} className="text-xs">{region}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <span className="text-[10px] text-muted-foreground">multi-region case: the function runs on one region</span>
+                      </div>
+                    )}
                     <div>
                       <div className="flex items-center gap-2">
                         <Label htmlFor="pp-command" className="text-[11px]">Run it now, over the times already written</Label>
                         <Button
                           size="sm" variant="ghost" className="ml-auto h-6 px-1.5 text-[10px]"
                           onClick={() => setCommandText(buildCommandTemplate(
-                            utility, buildCallTemplate(chosen.name, chosen.args, context ?? {}), { solver: replaySolver },
+                            utility, buildCallTemplate(chosen.name, chosen.args, context ?? {}), { solver: replaySolver, region: replayRegion },
                           ))}
                         >
                           <RefreshCw className="mr-1 h-3 w-3" /> Reset
@@ -1743,7 +1789,7 @@ export default function PostProcess({ caseName, active = true }: { caseName: str
                                 className="block w-full break-all rounded px-1 py-0.5 text-left font-mono text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
                                 title="Use this call"
                                 onClick={() => {
-                                  setCommandText(buildCommandTemplate(utility, example, { solver: replaySolver }));
+                                  setCommandText(buildCommandTemplate(utility, example, { solver: replaySolver, region: replayRegion }));
                                   setEntryText(buildFunctionsEntry(example));
                                 }}
                               >

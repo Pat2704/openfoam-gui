@@ -21,6 +21,7 @@ import {
 } from './wsl';
 import { shellQuote, validateLogName, WslInputError } from './wsl-input';
 import { parseCheckMeshOutput } from './check-mesh';
+import { regionOption } from './case-regions';
 import { isTimeSeries, mergeRestarts, parseFoamTable, summarizeColumn } from './postprocess';
 import {
   checkMeshQualityLines,
@@ -136,9 +137,23 @@ export async function summarizePostProcessing(caseName: string): Promise<string>
  * when the case keeps its mesh in a time directory (snappyHexMesh without
  * -overwrite, a moving mesh), so the mesh checked is the one the case uses.
  */
-async function checkMeshQuality(casePath: string, latestTime: boolean): Promise<MeshQuality> {
+async function checkMeshQuality(casePath: string, latestTime: boolean, regions: readonly string[] = ['']): Promise<MeshQuality> {
+  if (regions.length > 1 || regions[0]) {
+    // A multi-region case: one checkMesh per region, read as one report.
+    const each: [string, MeshQuality][] = [];
+    for (const region of regions) each.push([region, await checkMeshQuality(casePath, latestTime, [region])]);
+    const errors = each.filter(([, q]) => q.error).map(([r, q]) => `${r}: ${q.error}`);
+    return {
+      ok: each.every(([, q]) => q.ok),
+      ran: each.some(([, q]) => q.ran),
+      ...(errors.length ? { error: errors.join(' | ') } : {}),
+      stats: each.flatMap(([r, q]) => q.stats.map(s => ({ key: `${r}: ${s.key}`, value: s.value }))),
+      failed: each.flatMap(([r, q]) => q.failed.map(f => ({ ...f, message: `[${r}] ${f.message}` }))),
+      lines: each.flatMap(([r, q]) => q.lines.map(l => `[${r}] ${l}`)),
+    };
+  }
   const script = `cd -- ${shellQuote(casePath)} || { echo "the case folder was not found" >&2; exit 1; }
-${foamSource()}checkMesh${latestTime ? ' -latestTime' : ''} 2>&1
+${foamSource()}checkMesh${regionOption(regions[0] ?? '')}${latestTime ? ' -latestTime' : ''} 2>&1
 echo "__CHECKMESH_EXIT__$?"
 exit 0
 `;
@@ -161,12 +176,15 @@ exit 0
 export async function summarizeMesh(caseName: string, quality: boolean): Promise<string> {
   const casePath = getCasePath(caseName);
   const digest = parseMeshDigest(await run(meshDigestScript(casePath), 300000));
-  const hasMesh = digest.hasRoot || digest.timeMeshes.length > 0;
+  // A multi-region case reports one digest per region; checkMesh runs on each.
+  const meshes = [digest, ...(digest.regions ?? [])].filter(d => d.hasRoot || d.timeMeshes.length > 0);
+  const hasMesh = meshes.length > 0;
+  const regions = digest.region ? meshes.map(d => d.region ?? '') : [''];
 
   let check: MeshQuality | null = null;
   if (quality) {
     check = hasMesh
-      ? await checkMeshQuality(casePath, digest.timeMeshes.length > 0)
+      ? await checkMeshQuality(casePath, meshes.some(d => d.timeMeshes.length > 0), regions)
       : {
           ok: false, ran: false, stats: [], failed: [], lines: [],
           error: digest.processors.length
@@ -179,7 +197,7 @@ export async function summarizeMesh(caseName: string, quality: boolean): Promise
   // case runs on a mesh in a time directory those are different patches, and
   // the comparison would report problems that are not there.
   let bc: string[] | null = null;
-  if (digest.hasRoot && !digest.latestTimeMesh) {
+  if (digest.hasRoot && !meshes.some(d => d.latestTimeMesh)) {
     try {
       const result = validateBoundaryConditions(caseName);
       if (result.meshChecked !== false) {

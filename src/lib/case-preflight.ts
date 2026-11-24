@@ -17,6 +17,7 @@ import {
 } from './foam-index';
 import {
   getCaseInfo,
+  getCaseRegions,
   readCasePreflightFiles,
   validateBoundaryConditions,
   type BCValidationResult,
@@ -24,6 +25,7 @@ import {
   type CasePreflightFiles,
 } from './wsl';
 import { entries, parseFieldFile, stripComments } from './wizard/foam-dict';
+import type { CaseRegions } from './case-regions';
 
 export type PreflightSeverity = 'error' | 'warning' | 'unverified';
 export type PreflightStatus = 'pass' | PreflightSeverity;
@@ -75,6 +77,8 @@ export interface PreflightAnalysisInput {
   syntaxCandidateCount: number;
   syntaxUnavailableReason?: string | null;
   boundary: BCValidationResult | null;
+  /** The case's mesh regions; absent or empty for a single-region case. */
+  regions?: CaseRegions;
 }
 
 const CATEGORY = {
@@ -140,6 +144,8 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
     caseName, index, inventory, directories, meshPresent, syntax,
     syntaxAttempted, syntaxPaths, syntaxCandidateCount, syntaxUnavailableReason, boundary,
   } = input;
+  const regionNames = input.regions?.regions ?? [];
+  const multiRegion = regionNames.length > 0 && !input.regions?.defaultMesh;
   const issues: PreflightIssue[] = [];
   let serial = 0;
   const add = (issue: Omit<PreflightIssue, 'id'>) => {
@@ -249,9 +255,33 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
       suggestion: 'The preflight validates the surrounding dictionaries but does not execute custom code.' });
   }
 
-  const selectedKey = major >= 11 ? 'solver' : 'application';
-  const selected = valueOf(control, selectedKey);
-  if (control && !selected) {
+  // foamMultiRun (v11 on) has no top-level `solver`: it runs one module per
+  // region, named in regionSolvers. Each of those is checked instead — the
+  // missing `solver` used to be reported as an error on every such case.
+  const regionSolvers = (() => {
+    const block = topEntries(control).find(item => item.key === 'regionSolvers' && item.kind === 'dict');
+    return block ? entries(block.body).filter(item => item.kind === 'value').map(item => ({ region: item.key, solver: item.body.trim() })) : [];
+  })();
+  const application = valueOf(control, 'application');
+  const multiRun = major >= 11 && (regionSolvers.length > 0 || application === 'foamMultiRun');
+  const selectedKey = multiRun ? 'regionSolvers' : major >= 11 ? 'solver' : 'application';
+  const selected = multiRun ? (regionSolvers.length ? regionSolvers.map(r => `${r.region}: ${r.solver}`).join(', ') : null) : valueOf(control, selectedKey);
+  if (multiRun) {
+    if (!regionSolvers.length) {
+      add({ severity: 'error', category: CATEGORY.runtime, title: 'regionSolvers is missing',
+        message: 'application is foamMultiRun, which needs a regionSolvers dictionary naming the solver module of each region.',
+        file: 'system/controlDict', suggestion: 'Add regionSolvers { <region> <module>; … } to system/controlDict.' });
+    }
+    for (const { region, solver } of regionSolvers) {
+      if (!index.solvers.includes(solver)) {
+        add({ severity: 'unverified', category: CATEGORY.runtime,
+          title: `${solver} was not found in the selected installation`,
+          message: `regionSolvers gives region ${region} the module ${solver}, which is absent from the OpenFOAM ${index.version} catalogue.`,
+          file: 'system/controlDict',
+          suggestion: hasCustomRuntime ? 'Confirm that a case library supplies it.' : 'Confirm any user-installed module, or select a catalogued one.' });
+      }
+    }
+  } else if (control && !selected) {
     add({ severity: 'error', category: CATEGORY.runtime, title: `${selectedKey} is not selected`,
       message: `OpenFOAM ${index.version} expects a top-level ${selectedKey} entry in system/controlDict.`,
       file: 'system/controlDict', suggestion: `Set ${selectedKey} to a module/application supplied by this installation.` });
@@ -346,15 +376,24 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
   }
 
   // ── Mesh and decomposition ──────────────────────────────────────────────
+  // A mesh dictionary in system/ or, for a region, in system/<region>/.
+  const hasMeshRecipe = inventory.files.some(file => /^system\/(?:[^/]+\/)?(?:blockMeshDict|snappyHexMeshDict)$/.test(file.path));
+  const meshPlace = multiRegion ? 'constant/<region>/polyMesh' : 'constant/polyMesh';
   if (!meshPresent) {
-    const hasMeshRecipe = Boolean(fileMap.get('system/blockMeshDict') || fileMap.get('system/snappyHexMeshDict'));
     add({ severity: hasMeshRecipe ? 'warning' : 'unverified', category: CATEGORY.parallel,
       title: 'No reconstructed mesh is present',
       message: hasMeshRecipe
-        ? 'A mesh dictionary exists, but constant/polyMesh is not present yet.'
-        : 'constant/polyMesh is absent and no supported mesh recipe was found in system/.',
+        ? `A mesh dictionary exists, but ${meshPlace} is not present yet.`
+        : `${meshPlace} is absent and no supported mesh recipe was found in system/.`,
       suggestion: hasMeshRecipe ? 'Build the mesh, then rerun preflight for boundary matching.' : 'Provide or generate the mesh before solving.' });
   } else {
+    if (multiRegion) {
+      for (const region of regionNames.filter(name => !input.regions?.meshRegions.includes(name))) {
+        add({ severity: 'warning', category: CATEGORY.parallel, title: `Region ${region} has no mesh yet`,
+          message: `constant/${region}/polyMesh is not present.`,
+          suggestion: 'Build or split the mesh of every region before solving.' });
+      }
+    }
     add({ severity: 'unverified', category: CATEGORY.parallel, title: 'Mesh quality was not executed',
       message: 'The mesh exists and boundary coverage can be checked, but this fast preflight deliberately does not run checkMesh.',
       suggestion: 'Use “Run checkMesh” in the Mesh tab when a quality assessment is required.' });
@@ -430,7 +469,9 @@ export async function runCasePreflight(caseName: string): Promise<CasePreflightR
   const info = getCaseInfo(caseName);
   if (!info.exists) throw new Error(`Case "${caseName}" was not found.`);
   const constantItems = info.files.constant || [];
-  const meshPresent = constantItems.some(item => item.isDir && item.name === 'polyMesh');
+  // constant/polyMesh, or a region's constant/<region>/polyMesh.
+  const regions = getCaseRegions(caseName);
+  const meshPresent = constantItems.some(item => item.isDir && item.name === 'polyMesh') || regions.meshRegions.length > 0;
   const syntaxCandidates = inventory.files.filter(isDictionaryCandidate);
   // Starting one OpenFOAM parser per file is the only potentially noticeable
   // phase. Keep it strictly bounded; excess candidates are reported as
@@ -467,6 +508,7 @@ export async function runCasePreflight(caseName: string): Promise<CasePreflightR
     syntaxCandidateCount: syntaxCandidates.length,
     syntaxUnavailableReason,
     boundary,
+    regions,
   });
   return { ...report, checkedAt: new Date().toISOString(), durationMs: Date.now() - started };
 }

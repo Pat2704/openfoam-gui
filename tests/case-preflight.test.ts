@@ -182,3 +182,55 @@ describe('case preflight analysis', () => {
     assert.equal(isDictionaryCandidate(file('system/helper', '#!/bin/bash\necho ok')), false);
   });
 });
+
+describe('a multi-region case', () => {
+  // foamMultiRun, as OpenFOAM 14 lays such a case out: no top-level `solver`,
+  // a module per region in regionSolvers, schemes and fields per region.
+  const MULTI_CONTROL = CONTROL.replace('solver          incompressibleFluid;',
+    'application     foamMultiRun;\nregionSolvers\n{\n    film film;\n    fluid incompressibleFluid;\n}');
+  const multiInput = (meshRegions: string[]) => {
+    const files = [
+      file('system/controlDict', MULTI_CONTROL),
+      file('system/fluid/fvSchemes', 'FoamFile { class dictionary; object fvSchemes; }\nddtSchemes { default Euler; }'),
+      file('system/fluid/fvSolution', 'FoamFile { class dictionary; object fvSolution; }\nsolvers {}'),
+      file('system/fluid/blockMeshDict', 'FoamFile { class dictionary; object blockMeshDict; }'),
+      file('0/fluid/U', U),
+    ];
+    return validInput({
+      inventory: { initialTime: '0', files, skipped: [], totalFiles: files.length, inventoryTruncated: false },
+      meshPresent: meshRegions.length > 0,
+      syntaxPaths: files.map(item => item.path),
+      syntaxCandidateCount: files.length,
+      regions: { regions: ['film', 'fluid'], meshRegions, defaultMesh: false, application: 'foamMultiRun' },
+      boundary: {
+        success: true, meshChecked: true, meshPatches: ['fluid/walls'], warnings: [],
+        fields: [{ name: 'fluid/U', patches: [{ patch: 'walls', type: 'fixedValue', valid: false, note: 'x' }] }],
+      },
+    });
+  };
+
+  test('its regionSolvers stand for the solver, each module checked against the installation', () => {
+    const report = analyzeCasePreflight(multiInput(['film', 'fluid']));
+    assert.ok(!report.issues.some(issue => /solver is not selected/.test(issue.title)), 'foamMultiRun has no top-level solver');
+    const missing = report.issues.filter(issue => /was not found in the selected installation/.test(issue.title));
+    assert.deepEqual(missing.map(issue => issue.title), ['film was not found in the selected installation'],
+      'film is not in this fixture installation; incompressibleFluid is');
+    const complete = analyzeCasePreflight({ ...multiInput(['film', 'fluid']), index: { ...INDEX, solvers: ['film', 'incompressibleFluid'] } });
+    assert.match(complete.sections.find(section => section.id === 'runtime')!.summary, /regionSolvers film: film, fluid: incompressibleFluid/);
+  });
+
+  test('a mesh in a region is a mesh; a region without one is named', () => {
+    const report = analyzeCasePreflight(multiInput(['fluid']));
+    assert.ok(!report.issues.some(issue => issue.title === 'No reconstructed mesh is present'));
+    assert.ok(report.issues.some(issue => issue.title === 'Region film has no mesh yet'));
+    const none = analyzeCasePreflight(multiInput([]));
+    const noMesh = none.issues.find(issue => issue.title === 'No reconstructed mesh is present')!;
+    assert.match(noMesh.message, /constant\/<region>\/polyMesh/);
+    assert.equal(noMesh.severity, 'warning', 'system/fluid/blockMeshDict is a mesh recipe');
+  });
+
+  test('a boundary finding points at the region field', () => {
+    const report = analyzeCasePreflight(multiInput(['film', 'fluid']));
+    assert.equal(report.issues.find(issue => issue.title === 'Boundary entry does not match the mesh')?.file, '0/fluid/U');
+  });
+});

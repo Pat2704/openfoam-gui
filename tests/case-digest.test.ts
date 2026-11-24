@@ -33,6 +33,7 @@ import {
   type FieldFileRecord,
 } from '../src/lib/case-digest.ts';
 import { buildAnalysisRequest, buildResultsAnalysisRequest } from '../src/lib/agent-analysis.ts';
+import { CASE_REGIONS_REPORT_SH, parseCaseRegions } from '../src/lib/case-regions.ts';
 
 describe('names and times', () => {
   test('time and field names are what OpenFOAM writes, and nothing a shell could read', () => {
@@ -443,6 +444,76 @@ describe('the digest scripts in WSL', { skip: !wslAvailable() && 'WSL is not ava
       assert.deepEqual(zero.boundary.map(b => [b.patch, b.type, b.value]), [['inlet', 'fixedValue', 'uniform (1 0 0)'], ['frontAndBack', 'empty', '']]);
       assert.match(renderFieldDigest(d), /k \(Scalar, 1\).*1 NaN\/inf values; NEGATIVE/, 'only the read values are counted');
     } finally { cleanup(); }
+  });
+
+  // A foamMultiRun case, laid out as OpenFOAM 14 writes one: no
+  // constant/polyMesh, a mesh and fields per region, and a log whose region
+  // lines carry the region's name and whose shared lines are indented.
+  const MULTI_REGION = String.raw`
+set -e
+c="$1"; rm -rf "$c"; mkdir -p "$c"/system "$c"/constant/fluid/polyMesh "$c"/constant/film/polyMesh "$c"/0/fluid "$c"/0/film
+cd "$c"
+printf 'application     foamMultiRun;\n\nregionSolvers\n{\n    film film;\n    fluid multicomponentFluid;\n}\n' > system/controlDict
+cat > log.foamMultiRun <<'L'
+Exec   : foamMultiRun
+Selecting solver film
+film  Courant Number mean: 0 max: 0
+fluid Courant Number mean: 0.002 max: 0.04
+      deltaT = 1.2e-06
+      Time = 1.2e-06s
+
+film  DILUPBiCGStab:  Solving for Ux, Initial residual = 1, Final residual = 1e-20, No Iterations 1
+fluid smoothSolver:  Solving for Ux, Initial residual = 0.0002, Final residual = 1e-06, No Iterations 2
+fluid bounding k, min: -0.1 max: 3 average: 1
+      ExecutionTime = 1 s  ClockTime = 1 s
+
+film  Courant Number mean: 0 max: 0
+fluid Courant Number mean: 0.003 max: 0.05
+      deltaT = 1.4e-06
+      Time = 2.6e-06s
+
+film  DILUPBiCGStab:  Solving for Ux, Initial residual = 0.5, Final residual = 1e-20, No Iterations 1
+fluid smoothSolver:  Solving for Ux, Initial residual = 0.0003, Final residual = 1e-06, No Iterations 1
+      ExecutionTime = 2 s  ClockTime = 2 s
+
+      End
+L
+for r in fluid film; do
+  printf 'FoamFile { format ascii; class labelList; note "nPoints:8 nCells:%s nFaces:20 nInternalFaces:4"; }\n' "$([ $r = fluid ] && echo 40 || echo 4)" > constant/$r/polyMesh/owner
+  printf 'FoamFile { format ascii; class polyBoundaryMesh; }\n1\n(\n    wall { type wall; nFaces 2; startFace 4; }\n)\n' > constant/$r/polyMesh/boundary
+  printf 'FoamFile { format ascii; class volScalarField; }\ninternalField uniform 300;\nboundaryField\n{\n    wall { type zeroGradient; }\n}\n' > 0/$r/T
+done
+`;
+
+  test('a multi-region case: its regions, its log by region, a mesh and fields per region', () => {
+    const mdir = `${dir}_multi`;
+    runScript(`cat > /tmp/ofstudio_mfixture_${process.pid}.sh <<'FIXTURE_END'\n${MULTI_REGION}\nFIXTURE_END\nbash /tmp/ofstudio_mfixture_${process.pid}.sh ${mdir}; rm -f /tmp/ofstudio_mfixture_${process.pid}.sh`);
+    try {
+      assert.deepEqual(parseCaseRegions(runScript(`CASE=${mdir}\n${CASE_REGIONS_REPORT_SH}`)),
+        { regions: ['film', 'fluid'], meshRegions: ['film', 'fluid'], defaultMesh: false, application: 'foamMultiRun' });
+
+      const log = parseLogDigest(runScript(logDigestScript(mdir, '')));
+      assert.equal(log.steps, 2, 'the indented Time lines are steps');
+      assert.equal(log.lastTime, '2.6e-06');
+      assert.equal(log.ended, true);
+      assert.deepEqual(log.fields.map(f => [f.field, f.first, f.last]), [['film/Ux', 1, 0.5], ['fluid/Ux', 0.0002, 0.0003]],
+        'the two regions keep their own Ux');
+      assert.equal(log.courant?.maxMax, 0.05);
+      assert.equal(log.deltaT?.last, 1.4e-6);
+      assert.equal(log.executionTime, 2);
+      assert.deepEqual(log.bounding.map(b => b.field), ['fluid/k']);
+
+      const mesh = parseMeshDigest(runScript(meshDigestScript(mdir)));
+      assert.deepEqual([mesh.region, mesh.root?.cells, ...(mesh.regions ?? []).map(r => [r.region, r.root?.cells])], ['film', 4, ['fluid', 40]],
+        'in the order regionSolvers names them');
+      const text = renderMeshDigest(mesh, null, null);
+      assert.match(text, /MULTI-REGION case: 2 meshes \(film, fluid\)/);
+      assert.match(text, /MESH constant\/film\/polyMesh: 4 cells/);
+
+      const fields = parseFieldDigest(runScript(fieldDigestScript(mdir, '0', [])));
+      assert.deepEqual(fields.files.map(f => f.field).sort(), ['film/T', 'fluid/T']);
+      assert.deepEqual(parseFieldDigest(runScript(fieldDigestScript(mdir, '0', ['fluid/T']))).files.map(f => f.field), ['fluid/T']);
+    } finally { runScript(`rm -rf ${mdir}`); }
   });
 
   test('the mesh digest reads headers, zones, points and the decomposition', () => {

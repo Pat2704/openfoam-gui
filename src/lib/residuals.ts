@@ -27,6 +27,19 @@ function residualNumber(token: string): number | undefined {
   return value !== undefined && value >= 0 ? value : undefined;
 }
 
+/**
+ * The region a multi-region solve belongs to, from the start of its line.
+ *
+ * foamMultiRun (v11 on) puts the region's name, padded, in front of every line
+ * one of its regions writes:
+ *     fluid smoothSolver:  Solving for Ux, Initial residual = …
+ *     film  DILUPBiCGStab:  Solving for Ux, Initial residual = …
+ * Without it the two `Ux` were one curve, alternating between two meshes.
+ */
+const REGION_SOLVE = /^([A-Za-z_][\w.:-]*)\s+[A-Za-z_]\w*:\s+Solving\s+for\b/;
+/** chtMultiRegionFoam and the other 9–10 solvers announce each region instead. */
+const LEGACY_REGION = /^Solving\s+for\s+(?:fluid|solid)\s+region\s+(\S+)\s*$/i;
+
 /** Preserve every solve, its order and source line; missing values stay missing. */
 export function parseResidualEvents(log: string): {
   events: ResidualEvent[];
@@ -35,15 +48,19 @@ export function parseResidualEvents(log: string): {
   const events: ResidualEvent[] = [];
   const timesteps: { time: number; step: number }[] = [];
   let currentTime: number | undefined;
+  let legacyRegion: string | undefined;
   let step = -1;
   const lines = log.split('\n');
   for (let i = 0; i < lines.length; i++) {
+    // Trimmed, which also takes care of the multi-region `      Time = …s`:
+    // foamMultiRun indents the lines no single region wrote.
     const line = lines[i].replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim();
     if (/^(?:Create time|Starting time loop)\b/.test(line)) currentTime = undefined;
     const timeMatch = line.match(/^Time\s*=\s*(.*?)\s*$/);
     if (timeMatch) {
       // Foundation's unit-aware output writes e.g. "Time = 0.005s".
       currentTime = finiteNumber(timeMatch[1].replace(/\s*s$/, ''));
+      legacyRegion = undefined;
       if (currentTime !== undefined) {
         step += 1;
         timesteps.push({ time: currentTime, step });
@@ -51,11 +68,14 @@ export function parseResidualEvents(log: string): {
       continue;
     }
     if (currentTime === undefined) continue;
+    const announced = line.match(LEGACY_REGION);
+    if (announced) { legacyRegion = announced[1]; continue; }
     const solve = line.match(/\bSolving\s+for\s+([^,\s]+),\s+Initial\s+residual\s*=\s*([^,\s]*)/i);
     if (solve) {
       const final = line.match(/\bFinal\s+residual\s*=\s*([^,\s]*)/i);
       const iterations = line.match(/\bNo\s+Iterations\s+(\d+)\s*$/i);
-      events.push({ time: currentTime, step, field: solve[1], initial: residualNumber(solve[2]),
+      const region = line.match(REGION_SOLVE)?.[1] ?? legacyRegion;
+      events.push({ time: currentTime, step, field: region ? `${region}/${solve[1]}` : solve[1], initial: residualNumber(solve[2]),
         final: final ? residualNumber(final[1]) : undefined,
         iterations: iterations ? Number(iterations[1]) : undefined, line: i + 1 });
       continue;
@@ -69,6 +89,21 @@ export function parseResidualEvents(log: string): {
     }
   }
   return { events, timesteps };
+}
+
+/**
+ * The solver time of the last step in the log.
+ *
+ * Only a line that IS `Time = …` counts — indented, as foamMultiRun writes it.
+ * The pattern used to find `Time =` anywhere, so `ExecutionTime = 12.4 s
+ * ClockTime = 13 s`, which follows every step, won: the time shown was the
+ * clock time.
+ */
+export function getLastSimTime(log: string): string {
+  const matches = [...log.matchAll(/^[ \t]*Time\s*=\s*(\S+)/gm)];
+  // Without the unit Foundation's output adds ("0.005s"), so it compares with
+  // the time directory names.
+  return matches.length ? matches[matches.length - 1][1].replace(/s$/, '') : '';
 }
 
 /** Initial = first solve's initial; final = last solve's final, per field/timestep. */

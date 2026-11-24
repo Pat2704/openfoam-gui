@@ -6,6 +6,31 @@ of project rules. Keep this file at or below **500 lines**. Add new entries at
 the top, then compact older detail into links to Git history, release notes or
 audits.
 
+## 2026-11-24 — Multi-region cases (foamMultiRun, chtMultiRegionFoam)
+
+- Found on Lab06-surfaceFilm/combustor2D-film (v14, regionSolvers film +
+  multicomponentFluid). `src/lib/case-regions.ts` finds regions as OpenFOAM and
+  paraFoam do: regionSolvers, constant/regionProperties (9–10),
+  constant/*/polyMesh; `?action=regions` on the case API.
+- Processes: a fixed name list (no foamMultiRun, no 9–10 solvers) in three
+  copies → `FOAM_PIDS_SH`: exe under `*/platforms/*/bin/*` (find over /proc,
+  6 ms), mpirun `-parallel`, `wslgui_bg_`. Monitor showed the run idle; Kill
+  could not stop it.
+- Logs: region-prefixed solves (`fluid smoothSolver: …`) and 9–10's "Solving for
+  fluid region X" give `fluid/Ux` (Monitor, Post-Process, agent digest); the
+  digest awk accepts indented Time/deltaT/ExecutionTime/End. getLastSimTime
+  matched `ExecutionTime =`/`ClockTime =` (moved to residuals.ts).
+- Per region: BC validation (0/<r> vs constant/<r>/polyMesh), checkMesh
+  (`-region`, one report), mesh surface (surfaceMeshTriangulate -region with
+  `-libs lib<module>Solver.so`: film's filmWall is unknown without it), case
+  summary, agent mesh/field digests, preflight (regionSolvers instead of
+  `solver`, a region mesh is a mesh), Dashboard counts.
+- ParaView: the plain `<case>.OpenFOAM` marker (VTK's reader lists
+  `/fluid/internalMesh`…; the `{region}` markers show nothing in it).
+  Post-Process: `postProcessing/<region>/<fn>` datasets, a Region selector
+  (`-region`, the region's `-solver`). Commands: foamMultiRun, `-region`,
+  `-allRegions`. Checked on a temporary copy, since removed.
+
 ## 2026-11-17 — File Editor: faster on large cases, remembers each case
 
 - Released `v5.9.4` (`docs/releases/v5.9.4.md`): the `f9adc81` pair, renamed
@@ -82,64 +107,28 @@ audits.
   both languages. The main tab bar overflowed below ~1070 px and a focus slid
   the clipped root sideways; under 1120 px the tabs now show icons only.
 
-## 2026-11-05 — Agent tables, one ParaView legend, File Editor comments and guides
+## 2026-11-05 — Agent tables, ParaView legend, editor layer (in brief)
 
-- Agent panels: GitHub tables render (`src/lib/markdown-table.ts`, alignment,
-  `\|` escapes); both renderers stay identical.
-- ParaView: a scalar bar belongs to the array's colour map, so recolouring p
-  → U left p's bar on screen. `apply_display` now ends in `HideUnusedScalarBars`
-  (ParaView's rule: a bar stays while a visible display uses its map); shown
-  first in pvpython, then in the workbench on a disposable cavity.
-- File Editor: still a textarea, with a layer behind it
-  (`editor-highlight-layer.tsx`, rules in `src/lib/editor-highlight.ts`):
-  `//` and `/* */` comments in a colour from the palette button (theme default,
-  swatches or any), and indent guides between `{ }` at the opening line's
-  indentation. The text is transparent with a visible caret; the layer follows
-  the scroll and the wrap width. Off above 20,000 lines. Saved as
-  `editor-comment-color` / `editor-indent-guides` in the FOAMy store.
-- Checked in the dev server on a disposable case; 405 tests pass.
+- Agent panels render GitHub tables (`src/lib/markdown-table.ts`). ParaView
+  ends `apply_display` in `HideUnusedScalarBars`. The File Editor's layer
+  behind the textarea (`editor-highlight-layer.tsx`, `editor-highlight.ts`)
+  draws comments and indent guides; colours in the FOAMy store.
 
-## 2026-11-05 — Agent: Mesh and Results analysis buttons, streaming digests
+## 2026-11-05 — Agent: Mesh and Results analysis buttons, streaming digests (in brief)
 
-- Claude and Codex panels: **Mesh** and **Results** beside the shield send a
-  prepared request (`src/lib/agent-analysis.ts`, reply language from the
-  locale) that uses five new read-only tools: `analyze_log`,
-  `read_log_excerpt`, `analyze_fields`, `postprocess_summary`, `mesh_summary`.
-- `src/lib/case-digest.ts` builds bash+awk scripts that stream logs, fields
-  (root and `processor*`, combined) and polyMesh headers inside WSL and print
-  a few KB; `src/lib/case-analysis.ts` runs them on the async base64 runner.
-  The awk is POSIX and has no `sqrt` (busybox builds lack it): vectors report
-  squared magnitudes, the RMS comes from TypeScript. postProcessing reuses
-  `parseFoamTable`/`mergeRestarts`/`summarizeColumn`. `mesh_summary` reports
-  meshes in time directories (snappy without `-overwrite`) and runs
-  `checkMesh -latestTime` for them; BC check is skipped there.
-- `read_case_file` returns at most 256 KB (`readFileHead`), pointing at the
-  digests above; both prompts say so (`LARGE_FILES`).
-- Fixed beside it: list keys in the panels' markdown used the line AFTER the
-  list, duplicating the next line's key; React repeated paragraphs.
-- Checked: 17 tests (fake case in WSL /tmp) under gawk, mawk and busybox; an
-  8.8 MB log in 1.4 s; the Results button live on a disposable decomposed case.
+- **Mesh**/**Results** send a prepared request (`src/lib/agent-analysis.ts`)
+  using `analyze_log`, `read_log_excerpt`, `analyze_fields`,
+  `postprocess_summary`, `mesh_summary`: bash+awk in `case-digest.ts` streams
+  logs, fields (root and processors) and polyMesh headers in WSL, run async by
+  `case-analysis.ts`. POSIX awk, no `sqrt` (busybox). `read_case_file` caps at
+  256 KB. Tested under gawk, mawk and busybox.
 
-## 2026-10-20 — v5.8.2: containers open closed; OpenFOAM search in /home and chosen folders
+## 2026-10-20 — v5.8.2: containers open closed; OpenFOAM search in /home (in brief)
 
-- Released `v5.8.2` at the user's request (notes `docs/releases/v5.8.2.md`): the
-  pair built for `82ebd2c`, renamed without rebuilding (embedded 5.8.1). GitHub
-  keeps v5.8.2 and v5.8.1; the v5.8.0 release entry was removed, tag kept.
-- Dashboard: containers start closed and show their cases when clicked. One
-  that receives a case (create, tutorial copy, clone, move) opens, and a
-  renamed container keeps its state.
-- The scan (`scanFoamInstallations`, `src/lib/wsl.ts`) also globs `/home/*`
-  and `/root` three levels deep (`~/OpenFOAM/OpenFOAM-12`); hidden folders are
-  not matched, so it stays fast (0.06 s here).
-- OpenFOAM settings → **Search folders**: the user names a Linux folder;
-  `validateFoamSearchFolder` refuses relative paths, `.`/`..`, control
-  characters, `|`, `/`, `/mnt` and the pseudo filesystems. It is saved only
-  if it exists and holds an installation, per distro, in
-  `~/.wslgui-foam-search.json` (not the cache file `resetCache()` deletes).
-  Add and remove are POST, since a saved folder widens what `setFoamVersion`
-  accepts; removing the folder of the active installation is refused.
-- Checked in the dev server (fake install in `/tmp/foam_test`, since removed):
-  closed containers, add, list, remove, errors. Validator unit tests pass.
+- Containers start closed; the installation scan also globs `/home/*` and
+  `/root`; OpenFOAM settings → **Search folders** (`validateFoamSearchFolder`,
+  saved per distro in `~/.wslgui-foam-search.json`). Notes in
+  `docs/releases/v5.8.2.md`.
 
 ## 2026-10-07 — v5.8.1: Monitor residual plot opens on the solver log
 

@@ -17,6 +17,7 @@
  */
 
 import { shellQuote } from './wsl-input';
+import { CASE_REGIONS_SH } from './case-regions';
 
 /** The most `read_case_file` returns. Anything larger goes through a digest. */
 export const MAX_AGENT_READ_BYTES = 256 * 1024;
@@ -32,9 +33,12 @@ export function isTimeName(value: string): boolean {
   return NUMBER_PATTERN.test(value);
 }
 
-/** A field name as OpenFOAM writes them: `U`, `p_rgh`, `alpha.water`, `k:0`. */
+/**
+ * A field name as OpenFOAM writes them: `U`, `p_rgh`, `alpha.water`, `k:0` —
+ * and, in a multi-region case, behind its region: `fluid/U`.
+ */
 export function isFieldName(value: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/.test(value);
+  return /^(?:[A-Za-z_][A-Za-z0-9_.:-]{0,63}\/)?[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/.test(value);
 }
 
 function num(text: string | undefined): number {
@@ -120,7 +124,14 @@ BEGIN {
   for (k = 0; k < samples; k++) want[(samples > 1) ? int(1 + k * (steps - 1) / (samples - 1) + 0.5) : steps] = 1
   want[steps] = 1
 }
-{ sub(/\r$/, ""); ring[NR % 15] = $0 }
+{ sub(/\r$/, ""); ring[NR % 15] = $0
+  # The region of a multi-region solve: foamMultiRun writes it before every
+  # line ("fluid smoothSolver:  Solving for Ux, …"), the 9-10 solvers announce
+  # the block of each region ("Solving for fluid region air"). Without it the
+  # Ux of two regions was one field. (No apostrophes in here: this program
+  # sits inside single quotes in the shell.)
+  reg = ($2 ~ /:$/ && $3 == "Solving" && $4 == "for") ? $1 "/" : legacy
+}
 wcap > 0 { print "W\t" clip($0); wcap-- }
 xcap > 0 { print "X\t" clip($0); xcap-- }
 /FOAM Warning/ { warns++; if (warns <= 3) { print "W\t--- warning " warns " at line " NR; print "W\t" clip($0); wcap = 6 } }
@@ -131,15 +142,17 @@ xcap > 0 { print "X\t" clip($0); xcap-- }
 /^Date[ \t]+:/ { if (date == "") date = substr($0, index($0, ":") + 2) }
 /^nProcs[ \t]+:/ { nprocs = $3 }
 /^[ \t]*Selecting / { t = $0; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t); if (!(t in sel) && nsel < 14) { sel[t] = 1; nsel++; print "S\t" substr(t, 1, 160) } }
-/^Time = / {
-  t = $3; sub(/s$/, "", t); step++
+/^[ \t]*Time = / {
+  t = $3; sub(/s$/, "", t); step++; legacy = ""
   if (step == 1) firstT = t
   else if (t + 0 < lastT + 0) restarts++
   lastT = t
 }
+/^[ \t]*Solving for (fluid|solid) region / { legacy = $NF "/"; next }
 /Solving for / {
   f = after($0, "Solving for ")
   if (f != "") {
+    f = reg f
     ini = after($0, "Initial residual = "); fin = after($0, "Final residual = "); it = after($0, "No Iterations ")
     if (!(f in seen)) { seen[f] = 1; order[++nf] = f }
     if (bad(ini) || bad(fin)) nbad[f]++
@@ -155,20 +168,21 @@ xcap > 0 { print "X\t" clip($0); xcap-- }
     }
   }
 }
-/^Courant Number mean:/ { cm = after($0, "mean: "); cx = after($0, "max: "); nco++; if (nco == 1 || cx + 0 > comax + 0) { comax = cx; comaxT = lastT }; colm = cm; colx = cx }
-/^Interface Courant Number mean:/ { cm = after($0, "mean: "); cx = after($0, "max: "); nic++; if (nic == 1 || cx + 0 > icmax + 0) { icmax = cx; icmaxT = lastT }; iclm = cm; iclx = cx }
-/^deltaT = / { dt = $3; if (ndt == 0 || dt + 0 < dtmin + 0) dtmin = dt; if (ndt == 0 || dt + 0 > dtmax + 0) dtmax = dt; dtlast = dt; ndt++ }
+/Courant Number mean:/ && !/Interface Courant/ { cm = after($0, "mean: "); cx = after($0, "max: "); nco++; if (nco == 1 || cx + 0 > comax + 0) { comax = cx; comaxT = lastT }; colm = cm; colx = cx }
+/Interface Courant Number mean:/ { cm = after($0, "mean: "); cx = after($0, "max: "); nic++; if (nic == 1 || cx + 0 > icmax + 0) { icmax = cx; icmaxT = lastT }; iclm = cm; iclx = cx }
+/^[ \t]*deltaT = / { dt = after($0, "deltaT = "); if (ndt == 0 || dt + 0 < dtmin + 0) dtmin = dt; if (ndt == 0 || dt + 0 > dtmax + 0) dtmax = dt; dtlast = dt; ndt++ }
 /time step continuity errors/ { sl = after($0, "sum local = "); cu = after($0, "cumulative = "); nce++; if (nce == 1 || sl + 0 > slmax + 0) slmax = sl; sllast = sl; culast = cu }
-/^ExecutionTime = / { et = after($0, "ExecutionTime = "); ct = after($0, "ClockTime = ") }
+/^[ \t]*ExecutionTime = / { et = after($0, "ExecutionTime = "); ct = after($0, "ClockTime = ") }
 /Not converged within/ { notconv++; ncline = $0; sub(/^[ \t]+/, "", ncline) }
 /onverged in [0-9]+ iterations/ { if ($0 !~ /[Nn]ot converged/) { conv++; cvline = $0; sub(/^[ \t]+/, "", cvline) } }
-/^bounding / {
-  bf = $2; sub(/,$/, "", bf); bmin = after($0, "min: ")
+/(^|[ \t])bounding [^ ,]+, min:/ {
+  bf = after($0, "bounding "); bf = (($2 == "bounding") ? $1 "/" : legacy) bf
+  bmin = after($0, "min: ")
   if (!(bf in bcount)) { border[++nb] = bf; bfirst[bf] = lastT; bworst[bf] = bmin }
   bcount[bf]++
   if (bmin + 0 < bworst[bf] + 0) bworst[bf] = bmin
 }
-/^End[ \t]*$/ { ended = 1 }
+/^[ \t]*End[ \t]*$/ { ended = 1 }
 END {
   print "H\texec\t" exe; print "H\tbuild\t" build; print "H\tdate\t" date; print "H\tnprocs\t" nprocs
   print "T\t" step "\t" firstT "\t" lastT "\t" (restarts + 0)
@@ -224,7 +238,7 @@ else
   [ -n "$f" ] || f=$(ls -1t -- "\${logs[@]}" | head -n 1)
 fi
 printf 'USE\\t%s\\t%s\\t%s\\n' "$f" "$(stat -c %s -- "$f")" "$(( now - $(stat -c %Y -- "$f") ))"
-steps=$(grep -c '^Time = ' -- "$f")
+steps=$(grep -cE '^[[:space:]]*Time = ' -- "$f")
 awk -v steps="$steps" -v samples=${Math.max(2, Math.floor(sampleRows))} '${LOG_AWK}' "$f"
 `;
 }
@@ -594,7 +608,8 @@ END {
  */
 export function fieldDigestScript(casePath: string, time: string, fields: readonly string[]): string {
   const wanted = fields.filter(isFieldName).slice(0, MAX_DIGEST_FIELDS);
-  return `${scriptHead(casePath)}req=${shellQuote(isTimeName(time) ? time : '')}
+  return `${scriptHead(casePath)}${CASE_REGIONS_SH}
+req=${shellQuote(isTimeName(time) ? time : '')}
 want=(${wanted.map(shellQuote).join(' ')})
 rt=$(for d in */; do d=\${d%/}; isnum "$d" && printf '%s\\n' "$d"; done | sort -g)
 printf '%s\\n' "$rt" | while IFS= read -r d; do [ -n "$d" ] && printf 'RT\\t%s\\n' "$d"; done
@@ -622,10 +637,14 @@ fi
 both=0; [ "$mode" = root ] && [ \${#procs[@]} -gt 0 ] && [ -d "processor0/$T" ] && both=1
 printf 'USE\\t%s\\t%s\\t%s\\t%s\\n' "$T" "$mode" "\${#locs[@]}" "$both"
 names=()
-for f in "\${locs[0]}"/*; do
+# A multi-region case keeps its fields in <time>/<region>/: they are read
+# there, and named <region>/<field>.
+cands=("\${locs[0]}"/*)
+for r in $(case_regions .); do cands+=("\${locs[0]}/$r"/*); done
+for f in "\${cands[@]}"; do
   [ -f "$f" ] || continue
-  n=\${f##*/}; n=\${n%.gz}
-  [[ $n =~ ^[A-Za-z_][A-Za-z0-9_.:-]*$ ]] || continue
+  n=\${f#"\${locs[0]}"/}; n=\${n%.gz}
+  [[ $n =~ ^([A-Za-z_][A-Za-z0-9_.:-]*/)?[A-Za-z_][A-Za-z0-9_.:-]*$ ]] || continue
   case "$n" in *.orig) continue ;; esac
   if [ \${#want[@]} -gt 0 ]; then ok=0; for w in "\${want[@]}"; do [ "$w" = "$n" ] && ok=1; done; [ $ok = 1 ] || continue
   else
@@ -968,11 +987,18 @@ END { if (n > 0) printf "BB\t%d\t%.6g %.6g %.6g\t%.6g %.6g %.6g\n", n, lo[1], lo
  * neighbour are never transferred.
  */
 export function meshDigestScript(casePath: string): string {
-  return `${scriptHead(casePath)}note() {
+  // A multi-region case has no constant/polyMesh: each region keeps its own
+  // constant/<region>/polyMesh (and <time>/<region>/polyMesh,
+  // processor*/constant/<region>/polyMesh). Each mesh is reported after a
+  // REGION line naming it; a single-region case prints none.
+  return `${scriptHead(casePath)}${CASE_REGIONS_SH}
+note() {
   local d="$1"
   if [ -f "$d/owner" ]; then head -c 4096 -- "$d/owner"; elif [ -f "$d/owner.gz" ]; then zcat -- "$d/owner.gz" 2>/dev/null | head -c 4096; fi | grep -m1 -o 'nPoints:[^"]*' || true
 }
-pm=constant/polyMesh
+mesh_report() {
+local sub="\${1:+$1/}"
+local pm="constant/\${sub}polyMesh" d tm p
 if [ -d "$pm" ] && inside "$pm"; then
   printf 'ROOT\\t%s\\n' "$(note "$pm")"
   if [ -f "$pm/boundary" ] && inside "$pm/boundary"; then printf 'BOUNDARY\\t%s\\n' "$(head -c 262144 -- "$pm/boundary" | base64 -w0)"; fi
@@ -988,19 +1014,26 @@ else
 fi
 tm=""
 for d in $(for d in */; do d=\${d%/}; isnum "$d" && printf '%s\\n' "$d"; done | sort -g); do
-  [ -d "$d/polyMesh" ] && inside "$d/polyMesh" || continue
-  printf 'TIMEMESH\\t%s\\t%s\\n' "$d" "$(note "$d/polyMesh")"; tm="$d"
+  [ -d "$d/\${sub}polyMesh" ] && inside "$d/\${sub}polyMesh" || continue
+  printf 'TIMEMESH\\t%s\\t%s\\n' "$d" "$(note "$d/\${sub}polyMesh")"; tm="$d"
 done
 # The newest time mesh is the one a solver or checkMesh -latestTime would use.
-if [ -n "$tm" ] && [ -f "$tm/polyMesh/boundary" ] && inside "$tm/polyMesh/boundary"; then
-  printf 'TBOUNDARY\\t%s\\t%s\\n' "$tm" "$(head -c 262144 -- "$tm/polyMesh/boundary" | base64 -w0)"
+if [ -n "$tm" ] && [ -f "$tm/\${sub}polyMesh/boundary" ] && inside "$tm/\${sub}polyMesh/boundary"; then
+  printf 'TBOUNDARY\\t%s\\t%s\\n' "$tm" "$(head -c 262144 -- "$tm/\${sub}polyMesh/boundary" | base64 -w0)"
 fi
 for p in $(for p in processor*/; do p=\${p%/}; [[ $p =~ ^processor[0-9]+$ ]] && printf '%s\\n' "$p"; done | sort -V); do
-  d="$p/constant/polyMesh"
+  d="$p/constant/\${sub}polyMesh"
   { [ -d "$d" ] && inside "$d"; } || { printf 'PROC\\t%s\\t\\t0\\t0\\n' "$p"; continue; }
   pb=$(printf '0\\t0'); [ -f "$d/boundary" ] && pb=$(awk '${PROC_BOUNDARY_AWK}' "$d/boundary")
   printf 'PROC\\t%s\\t%s\\t%s\\n' "$p" "$(note "$d")" "$pb"
 done
+}
+regions=$(case_regions .)
+if [ -n "$regions" ] && [ ! -d constant/polyMesh ]; then
+  for r in $regions; do printf 'REGION\\t%s\\n' "$r"; mesh_report "$r"; done
+else
+  mesh_report ""
+fi
 if [ -f system/decomposeParDict ] && inside system/decomposeParDict; then
   grep -E '^[[:space:]]*(numberOfSubdomains|method)[[:space:]]' system/decomposeParDict | head -n 4 | while IFS= read -r l; do printf 'DECOMP\\t%s\\n' "$l"; done
 fi
@@ -1046,6 +1079,10 @@ export function parseMeshNote(note: string): MeshCounts | null {
 }
 
 export interface MeshDigest {
+  /** The region this mesh belongs to, in a multi-region case. */
+  region?: string;
+  /** The other regions of a multi-region case, each with its own digest. */
+  regions?: MeshDigest[];
   root: MeshCounts | null;
   hasRoot: boolean;
   boundary: BoundaryEntry[];
@@ -1060,10 +1097,18 @@ export interface MeshDigest {
 }
 
 export function parseMeshDigest(output: string): MeshDigest {
-  const d: MeshDigest = { root: null, hasRoot: false, boundary: [], zones: [], sets: [], timeMeshes: [], processors: [], decomposition: [] };
+  const blank = (region?: string): MeshDigest => ({
+    ...(region ? { region } : {}),
+    root: null, hasRoot: false, boundary: [], zones: [], sets: [], timeMeshes: [], processors: [], decomposition: [],
+  });
+  const first = blank();
+  const regions: MeshDigest[] = [];
+  let d = first;
+  const decomposition: string[] = [];
   for (const line of output.split('\n')) {
     if (!line) continue;
     const c = line.split('\t');
+    if (c[0] === 'REGION') { d = blank(c[1]); regions.push(d); continue; }
     switch (c[0]) {
       case 'ROOT': d.hasRoot = true; d.root = parseMeshNote(c[1] ?? ''); break;
       case 'BOUNDARY': d.boundary = parseBoundaryEntries(Buffer.from(c[1] ?? '', 'base64').toString('utf-8')); break;
@@ -1076,10 +1121,17 @@ export function parseMeshDigest(output: string): MeshDigest {
       case 'TIMEMESH': d.timeMeshes.push({ time: c[1], counts: parseMeshNote(c[2] ?? '') }); break;
       case 'PROC': d.processors.push({ name: c[1], counts: parseMeshNote(c[2] ?? ''), procPatches: Number(c[3]) || 0, procFaces: Number(c[4]) || 0 }); break;
       case 'TBOUNDARY': d.latestTimeMesh = { time: c[1], boundary: parseBoundaryEntries(Buffer.from(c[2] ?? '', 'base64').toString('utf-8')) }; break;
-      case 'DECOMP': d.decomposition.push(c.slice(1).join('\t').trim().replace(/\s*;\s*$/, '').replace(/\s+/g, ' ')); break;
+      case 'DECOMP': decomposition.push(c.slice(1).join('\t').trim().replace(/\s*;\s*$/, '').replace(/\s+/g, ' ')); break;
     }
   }
-  return d;
+  // A multi-region case: the first region stands for the case, the rest follow.
+  const top = regions.length ? { ...regions[0], regions: regions.slice(1) } : first;
+  for (const each of [top, ...(top.regions ?? [])]) each.decomposition = decomposition;
+  return top;
+}
+
+function blankMesh(): MeshDigest {
+  return { root: null, hasRoot: false, boundary: [], zones: [], sets: [], timeMeshes: [], processors: [], decomposition: [] };
 }
 
 export interface MeshQuality {
@@ -1104,6 +1156,20 @@ export function renderMeshDigest(
   quality: MeshQuality | null,
   bcProblems: string[] | null,
 ): string {
+  if (d.region) {
+    // One section per region, each on its own mesh: constant/<region>/polyMesh.
+    const all = [d, ...(d.regions ?? [])];
+    const sections = all.map(region => renderMeshDigest({ ...region, region: undefined, regions: undefined }, null, null)
+      .replace(/constant\/polyMesh/g, `constant/${region.region}/polyMesh`)
+      .replace(/(\S+)\/polyMesh\b(?! )/g, (match, time: string) => (/^[\d.eE+-]+$/.test(time) ? `${time}/${region.region}/polyMesh` : match)));
+    const tail = renderMeshDigest({ ...blankMesh(), processors: [] }, quality, bcProblems).split('\n').slice(1).join('\n').trim();
+    return [
+      `MULTI-REGION case: ${all.length} meshes (${all.map(region => region.region).join(', ')}), each in constant/<region>/polyMesh, `
+        + 'with its fields in 0/<region>/ and its schemes in system/<region>/. OpenFOAM utilities take -region <name>.',
+      ...all.map((region, i) => `\n=== REGION ${region.region} ===\n${sections[i]}`),
+      ...(tail ? ['', tail] : []),
+    ].join('\n');
+  }
   const out: string[] = [];
   if (d.hasRoot) {
     out.push(d.root

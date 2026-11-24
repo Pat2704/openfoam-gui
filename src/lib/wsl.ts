@@ -33,6 +33,9 @@ import {
   type CaseContext,
 } from './postprocess';
 import { parseCheckMeshOutput } from './check-mesh';
+import {
+  CASE_REGIONS_REPORT_SH, CASE_REGIONS_SH, REGION_NAME, parseCaseRegions, meshTargets, regionOption, type CaseRegions,
+} from './case-regions';
 import { SNAPPY_ETC_FILES, SNAPPY_VERSIONS, snappyAvailability } from './snappy-templates';
 import { WIZARD_MARKER_PATH } from './wizard-state';
 
@@ -1939,6 +1942,18 @@ emit_case() {
   [ -d "$casedir/0" ] && fc0=$(find "$casedir/0" -maxdepth 1 -type f 2>/dev/null | wc -l)
   [ -d "$casedir/system" ] && fcsys=$(find "$casedir/system" -maxdepth 1 -type f 2>/dev/null | wc -l)
   [ -d "$casedir/constant" ] && fccon=$(find "$casedir/constant" -maxdepth 1 -type f 2>/dev/null | wc -l)
+  # A multi-region case keeps its files one level down, in 0/<region>,
+  # system/<region> and constant/<region>: counted there too, or its 0/ and
+  # constant/ read as empty.
+  if [ ! -d "$casedir/constant/polyMesh" ]; then
+    for p in "$casedir"/constant/*/polyMesh; do
+      [ -d "$p" ] || continue
+      p=\${p%/polyMesh}; r=\${p##*/}
+      [ -d "$casedir/0/$r" ] && fc0=$((fc0 + $(find "$casedir/0/$r" -maxdepth 1 -type f 2>/dev/null | wc -l)))
+      [ -d "$casedir/system/$r" ] && fcsys=$((fcsys + $(find "$casedir/system/$r" -maxdepth 1 -type f 2>/dev/null | wc -l)))
+      fccon=$((fccon + $(find "$casedir/constant/$r" -maxdepth 1 -type f 2>/dev/null | wc -l)))
+    done
+  fi
   tsc=0; lastts=""
   for d in "$casedir"/*/; do
     [ -d "$d" ] || continue
@@ -2319,6 +2334,29 @@ function parseCaseInfo(raw: string): CaseInfo {
   }
 
   return { exists: true, directories, files, timeSteps };
+}
+
+// ── The case's mesh regions (src/lib/case-regions.ts) ──
+function caseRegionsScript(caseName: string): string {
+  return Buffer.from(`CASE=${shellQuote(getCasePath(caseName))}\n${CASE_REGIONS_REPORT_SH}\n`).toString('base64');
+}
+
+export function getCaseRegions(caseName: string): CaseRegions {
+  const script = caseRegionsScript(caseName);
+  try {
+    return parseCaseRegions(runInWslScript(script, 20000));
+  } catch {
+    return parseCaseRegions('');
+  }
+}
+
+export async function getCaseRegionsAsync(caseName: string): Promise<CaseRegions> {
+  const script = caseRegionsScript(caseName);
+  try {
+    return parseCaseRegions(await runInWslScriptAsync(script, 20000));
+  } catch {
+    return parseCaseRegions('');
+  }
 }
 
 // ── List contents of ANY subdirectory inside a case (lazy-loading support) ──
@@ -3048,6 +3086,29 @@ find /tmp -maxdepth 1 -name 'wslgui_*' -mmin +1440 -delete 2>/dev/null || true
   });
 }
 
+// ── Which processes are OpenFOAM's ──
+//
+// It used to be a list of names — foamRun, decomposePar, reconstructPar,
+// simpleFoam, icoFoam, pimpleFoam, snappyHexMesh, blockMesh, checkMesh — kept in
+// three copies. Anything else ran unseen: foamMultiRun (every multi-region case
+// from v11), chtMultiRegionFoam, buoyantFoam, rhoPimpleFoam and the rest of 9–10,
+// foamPostProcess, mapFields, a user's own solver. The Monitor showed such a
+// case as idle while it ran, and Kill could not stop it.
+//
+// Every OpenFOAM executable is installed in a platforms/<arch>/bin directory —
+// FOAM_APPBIN, FOAM_SITE_APPBIN and FOAM_USER_APPBIN all have that shape, in
+// every version — so the test is where the process's own executable lives. One
+// find over /proc answers it (6 ms; the Monitor asks every second). Two more
+// kinds belong to a run: mpirun driving a parallel solver (`-parallel`), and
+// this app's own background launchers. The pattern is written wslgui[_]bg_ so
+// the awk that searches for it does not find its own command line.
+const FOAM_PIDS_SH = `foam_pids() {
+  {
+    find /proc -mindepth 2 -maxdepth 2 -path '/proc/[0-9]*/exe' -lname '*/platforms/*/bin/*' -printf '%h\\n' 2>/dev/null | sed 's#^/proc/##'
+    ps -e -o pid= -o args= | awk '/wslgui[_]bg_/ || ($2 ~ /(^|[/])(mpirun|mpiexec|orterun)$/ && / -parallel( |$)/) { print $1 }'
+  } | sort -un
+}`;
+
 // ── List running OpenFOAM processes ──
 export function getProcesses(): string {
   // For each OpenFOAM process, also resolve its working directory so the Monitor
@@ -3063,9 +3124,10 @@ export function getProcesses(): string {
   // readlink fails (cwd just ends up empty) — so the process list never
   // disappears just because cwd resolution had a bad day.
   const script = `#!/bin/bash
-ps -e -o user= -o pid= -o %cpu= -o %mem= -o vsz= -o rss= -o stat= -o time= -o etimes= -o command= |
-grep -E "foamRun|decomposePar|reconstructPar|simpleFoam|icoFoam|pimpleFoam|snappyHexMesh|blockMesh|checkMesh|wslgui_bg_" |
-grep -v grep |
+${FOAM_PIDS_SH}
+pids=$(foam_pids | paste -sd, -)
+[ -n "$pids" ] || exit 0
+ps -o user= -o pid= -o %cpu= -o %mem= -o vsz= -o rss= -o stat= -o time= -o etimes= -o command= -p "$pids" |
 while IFS= read -r line; do
   pid=$(printf '%s' "$line" | awk '{print $2}')
   cwd=""
@@ -3095,7 +3157,8 @@ export function killProcess(pid: string): string {
 // ── Kill every OpenFOAM-related process running in the distro ──
 export function killAllProcesses(): { killed: number; output: string } {
   const scriptContent = `#!/bin/bash
-PIDS=$(ps -e -o pid= -o command= | grep -E "foamRun|decomposePar|reconstructPar|simpleFoam|icoFoam|pimpleFoam|snappyHexMesh|blockMesh|checkMesh|wslgui_bg_" | grep -v grep | awk '{print $1}')
+${FOAM_PIDS_SH}
+PIDS=$(foam_pids)
 COUNT=0
 for P in $PIDS; do
   kill -9 $P 2>/dev/null
@@ -3124,8 +3187,9 @@ echo "killed=$COUNT"
 export function killProcessesForCase(caseName: string): { killed: number; pids: string[]; output: string } {
   const casePath = getCasePath(caseName);
   const scriptContent = `#!/bin/bash
+${FOAM_PIDS_SH}
 TARGET=${shellQuote(casePath)}
-PIDS=$(ps -e -o pid= -o command= | grep -E "foamRun|decomposePar|reconstructPar|simpleFoam|icoFoam|pimpleFoam|snappyHexMesh|blockMesh|checkMesh|wslgui_bg_" | grep -v grep | awk '{print $1}')
+PIDS=$(foam_pids)
 COUNT=0
 KILLED=""
 for P in $PIDS; do
@@ -3639,198 +3703,198 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
   const casePath = getCasePath(caseName);
   const result: BCValidationResult = { success: false, fields: [], meshPatches: [], warnings: [] };
 
-  try {
-    // ── 1. The mesh's own patches ──
-    let boundaryFile = '';
-    try {
-      boundaryFile = runInWsl(`cat -- ${shellQuote(`${casePath}/constant/polyMesh/boundary`)} 2>/dev/null`).trim();
-    } catch { /* fall through to the search below */ }
-
-    if (!boundaryFile) {
-      // A multi-region case has one boundary file per region, and concatenating
-      // them would mix patch names that belong to different meshes — every
-      // patch of region A would then look "missing" from region B's fields.
-      // Read them one at a time and say so rather than merging.
-      let found: string[] = [];
-      try {
-        found = runInWsl(
-          `find ${shellQuote(`${casePath}/constant`)} -path '*polyMesh/boundary' -type f 2>/dev/null`
-        ).trim().split('\n').map(s => s.trim()).filter(Boolean);
-      } catch { /* no mesh at all */ }
-
-      if (found.length === 1) {
-        try { boundaryFile = runInWsl(`cat -- ${shellQuote(found[0])} 2>/dev/null`).trim(); } catch { /* */ }
-      } else if (found.length > 1) {
-        result.warnings.push(
-          `This case has ${found.length} meshes (a multi-region case). Patch checking is skipped: ` +
-          `the regions have different patches, and checking a field against all of them at once ` +
-          `would report every other region's patches as missing.`
-        );
-      }
-    }
-
+  /**
+   * One mesh against its own fields: `0` and constant/polyMesh, or, in a
+   * multi-region case, `0/<region>` and constant/<region>/polyMesh. Field names
+   * carry the region (`fluid/U`) so the report and its links name the file.
+   */
+  const checkMesh = (boundaryFile: string, zeroRel: string, prefix: string) => {
     const meshPatches = boundaryFile ? parsePolyMeshBoundary(boundaryFile) : [];
-    result.meshPatches = meshPatches.map(p => p.name);
-    result.meshChecked = meshPatches.length > 0;
+    result.meshPatches.push(...meshPatches.map(p => prefix + p.name));
+
+      // ── 2. The fields ──
+      const zeroDir = runInWsl(
+        `find ${shellQuote(`${casePath}/${zeroRel}`)} -mindepth 1 -maxdepth 1 -type f -printf '%f\\n' 2>/dev/null`
+      ).trim();
+      const allZeroFiles = zeroDir.split('\n').map(f => f.trim()).filter(f => f && f !== '.' && f !== '..')
+        .map(f => prefix + f);
+      // Only the physical fields — see isPhysicalFieldFile for what the mesher
+      // leaves in here that is not one.
+      const fieldFiles = allZeroFiles.filter(f => isPhysicalFieldFile(f.slice(prefix.length)));
+
+      if (allZeroFiles.length === 0) {
+        result.warnings.push(`Directory ${zeroRel}/ empty or nonexistent`);
+        return;
+      }
+
+      if (fieldFiles.length === 0) {
+        // The directory has content, but none of it is a field to check. Say which
+        // it was, so "nothing to validate" does not look like a failure to read.
+        result.warnings.push(
+          `${zeroRel}/ contains no physical fields to check — only mesh bookkeeping written by the mesher `
+          + `(${allZeroFiles.slice(0, 6).join(', ')}${allZeroFiles.length > 6 ? ', …' : ''}).`
+        );
+        return;
+      }
+
+      // A binary field is unreadable as text; ask OpenFOAM for those. The header
+      // is ASCII in both formats, so this is decided by reading it, not guessed.
+      const contents = new Map<string, string>();
+      const binaryFields: string[] = [];
+      for (const fieldFile of fieldFiles) {
+        let content = '';
+        try {
+          content = runInWsl(`cat -- ${shellQuote(`${casePath}/0/${fieldFile}`)} 2>/dev/null`).trim();
+        } catch { continue; }
+        if (!content) continue;
+        contents.set(fieldFile, content);
+        if (/\bformat\s+binary\s*;/.test(content.slice(0, 2000))) binaryFields.push(fieldFile);
+      }
+      const binaryEntries = binaryFieldEntries(casePath, binaryFields);
+
+      for (const fieldFile of fieldFiles) {
+        const content = contents.get(fieldFile);
+        if (!content) continue;
+
+        // Comments come out FIRST. The banner at the top of every OpenFOAM file
+        // is a block comment, a commented-out patch block would otherwise be read
+        // as a real one, and a `//` line containing a brace would throw the brace
+        // counting off for the rest of the file.
+        const clean = stripFoamComments(content);
+        const binaryList = binaryEntries.get(fieldFile);
+
+        const bfIdx = clean.indexOf('boundaryField');
+        if (bfIdx === -1) {
+          result.warnings.push(`${fieldFile}: no boundaryField found`);
+          continue;
+        }
+        let pos = bfIdx + 'boundaryField'.length;
+        while (pos < clean.length && /\s/.test(clean[pos])) pos++;
+        if (pos >= clean.length || clean[pos] !== '{') {
+          result.warnings.push(`${fieldFile}: boundaryField without opening brace`);
+          continue;
+        }
+        // Brace counting over a binary blob returns nonsense or nothing; when
+        // foamDictionary has already answered for this field, that is fine.
+        const bfBlock = extractBraceBlock(clean, pos);
+        if (bfBlock === null && !(binaryList && binaryList.length)) {
+          result.warnings.push(`${fieldFile}: unable to extract boundaryField`);
+          continue;
+        }
+
+        const { entries, directives } = binaryList && binaryList.length
+          ? { entries: binaryList, directives: [] as string[] }
+          : parseBoundaryFieldEntries(bfBlock || '');
+        if (directives.length) {
+          result.warnings.push(
+            `${fieldFile}: ${directives.length} entr${directives.length === 1 ? 'y is' : 'ies are'} ` +
+            `built by the preprocessor (${directives.slice(0, 3).join(', ')}` +
+            `${directives.length > 3 ? ', …' : ''}) — whatever they bring in was not checked here.`
+          );
+        }
+
+        const patches: { patch: string; type: string; valid: boolean; note?: string }[] = [];
+
+        // No mesh to check against: report what the file says and nothing more.
+        if (meshPatches.length === 0) {
+          for (const e of entries) {
+            patches.push({ patch: e.key, type: e.type || '(no type)', valid: true });
+          }
+          if (patches.length) result.fields.push({ name: fieldFile, patches });
+          continue;
+        }
+
+        // ── 3. Which entry covers which patch ──
+        //
+        // OpenFOAM resolves a patch against boundaryField in this order: the
+        // patch's own name, then a group it belongs to, then a regular
+        // expression — and among regular expressions the LAST one written wins.
+        // Following the same order is what makes the answer here the answer the
+        // solver will give.
+        const coverage = new Map<string, MatchedEntry>();
+        for (const patch of meshPatches) {
+          const match = resolveEntryForPatch(patch, entries);
+          if (match) coverage.set(patch.name, match);
+        }
+
+        const usedEntries = new Set<number>();
+        for (const patch of meshPatches) {
+          const match = coverage.get(patch.name);
+          if (!match) {
+            patches.push({
+              patch: patch.name,
+              type: 'MISSING',
+              valid: false,
+              note: 'no entry in boundaryField matches this patch',
+            });
+            continue;
+          }
+          usedEntries.add(match.index);
+          const e = entries[match.index];
+          patches.push({
+            patch: patch.name,
+            type: e.type || '(no type)',
+            valid: true,
+            note: match.how === 'name' ? undefined
+              : match.how === 'group' ? `via the group "${e.key}"`
+              : `via the pattern "${e.key}"`,
+          });
+        }
+
+        // An entry that covers nothing is the other half of the check: a typo in
+        // a patch name, or a pattern that no longer matches anything after the
+        // mesh was rebuilt, is silently ignored by OpenFOAM — the field simply
+        // has no condition there and the run fails later, somewhere else.
+        entries.forEach((e, i) => {
+          if (usedEntries.has(i)) return;
+          patches.push({
+            patch: e.kind === 'regex' ? `"${e.key}"` : e.key,
+            type: e.type || '(no type)',
+            valid: false,
+            note: e.kind === 'regex'
+              ? 'this pattern matches none of the mesh patches'
+              : 'not a patch or group of this mesh',
+          });
+        });
+
+        if (patches.length > 0) result.fields.push({ name: fieldFile, patches });
+      }
+
+  };
+
+  try {
+    // A multi-region case has one mesh per region, and checking a field against
+    // all of them at once would report every other region's patches as
+    // missing. It used to skip the patch check altogether — and read 0/, which
+    // in such a case holds only the region folders, so it reported "0/ empty".
+    // Each region is now checked on its own: 0/<region> against
+    // constant/<region>/polyMesh.
+    const regions = getCaseRegions(caseName);
+    const targets = regions.regions.length && !regions.defaultMesh
+      ? regions.regions
+      : [''];
+    let anyMesh = false;
+    for (const region of targets) {
+      const meshRel = region ? `constant/${region}/polyMesh/boundary` : 'constant/polyMesh/boundary';
+      let boundaryFile = '';
+      try {
+        boundaryFile = runInWsl(`cat -- ${shellQuote(`${casePath}/${meshRel}`)} 2>/dev/null`).trim();
+      } catch { /* no mesh for this one */ }
+      if (boundaryFile) anyMesh = true;
+      else if (region) {
+        result.warnings.push(`Patches of region ${region} not checked: it has no mesh yet (constant/${region}/polyMesh).`);
+      }
+      checkMesh(boundaryFile, region ? `0/${region}` : '0', region ? `${region}/` : '');
+    }
+    result.meshChecked = anyMesh;
     // No boundary file at all — before blockMesh, or a case that only has
     // processor* meshes. Every entry used to come back valid with no word about
-    // it, and the panel said "All BCs are valid". (A multi-region case has
-    // already said why it skips.)
-    if (!boundaryFile && result.warnings.length === 0) {
+    // it, and the panel said "All BCs are valid".
+    if (!anyMesh && targets.length === 1 && !targets[0]) {
       result.warnings.push(
         'Patches not checked: this case has no mesh yet — run blockMesh (or reconstructPar for a decomposed case).'
       );
     }
-
-    // ── 2. The fields ──
-    const zeroDir = runInWsl(
-      `find ${shellQuote(`${casePath}/0`)} -mindepth 1 -maxdepth 1 -type f -printf '%f\\n' 2>/dev/null`
-    ).trim();
-    const allZeroFiles = zeroDir.split('\n').map(f => f.trim()).filter(f => f && f !== '.' && f !== '..');
-    // Only the physical fields — see isPhysicalFieldFile for what the mesher
-    // leaves in here that is not one.
-    const fieldFiles = allZeroFiles.filter(isPhysicalFieldFile);
-
-    if (allZeroFiles.length === 0) {
-      result.warnings.push('Directory 0/ empty or nonexistent');
-      result.success = true;
-      return result;
-    }
-
-    if (fieldFiles.length === 0) {
-      // The directory has content, but none of it is a field to check. Say which
-      // it was, so "nothing to validate" does not look like a failure to read.
-      result.warnings.push(
-        `0/ contains no physical fields to check — only mesh bookkeeping written by the mesher `
-        + `(${allZeroFiles.slice(0, 6).join(', ')}${allZeroFiles.length > 6 ? ', …' : ''}).`
-      );
-      result.success = true;
-      return result;
-    }
-
-    // A binary field is unreadable as text; ask OpenFOAM for those. The header
-    // is ASCII in both formats, so this is decided by reading it, not guessed.
-    const contents = new Map<string, string>();
-    const binaryFields: string[] = [];
-    for (const fieldFile of fieldFiles) {
-      let content = '';
-      try {
-        content = runInWsl(`cat -- ${shellQuote(`${casePath}/0/${fieldFile}`)} 2>/dev/null`).trim();
-      } catch { continue; }
-      if (!content) continue;
-      contents.set(fieldFile, content);
-      if (/\bformat\s+binary\s*;/.test(content.slice(0, 2000))) binaryFields.push(fieldFile);
-    }
-    const binaryEntries = binaryFieldEntries(casePath, binaryFields);
-
-    for (const fieldFile of fieldFiles) {
-      const content = contents.get(fieldFile);
-      if (!content) continue;
-
-      // Comments come out FIRST. The banner at the top of every OpenFOAM file
-      // is a block comment, a commented-out patch block would otherwise be read
-      // as a real one, and a `//` line containing a brace would throw the brace
-      // counting off for the rest of the file.
-      const clean = stripFoamComments(content);
-      const binaryList = binaryEntries.get(fieldFile);
-
-      const bfIdx = clean.indexOf('boundaryField');
-      if (bfIdx === -1) {
-        result.warnings.push(`${fieldFile}: no boundaryField found`);
-        continue;
-      }
-      let pos = bfIdx + 'boundaryField'.length;
-      while (pos < clean.length && /\s/.test(clean[pos])) pos++;
-      if (pos >= clean.length || clean[pos] !== '{') {
-        result.warnings.push(`${fieldFile}: boundaryField without opening brace`);
-        continue;
-      }
-      // Brace counting over a binary blob returns nonsense or nothing; when
-      // foamDictionary has already answered for this field, that is fine.
-      const bfBlock = extractBraceBlock(clean, pos);
-      if (bfBlock === null && !(binaryList && binaryList.length)) {
-        result.warnings.push(`${fieldFile}: unable to extract boundaryField`);
-        continue;
-      }
-
-      const { entries, directives } = binaryList && binaryList.length
-        ? { entries: binaryList, directives: [] as string[] }
-        : parseBoundaryFieldEntries(bfBlock || '');
-      if (directives.length) {
-        result.warnings.push(
-          `${fieldFile}: ${directives.length} entr${directives.length === 1 ? 'y is' : 'ies are'} ` +
-          `built by the preprocessor (${directives.slice(0, 3).join(', ')}` +
-          `${directives.length > 3 ? ', …' : ''}) — whatever they bring in was not checked here.`
-        );
-      }
-
-      const patches: { patch: string; type: string; valid: boolean; note?: string }[] = [];
-
-      // No mesh to check against: report what the file says and nothing more.
-      if (meshPatches.length === 0) {
-        for (const e of entries) {
-          patches.push({ patch: e.key, type: e.type || '(no type)', valid: true });
-        }
-        if (patches.length) result.fields.push({ name: fieldFile, patches });
-        continue;
-      }
-
-      // ── 3. Which entry covers which patch ──
-      //
-      // OpenFOAM resolves a patch against boundaryField in this order: the
-      // patch's own name, then a group it belongs to, then a regular
-      // expression — and among regular expressions the LAST one written wins.
-      // Following the same order is what makes the answer here the answer the
-      // solver will give.
-      const coverage = new Map<string, MatchedEntry>();
-      for (const patch of meshPatches) {
-        const match = resolveEntryForPatch(patch, entries);
-        if (match) coverage.set(patch.name, match);
-      }
-
-      const usedEntries = new Set<number>();
-      for (const patch of meshPatches) {
-        const match = coverage.get(patch.name);
-        if (!match) {
-          patches.push({
-            patch: patch.name,
-            type: 'MISSING',
-            valid: false,
-            note: 'no entry in boundaryField matches this patch',
-          });
-          continue;
-        }
-        usedEntries.add(match.index);
-        const e = entries[match.index];
-        patches.push({
-          patch: patch.name,
-          type: e.type || '(no type)',
-          valid: true,
-          note: match.how === 'name' ? undefined
-            : match.how === 'group' ? `via the group "${e.key}"`
-            : `via the pattern "${e.key}"`,
-        });
-      }
-
-      // An entry that covers nothing is the other half of the check: a typo in
-      // a patch name, or a pattern that no longer matches anything after the
-      // mesh was rebuilt, is silently ignored by OpenFOAM — the field simply
-      // has no condition there and the run fails later, somewhere else.
-      entries.forEach((e, i) => {
-        if (usedEntries.has(i)) return;
-        patches.push({
-          patch: e.kind === 'regex' ? `"${e.key}"` : e.key,
-          type: e.type || '(no type)',
-          valid: false,
-          note: e.kind === 'regex'
-            ? 'this pattern matches none of the mesh patches'
-            : 'not a patch or group of this mesh',
-        });
-      });
-
-      if (patches.length > 0) result.fields.push({ name: fieldFile, patches });
-    }
-
     result.success = true;
   } catch (e: unknown) {
     result.warnings.push(e instanceof Error ? e.message : String(e));
@@ -3866,6 +3930,18 @@ export function getCaseSummary(caseName: string): CaseSummaryInfo {
   try {
     const script = `
 CASE=${shellQuote(casePath)}
+${CASE_REGIONS_SH}
+# A multi-region case keeps its mesh, fields and schemes per region:
+# constant/<region>/polyMesh, 0/<region>/, system/<region>/fvSchemes.
+REGIONS=""; [ -d "$CASE/constant/polyMesh" ] || REGIONS=$(case_regions "$CASE")
+MESHDIRS="$CASE/constant/polyMesh"; FIELDDIRS="$CASE/0"; SCHEMES="$CASE/system/fvSchemes"
+if [ -n "$REGIONS" ]; then
+  MESHDIRS=""; FIELDDIRS=""; SCHEMES=""
+  for r in $REGIONS; do
+    MESHDIRS="$MESHDIRS $CASE/constant/$r/polyMesh"; FIELDDIRS="$FIELDDIRS $CASE/0/$r"
+    [ -z "$SCHEMES" ] && [ -f "$CASE/system/$r/fvSchemes" ] && SCHEMES="$CASE/system/$r/fvSchemes"
+  done
+fi
 # Solver from controlDict.
 #
 # "application icoFoam;" is the v9/v10 spelling. From v11 the solvers became
@@ -3876,6 +3952,11 @@ SOLVER=$(grep -E '^solver\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{pr
 if [ -z "$SOLVER" ]; then
   SOLVER=$(grep -E '^application\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
 fi
+# foamMultiRun names one solver module per region.
+if [ -n "$REGIONS" ]; then
+  RS=$(awk '/^[ \\t]*regionSolvers/ { on = 1 } on && NF == 2 && $2 ~ /;$/ { v = $2; sub(/;$/, "", v); printf "%s%s: %s", (n++ ? ", " : ""), $1, v } on && /}/ { exit }' "$CASE/system/controlDict" 2>/dev/null)
+  [ -n "$RS" ] && SOLVER="$SOLVER ($RS)"
+fi
 echo "SOLVER:$SOLVER"
 # Time params from controlDict
 DT=$(grep -E '^deltaT\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
@@ -3885,7 +3966,7 @@ echo "ET:$ET"
 WI=$(grep -E '^writeInterval\\s+' "$CASE/system/controlDict" 2>/dev/null | awk '{print $2}' | tr -d ';')
 echo "WI:$WI"
 # Scheme (ddtSchemes)
-SCHEME=$(grep -A2 'ddtSchemes' "$CASE/system/fvSchemes" 2>/dev/null | grep 'default' | awk '{print $NF}' | tr -d ';')
+SCHEME=$(grep -A2 'ddtSchemes' "$SCHEMES" 2>/dev/null | grep 'default' | awk '{print $NF}' | tr -d ';')
 echo "SCHEME:$SCHEME"
 # Mesh cells.
 #
@@ -3895,10 +3976,14 @@ echo "SCHEME:$SCHEME"
 # It was being looked for in boundary, which does not carry it, and the
 # fallback counted lines beginning with an open bracket in faces - a file that
 # has exactly one. Every case therefore reported a mesh of 1 cell.
-CELLS=$(sed -n 's/.*nCells:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$CASE/constant/polyMesh/owner" 2>/dev/null | head -1)
-if [ -z "$CELLS" ]; then
-  CELLS=$(sed -n 's/.*nCells:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$CASE/constant/polyMesh/neighbour" 2>/dev/null | head -1)
-fi
+CELLS=""
+for m in $MESHDIRS; do
+  C=$(sed -n 's/.*nCells:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$m/owner" 2>/dev/null | head -1)
+  if [ -z "$C" ]; then
+    C=$(sed -n 's/.*nCells:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$m/neighbour" 2>/dev/null | head -1)
+  fi
+  [ -n "$C" ] && CELLS=$(( \${CELLS:-0} + C ))
+done
 echo "CELLS:$CELLS"
 # Patch names.
 #
@@ -3917,10 +4002,10 @@ PATCHNAMES=$(awk '{
   gsub(/^[ \\t]+|[ \\t]+$/, "", line)
   if (line == "{" && prev ~ /^[A-Za-z][A-Za-z0-9_.:-]*$/ && prev != "FoamFile") print prev
   if (line != "") prev = line
-}' "$CASE/constant/polyMesh/boundary" 2>/dev/null | head -50 | paste -sd, -)
+}' $(for m in $MESHDIRS; do printf '%s/boundary ' "$m"; done) 2>/dev/null | head -50 | paste -sd, -)
 echo "PATCHNAMES:$PATCHNAMES"
 # Field count in 0/
-FIELDS=$(ls -1 "$CASE/0/" 2>/dev/null | wc -l)
+FIELDS=$(for d in $FIELDDIRS; do find "$d" -mindepth 1 -maxdepth 1 -type f 2>/dev/null; done | wc -l)
 echo "FIELDS:$FIELDS"
 # Timestep count and range
 TS_LIST=$(
@@ -4105,7 +4190,27 @@ export interface CheckMeshResult {
   meshOk: boolean;
 }
 
-export function runCheckMesh(caseName: string): CheckMeshResult {
+export function runCheckMesh(caseName: string, region?: string): CheckMeshResult {
+  if (region === undefined) {
+    // A multi-region case has no constant/polyMesh, and checkMesh without
+    // -region stopped with "cannot find polyMesh". Each region is checked on
+    // its own and the reports are read as one, every line naming its region.
+    const regions = getCaseRegions(caseName);
+    const targets = meshTargets(regions);
+    if (targets.length > 1 || (targets.length === 1 && targets[0])) {
+      const each = targets.map(r => [r || 'default', runCheckMesh(caseName, r)] as const);
+      return {
+        success: each.every(([, result]) => result.success),
+        raw: each.map(([name, result]) => `════ region ${name} ════\n${result.raw}`).join('\n\n'),
+        overallStats: each.flatMap(([name, result]) => result.overallStats.map(stat => ({ key: `${name}: ${stat.key}`, value: stat.value }))),
+        failedChecks: each.flatMap(([name, result]) => result.success
+          ? result.failedChecks.map(check => ({ ...check, message: `[${name}] ${check.message}` }))
+          : [{ severity: 'fail' as const, message: `[${name}] checkMesh did not complete — see the report below` }]),
+        meshOk: each.every(([, result]) => result.success && result.meshOk),
+      };
+    }
+    region = targets[0] ?? '';
+  }
   const casePath = getCasePath(caseName);
   // Through the script runner, with checkMesh's exit status captured inside the
   // script and `exit 0` at the end: runInWsl returns stdout only on success, so
@@ -4113,7 +4218,7 @@ export function runCheckMesh(caseName: string): CheckMeshResult {
   // wsl command line, next to a "Mesh issues detected" banner about a check
   // that had never run. The report itself is read by parseCheckMeshOutput.
   const script = `cd ${shellQuote(casePath)} || { echo "the case folder was not found" >&2; exit 1; }
-${foamSource()}checkMesh 2>&1
+${foamSource()}checkMesh${regionOption(region)} 2>&1
 echo "__CHECKMESH_EXIT__$?"
 exit 0
 `;
@@ -4232,6 +4337,11 @@ export interface PostProcessDataset {
  * keep their remaining path in the file name, so nothing is hidden and nothing
  * is mistaken for a sibling.
  */
+/** A time directory name, as OpenFOAM writes them. */
+function isTimeDirName(name: string): boolean {
+  return /^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/.test(name);
+}
+
 export function listPostProcessing(caseName: string): PostProcessDataset[] {
   const casePath = getCasePath(caseName);
   const root = `${casePath}/${POST_PROCESSING_DIR}`;
@@ -4257,8 +4367,15 @@ done | head -n ${MAX_ENTRIES}
     if (!relative) continue;
     const segments = relative.split('/');
     if (segments.length < 3) continue;
-    const [datasetName, time, ...rest] = segments;
-    const fileName = rest.join('/');
+    // A function object of a region other than the default writes one level
+    // deeper, postProcessing/<region>/<function>/<time>/ (writeFile::
+    // baseFileDir). Read as <function>/<time>, it turned the region into the
+    // dataset and the function's name into its time. Such a dataset is named
+    // <region>/<function>.
+    const regional = !isTimeDirName(segments[1]) && segments.length >= 4 && isTimeDirName(segments[2]);
+    const datasetName = regional ? `${segments[0]}/${segments[1]}` : segments[0];
+    const time = regional ? segments[2] : segments[1];
+    const fileName = segments.slice(regional ? 3 : 2).join('/');
     if (!isTabularOutput(fileName)) continue;
 
     let files = datasets.get(datasetName);
@@ -4329,7 +4446,8 @@ export function readPostProcessDataset(
   // paths and NUL/newline — which is exactly the boundary needed here.
   const safeDataset = validateRelativePath(datasetName, 'Dataset');
   const safeFile = validateRelativePath(fileName, 'File');
-  if (safeDataset.includes('/')) throw new WslInputError('Dataset invalid');
+  // <function>, or <region>/<function> for a region's function object.
+  if (safeDataset.split('/').length > 2) throw new WslInputError('Dataset invalid');
   const safeRequestedTime = requestedTime?.trim() || '';
   if (safeRequestedTime && !/^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/.test(safeRequestedTime)) {
     throw new WslInputError('Post-processing time is not valid');
@@ -4818,8 +4936,13 @@ export function readFunctionClassDoc(type: string): FunctionClassDoc | null {
 // ── What the open case can answer about itself ──
 
 export interface PostProcessContext extends CaseContext {
-  /** `solver` in a v11+ controlDict, `application` in the older layout. */
+  /** `solver` in a v11+ controlDict, `application` in the older layout; the
+   *  region's module from regionSolvers in a multi-region case. */
   solver: string;
+  /** The case's regions, empty for a single-region case. */
+  regions: string[];
+  /** The region the rest describes ('' for a single-region case). */
+  region: string;
   /** Times already written, so a `-time` range can name one that exists. */
   times: string[];
 }
@@ -4834,16 +4957,33 @@ export interface PostProcessContext extends CaseContext {
  * end=(0 0 0)` — a line of zero length that no graph function can sample —
  * into a line that crosses this mesh.
  */
-export function getPostProcessContext(caseName: string): PostProcessContext {
+export function getPostProcessContext(caseName: string, requestedRegion = ''): PostProcessContext {
   const casePath = getCasePath(caseName);
   const empty: PostProcessContext = {
-    solver: '', times: [], patches: [], fields: [], cellZones: [], faceZones: [],
+    solver: '', times: [], patches: [], fields: [], cellZones: [], faceZones: [], regions: [], region: '',
   };
+  if (requestedRegion && !REGION_NAME.test(requestedRegion)) throw new WslInputError('Region name is not valid');
 
+  // A multi-region case keeps each region's mesh in constant/<region>/polyMesh
+  // and its fields in <time>/<region>/, and names a solver module per region in
+  // regionSolvers. The context is the asked-for region's — the first one when
+  // none is asked for — so the patches, fields and -solver offered exist there.
   const script = `
 CASE=${shellQuote(casePath)}
+${CASE_REGIONS_SH}
+REGIONS=""; [ -d "$CASE/constant/polyMesh" ] || REGIONS=$(case_regions "$CASE")
+echo "REGIONS:$(printf '%s\n' $REGIONS | paste -sd, -)"
+R=${shellQuote(requestedRegion)}
+if [ -n "$REGIONS" ] && [ -z "$R" ]; then R=$(printf '%s\n' $REGIONS | head -1); fi
+[ -n "$REGIONS" ] || R=""
+echo "REGION:$R"
+SUB="\${R:+$R/}"
 SOLVER=$(sed -n 's/^solver[[:space:]]\\{1,\\}\\([A-Za-z][A-Za-z0-9_.]*\\);.*/\\1/p' "$CASE/system/controlDict" 2>/dev/null | head -1)
-if [ -z "$SOLVER" ]; then
+if [ -n "$R" ]; then
+  # foamMultiRun: the region's own module, from regionSolvers.
+  SOLVER=$(awk -v r="$R" '/^[ \\t]*regionSolvers/ { on = 1 } on && $1 == r && NF == 2 { v = $2; sub(/;$/, "", v); print v; exit } on && /}/ { exit }' "$CASE/system/controlDict" 2>/dev/null)
+fi
+if [ -z "$SOLVER" ] && [ -z "$R" ]; then
   SOLVER=$(sed -n 's/^application[[:space:]]\\{1,\\}\\([A-Za-z][A-Za-z0-9_.]*\\);.*/\\1/p' "$CASE/system/controlDict" 2>/dev/null | head -1)
 fi
 echo "SOLVER:$SOLVER"
@@ -4858,9 +4998,9 @@ names() {
     if (line != "") prev = line
   }' "$1" 2>/dev/null | head -n 200 | paste -sd, -
 }
-echo "PATCHES:$(names "$CASE/constant/polyMesh/boundary")"
-echo "CELLZONES:$(names "$CASE/constant/polyMesh/cellZones")"
-echo "FACEZONES:$(names "$CASE/constant/polyMesh/faceZones")"
+echo "PATCHES:$(names "$CASE/constant/\${SUB}polyMesh/boundary")"
+echo "CELLZONES:$(names "$CASE/constant/\${SUB}polyMesh/cellZones")"
+echo "FACEZONES:$(names "$CASE/constant/\${SUB}polyMesh/faceZones")"
 
 TIMES=$(
   for d in "$CASE"/*/; do
@@ -4875,13 +5015,13 @@ echo "TIMES:$(printf '%s\\n' "$TIMES" | grep -v '^$' | paste -sd, -)"
 # Fields as written at the latest time, falling back to 0/ for a case that has
 # not been run: those are the names a function object can actually be given.
 LAST=$(printf '%s\\n' "$TIMES" | grep -v '^$' | tail -1)
-FIELDDIR="$CASE/$LAST"
-if [ -z "$LAST" ] || [ ! -d "$FIELDDIR" ]; then FIELDDIR="$CASE/0"; fi
+FIELDDIR="$CASE/$LAST/$R"
+if [ -z "$LAST" ] || [ ! -d "$FIELDDIR" ]; then FIELDDIR="$CASE/0/$R"; fi
 echo "FIELDS:$(ls -1 "$FIELDDIR" 2>/dev/null | grep -E '^[A-Za-z][A-Za-z0-9_.]*$' | grep -v -E '^(uniform|polyMesh)$' | head -n 100 | paste -sd, -)"
 
 # The bounding box, only when the points are ASCII — a binary file would be
 # scanned as noise, and no example is better than a wrong one.
-POINTS="$CASE/constant/polyMesh/points"
+POINTS="$CASE/constant/\${SUB}polyMesh/points"
 if [ -f "$POINTS" ] && head -c 4096 "$POINTS" | grep -q 'format[[:space:]]*ascii'; then
   echo "BOUNDS:$(awk '
     /^\\(-?[0-9.eE+-]+ -?[0-9.eE+-]+ -?[0-9.eE+-]+\\)$/ {
@@ -4915,6 +5055,8 @@ fi
     : undefined;
 
   return {
+    regions: list('REGIONS'),
+    region: read('REGION'),
     solver: read('SOLVER'),
     times: list('TIMES'),
     patches: list('PATCHES'),
@@ -5022,11 +5164,50 @@ export async function extractCaseSurface(caseName: string, timeout = 120000): Pr
   // Asynchronous because surfaceMeshTriangulate can run for up to two minutes
   // on a large case, and the synchronous runner froze every other request of
   // the server — Monitor, Dashboard, all of it — for that whole time.
+  //
+  // A multi-region case has no constant/polyMesh: each region is triangulated
+  // with -region and the surfaces are joined into the one STL, every solid
+  // renamed <region>/<patch> — the viewer then shows both meshes, each patch
+  // on its own. It used to stop at "this case has no mesh yet".
   const script = `
 ${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 0; }
-[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 0; }
-rm -f ${shellQuote(SURFACE_STL_NAME)}
-surfaceMeshTriangulate ${shellQuote(SURFACE_STL_NAME)} 2>&1
+${CASE_REGIONS_SH}
+OUT=${shellQuote(SURFACE_STL_NAME)}
+# One region at a time; the extension is what tells the writer the format.
+REGSTL="\${OUT%.stl}-region.stl"
+rm -f "$OUT"
+if [ -d constant/polyMesh ]; then
+  surfaceMeshTriangulate "$OUT" 2>&1
+else
+  found=0
+  for r in $(case_regions .); do
+    [ -d "constant/$r/polyMesh" ] || continue
+    found=1
+    echo "__REGION__$r"
+    rm -f "$REGSTL"
+    # The region's solver module may define its own patch types (film: the
+    # filmWall of a film region), which a utility does not know until the
+    # module's library is loaded — lib<module>Solver.so, the name foamRun
+    # loads it by. Without it surfaceMeshTriangulate stopped with "Unknown
+    # polyPatch type filmWall".
+    m=$(awk -v r="$r" '/^[ \\t]*regionSolvers/ { on = 1 } on && $1 == r && NF == 2 { v = $2; sub(/;$/, "", v); print v; exit } on && /}/ { exit }' system/controlDict 2>/dev/null)
+    lib=""
+    if [ -n "$m" ]; then
+      for d in "$FOAM_USER_LIBBIN" "$FOAM_SITE_LIBBIN" "$FOAM_LIBBIN"; do
+        [ -n "$d" ] && [ -f "$d/lib\${m}Solver.so" ] && { lib="lib\${m}Solver.so"; break; }
+      done
+    fi
+    if [ -n "$lib" ]; then
+      surfaceMeshTriangulate -region "$r" -libs "(\\"$lib\\")" "$REGSTL" 2>&1
+    else
+      surfaceMeshTriangulate -region "$r" "$REGSTL" 2>&1
+    fi
+    [ -f "$REGSTL" ] && echo "__REGION_OK__$r"
+    [ -f "$REGSTL" ] && sed -e "s/^solid \\(.*\\)$/solid $r\\/\\1/" -e "s/^endsolid \\(.*\\)$/endsolid $r\\/\\1/" "$REGSTL" >> "$OUT"
+    rm -f "$REGSTL"
+  done
+  [ "$found" = 1 ] || { echo "__NO_MESH__"; exit 0; }
+fi
 exit 0
 `;
   const out = await runInWslScriptAsync(Buffer.from(script).toString('base64'), timeout);
@@ -5035,7 +5216,9 @@ exit 0
   if (out.includes('__NO_MESH__')) {
     throw new Error('This case has no mesh yet — run blockMesh first.');
   }
-  if (/FOAM FATAL/.test(out)) {
+  // A multi-region case shows the regions that could be read even when one
+  // could not; it fails only when none could.
+  if (/FOAM FATAL/.test(out) && !out.includes('__REGION_OK__')) {
     // The reason is the line after "FOAM FATAL ERROR"; the first line of the
     // output is OpenFOAM's banner.
     const lines = out.split('\n').map(l => l.trim()).filter(Boolean);
@@ -5044,8 +5227,16 @@ exit 0
     throw new Error(`surfaceMeshTriangulate failed: ${detail}`);
   }
 
-  // "surfZone 0 : movingWall" — the patch list, in write order.
-  const patchNames = [...out.matchAll(/^surfZone\s+\d+\s*:\s*(\S+)/gm)].map(m => m[1]);
+  // "surfZone 0 : movingWall" — the patch list, in write order; behind its
+  // region in a multi-region case, as the solids were renamed.
+  const patchNames: string[] = [];
+  let region = '';
+  for (const line of out.split('\n')) {
+    const marker = line.match(/^__REGION__(\S+)/);
+    if (marker) { region = marker[1]; continue; }
+    const zone = line.match(/^surfZone\s+\d+\s*:\s*(\S+)/);
+    if (zone) patchNames.push(region ? `${region}/${zone[1]}` : zone[1]);
+  }
 
   return {
     windowsPath: wslPathToWindows(`${casePath}/${SURFACE_STL_NAME}`),
@@ -5065,7 +5256,12 @@ exit 0
 export function estimateBoundaryTriangles(caseName: string): number | null {
   let text = '';
   try {
-    text = runInWsl(`cat -- ${shellQuote(`${getCasePath(caseName)}/constant/polyMesh/boundary`)} 2>/dev/null`, 10000);
+    // Every region's boundary in a multi-region case: the viewer shows them all.
+    text = runInWsl(
+      `cd -- ${shellQuote(getCasePath(caseName))} 2>/dev/null && `
+      + 'if [ -f constant/polyMesh/boundary ]; then cat constant/polyMesh/boundary; else cat constant/*/polyMesh/boundary; fi 2>/dev/null',
+      10000,
+    );
   } catch {
     return null;
   }
@@ -5089,7 +5285,8 @@ export function estimateBoundaryTriangles(caseName: string): number | null {
 export function cleanupCaseSurface(caseName: string): void {
   try {
     const casePath = getCasePath(caseName);
-    runInWsl(`rm -f ${shellQuote(`${casePath}/${SURFACE_STL_NAME}`)}`, 10000);
+    // The per-region file too, in case an extraction was cut short.
+    runInWsl(`rm -f ${shellQuote(`${casePath}/${SURFACE_STL_NAME}`)} ${shellQuote(`${casePath}/${SURFACE_STL_NAME.replace(/\.stl$/, '-region.stl')}`)}`, 10000);
   } catch { /* best effort */ }
 }
 
@@ -5111,11 +5308,23 @@ export interface ParaFoamMarker {
 export function createParaFoamMarker(caseName: string): ParaFoamMarker {
   const casePath = getCasePath(caseName);
   const src = foamSource();
+  // A multi-region case has its meshes in constant/<region>/polyMesh. Opened
+  // through the case's plain marker, ParaView's OpenFOAM reader lists them all
+  // (/fluid/internalMesh, /film/patch/wall, …); the per-region markers
+  // paraFoam -touchAll writes (case{fluid}.OpenFOAM) are paraFoam's own
+  // reader's convention and show nothing in it. So the plain one is made and
+  // used, never whichever *.OpenFOAM `find` happened to list first.
   const script = `
 ${src}cd ${shellQuote(casePath)} 2>/dev/null || { echo "__NO_CASE__"; exit 0; }
-[ -d constant/polyMesh ] || { echo "__NO_MESH__"; exit 0; }
+${CASE_REGIONS_SH}
+if [ ! -d constant/polyMesh ]; then
+  meshed=0
+  for r in $(case_regions .); do [ -d "constant/$r/polyMesh" ] && meshed=1; done
+  [ "$meshed" = 1 ] || { echo "__NO_MESH__"; exit 0; }
+fi
 paraFoam -touch 2>&1 || { echo "__PARAFOAM_FAILED__"; exit 0; }
-find . -maxdepth 1 -type f -name '*.OpenFOAM' -printf '__MARKER__%f\n' | head -1
+marker="\${PWD##*/}.OpenFOAM"
+[ -f "$marker" ] && printf '__MARKER__%s\\n' "$marker"
 `;
   // The markers above exit 0 on purpose: runInWslScript returns stdout only on
   // success, and throws with stderr (here, nothing but the command line)

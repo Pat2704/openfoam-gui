@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getCaseInfoAsync,
+  getCaseRegionsAsync,
   statFile,
   listDirectoryAsync,
   readFile,
@@ -37,6 +38,7 @@ import { runCasePreflight } from '@/lib/case-preflight';
 //   ?action=caseSummary          → CaseSummaryInfo
 //   ?action=wizardState          → { text: string | null } (the wizard's record)
 //   ?action=preflight            → CasePreflightReport
+//   ?action=regions              → CaseRegions (src/lib/case-regions.ts)
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ name: string }> }
@@ -104,9 +106,12 @@ export async function GET(
       case 'preflight': {
         return NextResponse.json(await runCasePreflight(caseName));
       }
+      case 'regions': {
+        return NextResponse.json(await getCaseRegionsAsync(caseName));
+      }
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: read, info, ls, logs, listLogs, residuals, checkMesh, validateBC, caseSummary, wizardState, preflight' },
+          { error: 'Invalid action. Use: read, info, ls, logs, listLogs, residuals, checkMesh, validateBC, caseSummary, wizardState, preflight, regions' },
           { status: 400 }
         );
     }

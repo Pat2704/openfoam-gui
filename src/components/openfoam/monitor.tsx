@@ -20,7 +20,7 @@ import {
   ResponsiveContainer, ReferenceLine
 } from 'recharts';
 import { confirmDialog } from '@/components/ui/confirm-host';
-import { parseAllResiduals, residualLogDomain, type ResidualPoint, type ResidualKind } from '@/lib/residuals';
+import { getLastSimTime, parseAllResiduals, residualLogDomain, type ResidualPoint, type ResidualKind } from '@/lib/residuals';
 import { isProcessForCase } from '@/lib/case-processes';
 
 interface ProcessRow {
@@ -47,14 +47,6 @@ const RESIDUAL_COLORS = [
   '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6',
   '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#6366f1',
 ];
-
-function getLastSimTime(log: string): string {
-  const matches = log.match(/Time\s*=\s*([^\s\n]+)/g);
-  if (!matches || matches.length === 0) return '';
-  const last = matches[matches.length - 1];
-  const m = last.match(/Time\s*=\s*([^\s\n]+)/);
-  return m ? m[1] : '';
-}
 
 function formatElapsed(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -729,7 +721,7 @@ export default function Monitor({ caseName, active = true }: {
               The case's time folders (0, 0.1, 1, …) will appear here automatically.
             </div>
           )}
-          {simTime && timeSteps.length > 0 && simTime !== timeSteps[timeSteps.length - 1] && (
+          {simTime && timeSteps.length > 0 && Number(simTime) !== Number(timeSteps[timeSteps.length - 1]) && (
             <p className="mt-1 text-[10px] text-amber-500">Solver log at time {simTime}; last timestep written to disk: {timeSteps[timeSteps.length - 1]}.</p>
           )}
         </Card>

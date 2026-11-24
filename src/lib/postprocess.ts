@@ -1314,9 +1314,12 @@ export function parsePostProcessCommand(
 export function buildCommandTemplate(
   utility: string,
   spec: string,
-  options: { solver?: string } = {},
+  options: { solver?: string; region?: string } = {},
 ): string {
   const parts = [utility, `-func "${spec}"`];
+  // A multi-region case: the function runs on one region's mesh and fields,
+  // with that region's solver module.
+  if (options.region) parts.push(`-region ${options.region}`);
   if (options.solver) parts.push(`-solver ${options.solver}`);
   return parts.join(' ');
 }

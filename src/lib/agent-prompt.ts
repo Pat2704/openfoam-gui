@@ -139,6 +139,13 @@ const LARGE_FILES = [
   'They compute in WSL and return a few KB, and none of them changes the case except checkMesh writing polyMesh/sets.',
   'Quote their numbers when you explain a result, and say when a digest could not read something (binary fields).',
   '',
+  'A MULTI-REGION CASE (foamMultiRun with regionSolvers in controlDict; chtMultiRegionFoam and',
+  'constant/regionProperties on 9–10) has no constant/polyMesh and no fields directly in 0/: each region has',
+  'constant/<region>/polyMesh, 0/<region>/, system/<region>/fvSchemes and fvSolution, <time>/<region>/, and',
+  'postProcessing/<region>/. Its log puts the region before each solver line ("fluid smoothSolver: Solving for Ux").',
+  'Utilities take -region <name> (checkMesh, foamPostProcess, foamToVTK); decomposePar and reconstructPar take',
+  '-allRegions. The digests already report every region; field names there read <region>/<field>.',
+  '',
 ];
 
 /** Shared behavioral contract for both subscription agents. */
