@@ -8,6 +8,9 @@ audits.
 
 ## 2026-11-24 — Multi-region cases (foamMultiRun, chtMultiRegionFoam)
 
+- Released `v5.10.0` (`docs/releases/v5.10.0.md`): the `564da41` pair, renamed
+  without rebuilding (embedded 5.9.4); the v5.9.3 release entry was removed.
+
 - Found on Lab06-surfaceFilm/combustor2D-film (v14, regionSolvers film +
   multicomponentFluid). `src/lib/case-regions.ts` finds regions as OpenFOAM and
   paraFoam do: regionSolvers, constant/regionProperties (9–10),
