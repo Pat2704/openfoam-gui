@@ -56,4 +56,22 @@ describe('validateDictText', () => {
     // A thermo component is not a boundary condition.
     assert.equal(validateDictText(INDEX, bc, '0/T').length, 1);
   });
+
+  test('a type inside a boundary condition belongs to its model, not to the patch', () => {
+    // 0/film/delta of a film region: the contact-angle model sits in the patch.
+    const index = { ...INDEX, names: { ...INDEX.names, filmContactAngle: ['fvPatchScalarField'], constant: ['Function1'] },
+      boundaryConditions: { scalar: ['zeroGradient', 'filmContactAngle'], vector: [] } };
+    const film = 'boundaryField\n{\n    wall\n    {\n        type            filmContactAngle;\n        contactAngle\n        {\n            type            constant;\n            theta0          70;\n        }\n    }\n}';
+    assert.deepEqual(validateDictText(index, film, '0/film/delta'), []);
+    const typo = film.replace('type            constant;', 'type            constnat;');
+    assert.deepEqual(validateDictText(index, typo, '0/film/delta').map(p => p.name), ['constnat']);
+  });
+
+  test('a name the sources declare is known when foamToC cannot list it', () => {
+    // Lagrangian parcel models register only in templated tables.
+    const index = { ...INDEX, keysByType: { coneInjection: ['SOI', 'massTotal'] } };
+    const cloud = 'injectionModels\n{\n    model1\n    {\n        type            coneInjection;\n    }\n}';
+    assert.deepEqual(validateDictText(index, cloud, 'constant/fluid/cloudProperties'), []);
+    assert.equal(validateDictText(INDEX, cloud, 'constant/fluid/cloudProperties').length, 1);
+  });
 });

@@ -30,6 +30,12 @@ audits.
   Post-Process: `postProcessing/<region>/<fn>` datasets, a Region selector
   (`-region`, the region's `-solver`). Commands: foamMultiRun, `-region`,
   `-allRegions`. Checked on a temporary copy, since removed.
+- File Editor preflight on that case: 14 "not verified" → 1 (checkMesh not
+  run). Large ASCII initial fields are read with nonuniform lists emptied
+  (`CONDENSE_NONUNIFORM_AWK`); BC validation resolves `#includeEtc` through
+  foamEtcFile (setConstraintTypes); a `type` below a patch entry is a model,
+  not a BC; TypeName-declared names (parcel models) are known; installation
+  libs are not custom code; per-region fvSchemes/fvSolution/fields warnings.
 
 ## 2026-11-17 — File Editor: faster on large cases, remembers each case
 

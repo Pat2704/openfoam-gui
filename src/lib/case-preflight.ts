@@ -18,6 +18,7 @@ import {
 import {
   getCaseInfo,
   getCaseRegions,
+  installedFoamLibraries,
   readCasePreflightFiles,
   validateBoundaryConditions,
   type BCValidationResult,
@@ -79,6 +80,19 @@ export interface PreflightAnalysisInput {
   boundary: BCValidationResult | null;
   /** The case's mesh regions; absent or empty for a single-region case. */
   regions?: CaseRegions;
+  /** Of the libraries the case's `libs` entries name, those the installation ships. */
+  installedLibraries?: string[];
+}
+
+/** The library names in every `libs (…)` entry, comments excluded. */
+export function caseLibraryNames(files: { content: string }[]): string[] {
+  const names: string[] = [];
+  for (const file of files) {
+    for (const block of stripComments(file.content).matchAll(/\blibs\s*\(([^)]*)\)/g)) {
+      for (const name of block[1].matchAll(/"([^"]+)"|([^\s"]+)/g)) names.push(name[1] ?? name[2]);
+    }
+  }
+  return [...new Set(names)];
 }
 
 const CATEGORY = {
@@ -156,8 +170,12 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
     inventory.files.find(file => file.path === `${root}/${name}` || file.path.startsWith(`${root}/`) && basename(file.path) === name);
   const control = fileMap.get('system/controlDict');
   const major = Number.parseInt(index.version, 10);
-  const hasCustomRuntime = inventory.files.some(file =>
-    /\blibs\s*\([^)]*\)|#codeStream|\bcode(?:Include|Options|Libs|Execute|Write|End)\b|\btype\s+coded[A-Za-z]*/.test(file.content));
+  // A library the installation ships (liblagrangianParcel.so, loaded by every
+  // case with a cloud) is not custom code; one it does not ship is.
+  const installedLibs = new Set(input.installedLibraries ?? []);
+  const customLibs = caseLibraryNames(inventory.files).filter(name => !installedLibs.has(name));
+  const hasCustomRuntime = customLibs.length > 0 || inventory.files.some(file =>
+    /#codeStream|\bcode(?:Include|Options|Libs|Execute|Write|End)\b|\btype\s+coded[A-Za-z]*/.test(stripComments(file.content)));
 
   // ── Structure ───────────────────────────────────────────────────────────
   if (!control) {
@@ -174,6 +192,27 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
     add({ severity: 'warning', category: CATEGORY.structure, title: 'fvSolution is missing',
       message: 'No linear-solver and algorithm dictionary was found in system/ or a region subdirectory.',
       file: 'system/fvSolution', openable: false, suggestion: 'Add the fvSolution required by the selected solver or module.' });
+  }
+  // Every region is solved with its own schemes, solution controls and fields,
+  // read from system/<region>/ and <initial time>/<region>/: one found for
+  // another region does not stand in for it.
+  if (multiRegion) {
+    const present = (filePath: string) => fileMap.has(filePath) || inventory.skipped.some(item => item.path === filePath);
+    for (const region of regionNames) {
+      for (const name of ['fvSchemes', 'fvSolution']) {
+        if (present(`system/${region}/${name}`)) continue;
+        add({ severity: 'warning', category: CATEGORY.structure, title: `Region ${region} has no ${name}`,
+          message: `system/${region}/${name} was not found; each region of a multi-region case reads its own.`,
+          file: `system/${region}/${name}`, openable: false,
+          suggestion: `Add system/${region}/${name} for the module this region runs.` });
+      }
+      const fieldsDir = inventory.initialTime ? `${inventory.initialTime}/${region}/` : null;
+      if (fieldsDir && ![...inventory.files, ...inventory.skipped].some(item => item.path.startsWith(fieldsDir))) {
+        add({ severity: 'warning', category: CATEGORY.structure, title: `Region ${region} has no initial fields`,
+          message: `${fieldsDir} is empty or absent; the region reads its fields from there.`,
+          suggestion: `Create ${fieldsDir} with the fields this region's module needs.` });
+      }
+    }
   }
   if (!inventory.initialTime) {
     add({ severity: 'error', category: CATEGORY.structure, title: 'Initial time directory is missing',
@@ -251,7 +290,9 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
   }
   if (hasCustomRuntime) {
     add({ severity: 'unverified', category: CATEGORY.installation, title: 'Custom runtime code is present',
-      message: 'The case loads libraries or coded entries whose registrations and behaviour exist only after compilation/loading.',
+      message: customLibs.length
+        ? `The case loads ${customLibs.slice(0, 3).join(', ')}${customLibs.length > 3 ? ', …' : ''}, not part of the selected installation; its registrations and behaviour exist only once loaded.`
+        : 'The case has coded entries whose registrations and behaviour exist only after compilation.',
       suggestion: 'The preflight validates the surrounding dictionaries but does not execute custom code.' });
   }
 
@@ -358,8 +399,12 @@ export function analyzeCasePreflight(input: PreflightAnalysisInput): Omit<CasePr
     }
     for (const warning of boundary.warnings) {
       const skipped = /not checked|skipped|preprocessor|no mesh/i.test(warning);
+      // `fluid/U: …` names the field it is about; link it like the others.
+      const named = warning.match(/^([^\s:]+):/)?.[1];
+      const fieldPath = named && initialPrefix ? `${initialPrefix}${named}` : null;
+      const file = fieldPath && fileMap.has(fieldPath) ? fieldPath : undefined;
       add({ severity: skipped ? 'unverified' : 'warning', category: CATEGORY.fields,
-        title: skipped ? 'Boundary coverage is incomplete' : 'Boundary-condition warning', message: warning,
+        title: skipped ? 'Boundary coverage is incomplete' : 'Boundary-condition warning', message: warning, file,
         suggestion: skipped ? 'Resolve the stated prerequisite and run the preflight again.' : 'Review the referenced initial field.' });
     }
     for (const field of boundary.fields) {
@@ -509,6 +554,7 @@ export async function runCasePreflight(caseName: string): Promise<CasePreflightR
     syntaxUnavailableReason,
     boundary,
     regions,
+    installedLibraries: installedFoamLibraries(caseLibraryNames(inventory.files)),
   });
   return { ...report, checkedAt: new Date().toISOString(), durationMs: Date.now() - started };
 }

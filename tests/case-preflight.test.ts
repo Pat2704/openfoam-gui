@@ -143,6 +143,17 @@ describe('case preflight analysis', () => {
     assert.equal(report.issues.some(issue => issue.category === 'Installed-version vocabulary' && issue.severity === 'error'), false);
   });
 
+  test('a library the installation ships is not custom code', () => {
+    const input = validInput();
+    const cloudControl = file('system/controlDict', `${CONTROL}\nlibs ("liblagrangianParcel.so");\n// libs ("libmine.so");\n`);
+    const files = input.inventory.files.map(item => item.path === 'system/controlDict' ? cloudControl : item);
+    const withFiles = { ...input, inventory: { ...input.inventory, files } };
+    const shipped = analyzeCasePreflight({ ...withFiles, installedLibraries: ['liblagrangianParcel.so'] });
+    assert.ok(!shipped.issues.some(issue => issue.title === 'Custom runtime code is present'), 'the commented libs line is not read');
+    const unknown = analyzeCasePreflight(withFiles);
+    assert.match(unknown.issues.find(issue => issue.title === 'Custom runtime code is present')!.message, /liblagrangianParcel\.so/);
+  });
+
   test('never turns a catalogue miss or skipped dynamic preprocessing into a false blocking error', () => {
     const input = validInput();
     const unknownU = file('0/U', U.replace('type fixedValue;', 'type siteSpecificBoundary;'));
@@ -232,5 +243,25 @@ describe('a multi-region case', () => {
   test('a boundary finding points at the region field', () => {
     const report = analyzeCasePreflight(multiInput(['film', 'fluid']));
     assert.equal(report.issues.find(issue => issue.title === 'Boundary entry does not match the mesh')?.file, '0/fluid/U');
+    const input = multiInput(['film', 'fluid']);
+    const partial = analyzeCasePreflight({ ...input, boundary: { ...input.boundary!, fields: [],
+      warnings: ['fluid/U: 1 entry is built by the preprocessor (#include "extra") — whatever they bring in was not checked here.'] } });
+    assert.equal(partial.issues.find(issue => issue.title === 'Boundary coverage is incomplete')?.file, '0/fluid/U');
+  });
+
+  test('each region needs its own schemes, solution controls and fields', () => {
+    const report = analyzeCasePreflight(multiInput(['film', 'fluid']));
+    const titles = report.issues.filter(issue => issue.severity === 'warning').map(issue => issue.title);
+    assert.deepEqual(titles.filter(title => /^Region /.test(title)),
+      ['Region film has no fvSchemes', 'Region film has no fvSolution', 'Region film has no initial fields'],
+      'fluid has all three; film has none');
+    // A large field the inventory skipped still counts as present.
+    const input = multiInput(['film', 'fluid']);
+    const withFilm = analyzeCasePreflight({ ...input, inventory: { ...input.inventory,
+      files: [...input.inventory.files,
+        file('system/film/fvSchemes', 'FoamFile { class dictionary; object fvSchemes; }'),
+        file('system/film/fvSolution', 'FoamFile { class dictionary; object fvSolution; }')],
+      skipped: [{ path: '0/film/delta', reason: 'large', bytes: 1 << 20 }] } });
+    assert.ok(!withFilm.issues.some(issue => /^Region film has/.test(issue.title)));
   });
 });

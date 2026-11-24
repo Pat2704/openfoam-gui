@@ -896,7 +896,13 @@ export function validateDictText(index: FoamIndex, text: string, label: string):
   let pendingName: string | null = null;
 
   const flag = (name: string, kind: string, pool: Set<string> | null) => {
-    const known = pool ? pool.has(name) : Boolean(index.names[name]) || componentWords(index).has(name);
+    // Without a pool, a name declared by a TypeName in the installation's own
+    // sources exists too: foamToC cannot list the templated tables a class
+    // registers in only once instantiated (the Lagrangian parcel models —
+    // coneInjection, rebound — even with their library loaded).
+    const known = pool
+      ? pool.has(name)
+      : Boolean(index.names[name]) || componentWords(index).has(name) || Object.hasOwn(index.keysByType, name);
     if (known) return;
     // Suggestions from the right namespace first, then anything close — and
     // never the name itself, which a wider search can return when the name is
@@ -923,9 +929,13 @@ export function validateDictText(index: FoamIndex, text: string, label: string):
       const [, key, name] = entry;
       const inBoundary = stack.includes('boundaryField');
       const inTurbulence = stack.some(b => b === 'RAS' || b === 'LES');
+      // Only the type directly in a patch entry is a boundary condition; one
+      // deeper belongs to a model the condition selects — the film's
+      // `contactAngle { type constant; }` — and is checked as any other name.
+      const patchType = inBoundary && stack.length >= 2 && stack[stack.length - 2] === 'boundaryField';
 
-      if (key === 'type' && inBoundary) flag(name, 'boundary condition', bcNames);
-      else if (key === 'type' && !inBoundary) flag(name, 'type', null);
+      if (key === 'type' && patchType) flag(name, 'boundary condition', bcNames);
+      else if (key === 'type') flag(name, 'type', null);
       else if ((key === 'model' || key === 'RASModel' || key === 'LESModel') && (inTurbulence || /momentumTransport|turbulenceProperties/.test(label)))
         flag(name, 'turbulence model', turbulence);
       else if (key === 'solver' && stack.length === 0 && /controlDict/.test(label))

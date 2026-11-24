@@ -1623,6 +1623,8 @@ export interface CaseFileSlice {
   bytes: number;
   /** True when `content` is only the first CASE_CONTEXT_FILE_LIMIT bytes. */
   truncated: boolean;
+  /** Preflight only: an initial field whose nonuniform lists were emptied. */
+  condensed?: boolean;
 }
 
 /** A file the preflight could not safely or completely inspect. */
@@ -1644,6 +1646,37 @@ export interface CasePreflightFiles {
 
 const PREFLIGHT_FILE_LIMIT = 128_000;
 const PREFLIGHT_FILE_COUNT_LIMIT = 200;
+/** Largest initial field the preflight condenses rather than skips. */
+const PREFLIGHT_CONDENSE_LIMIT = 64 * 1024 * 1024;
+
+/**
+ * Empties every multi-line `nonuniform` list of an ASCII field, keeping the
+ * rest of the file as it is: the count becomes 0 and the values go.
+ *
+ *     internalField   nonuniform List<vector>      internalField   nonuniform List<vector>
+ *     15677                                    →   0
+ *     (                                            (
+ *     (0 0 0)                                      )
+ *     …                                            ;
+ *     )
+ *     ;
+ *
+ * An initial field written by setFields, mapFields or a run is hundreds of KB
+ * of values; what the preflight reads in it (header, boundaryField, the type
+ * of each patch) is a few hundred bytes. A list written on one line is short
+ * and left alone. Exported for the tests, which run it under WSL's awk.
+ */
+export const CONDENSE_NONUNIFORM_AWK = String.raw`
+skip { if ($0 ~ /^[[:space:]]*\)[[:space:]]*;?[[:space:]]*$/) { skip = 0; print } ; next }
+held != "" {
+  if ($0 ~ /^[[:space:]]*\([[:space:]]*$/) { print "0"; print "("; held = ""; skip = 1; next }
+  print held; held = ""
+}
+/nonuniform/ { nu = 1 }
+nu && /^[[:space:]]*[0-9]+[[:space:]]*$/ { held = $0; nu = 0; next }
+{ print }
+END { if (held != "") print held }
+`;
 
 /**
  * Read the configuration surface of a case for the File Editor preflight.
@@ -1688,6 +1721,20 @@ while IFS= read -r -d '' f; do
   fi
   sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
   if [ "$sz" -gt ${PREFLIGHT_FILE_LIMIT} ]; then
+    # An initial field is large because of its values, not of what is checked
+    # in it: those are read with their nonuniform lists emptied. An ASCII
+    # field only; a binary one stays skipped.
+    if [ -n "$INITIAL" ] && [ "\${rel#"$INITIAL"/}" != "$rel" ] && [ "$sz" -le ${PREFLIGHT_CONDENSE_LIMIT} ] \\
+      && ! head -c 4000 -- "$f" | grep -q 'format[[:space:]]*binary'; then
+      small=$(awk ${shellQuote(CONDENSE_NONUNIFORM_AWK)} "$f" 2>/dev/null)
+      if [ -n "$small" ] && [ \${#small} -le ${PREFLIGHT_FILE_LIMIT} ]; then
+        echo "${marker}CONDENSED|$rel"
+        echo "${marker}FILE|$sz|$rel"
+        printf '%s\\n' "$small"
+        echo "${marker}END"
+        continue
+      fi
+    fi
     echo "${marker}SKIP|large|$sz|$rel"
     continue
   fi
@@ -1719,6 +1766,9 @@ echo "${marker}DONE"
   const total = out.match(new RegExp(`${marker}TOTAL\\|(\\d+)`));
   const files: CaseFileSlice[] = [];
   const skipped: CasePreflightSkippedFile[] = [];
+  const condensed = new Set(out.split(/\r?\n/)
+    .filter(line => line.startsWith(`${marker}CONDENSED|`))
+    .map(line => line.slice(`${marker}CONDENSED|`.length).trim()));
   const blocks = out.split(`${marker}FILE|`);
   for (const block of blocks.slice(1)) {
     const nl = block.indexOf('\n');
@@ -1730,7 +1780,13 @@ echo "${marker}DONE"
     const bytes = Number(header.slice(0, bar)) || 0;
     const filePath = header.slice(bar + 1).trim();
     if (!filePath) continue;
-    files.push({ path: filePath, content: block.slice(nl + 1, end).replace(/\r/g, ''), bytes, truncated: false });
+    files.push({
+      path: filePath,
+      content: block.slice(nl + 1, end).replace(/\r/g, ''),
+      bytes,
+      truncated: false,
+      condensed: condensed.has(filePath) || undefined,
+    });
   }
   for (const line of out.split(/\r?\n/)) {
     if (!line.startsWith(`${marker}SKIP|`)) continue;
@@ -1751,6 +1807,30 @@ echo "${marker}DONE"
     totalFiles,
     inventoryTruncated: totalFiles > PREFLIGHT_FILE_COUNT_LIMIT,
   };
+}
+
+/**
+ * Of the libraries a case's `libs (…)` entries name, the ones the selected
+ * installation itself ships ($FOAM_LIBBIN, $FOAM_SITE_LIBBIN). A library
+ * found only in $FOAM_USER_LIBBIN, or nowhere, is the user's own code.
+ */
+export function installedFoamLibraries(names: string[]): string[] {
+  const safe = [...new Set(names)].filter(name => /^[A-Za-z0-9_.+-]+\.so$/.test(name));
+  if (!safe.length) return [];
+  const script = `#!/bin/bash
+${foamSource()}
+for l in ${safe.map(shellQuote).join(' ')}; do
+  for d in "$FOAM_LIBBIN" "$FOAM_SITE_LIBBIN"; do
+    [ -n "$d" ] && [ -f "$d/$l" ] && { echo "LIB|$l"; break; }
+  done
+done
+`;
+  try {
+    const out = runInWslScript(Buffer.from(script).toString('base64'), 20000);
+    return out.split(/\r?\n/).filter(line => line.startsWith('LIB|')).map(line => line.slice(4).trim());
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -3699,6 +3779,41 @@ ${blocks}
   return out;
 }
 
+/** `#includeEtc` file → its boundary entries, per installation. */
+const etcIncludeCache = new Map<string, BoundaryEntry[]>();
+
+/**
+ * The entries an `#includeEtc "<file>"` brings into a boundaryField, read from
+ * the selected installation (foamEtcFile finds it as OpenFOAM does), or null
+ * when it cannot be read or itself holds directives.
+ *
+ * The one nearly every tutorial field starts with is
+ * `#includeEtc "caseDicts/setConstraintTypes"`: one entry per constraint type
+ * (`empty { type empty; }`, `wedge`, `cyclic`, `processor`…), keyed by the
+ * group each such patch is in. Left unresolved, every field that used it was
+ * reported as only partly checked, and an `empty` patch it covers as missing.
+ */
+function etcIncludeEntries(file: string): BoundaryEntry[] | null {
+  const key = `${foamSource()}\n${file}`;
+  const cached = etcIncludeCache.get(key);
+  if (cached) return cached;
+  try {
+    const script = `#!/bin/bash
+${foamSource()}
+f=$(foamEtcFile ${shellQuote(file)} 2>/dev/null) && [ -f "$f" ] && cat -- "$f"
+`;
+    const text = runInWslScript(Buffer.from(script).toString('base64'), 20000);
+    if (!text.trim()) return null;
+    const parsed = parseBoundaryFieldEntries(text);
+    const entries = parsed.entries.filter(entry => entry.key !== 'FoamFile');
+    if (parsed.directives.length || !entries.length) return null;
+    etcIncludeCache.set(key, entries);
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
 export function validateBoundaryConditions(caseName: string): BCValidationResult {
   const casePath = getCasePath(caseName);
   const result: BCValidationResult = { success: false, fields: [], meshPatches: [], warnings: [] };
@@ -3782,9 +3897,23 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
           continue;
         }
 
-        const { entries, directives } = binaryList && binaryList.length
+        const parsed = binaryList && binaryList.length
           ? { entries: binaryList, directives: [] as string[] }
           : parseBoundaryFieldEntries(bfBlock || '');
+        // `#includeEtc` files are resolved from the installation. Their entries
+        // go after the field's own, so an entry the field writes itself wins,
+        // as it does in OpenFOAM, where it comes later and overrides; and an
+        // included entry no patch uses is not reported — that is what a
+        // generic include is.
+        const entries = [...parsed.entries];
+        const included = new Set<number>();
+        const directives: string[] = [];
+        for (const directive of parsed.directives) {
+          const etc = directive.match(/^#includeEtc\s+"([^"]+)"$/);
+          const extra = etc ? etcIncludeEntries(etc[1]) : null;
+          if (!extra) { directives.push(directive); continue; }
+          for (const entry of extra) { included.add(entries.length); entries.push(entry); }
+        }
         if (directives.length) {
           result.warnings.push(
             `${fieldFile}: ${directives.length} entr${directives.length === 1 ? 'y is' : 'ies are'} ` +
@@ -3797,7 +3926,7 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
 
         // No mesh to check against: report what the file says and nothing more.
         if (meshPatches.length === 0) {
-          for (const e of entries) {
+          for (const e of parsed.entries) {
             patches.push({ patch: e.key, type: e.type || '(no type)', valid: true });
           }
           if (patches.length) result.fields.push({ name: fieldFile, patches });
@@ -3846,7 +3975,7 @@ export function validateBoundaryConditions(caseName: string): BCValidationResult
         // mesh was rebuilt, is silently ignored by OpenFOAM — the field simply
         // has no condition there and the run fails later, somewhere else.
         entries.forEach((e, i) => {
-          if (usedEntries.has(i)) return;
+          if (usedEntries.has(i) || included.has(i)) return;
           patches.push({
             patch: e.kind === 'regex' ? `"${e.key}"` : e.key,
             type: e.type || '(no type)',
